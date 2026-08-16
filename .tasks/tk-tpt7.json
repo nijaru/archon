@@ -1,0 +1,19 @@
+{
+  "project": "tk",
+  "ref": "tpt7",
+  "title": "Sprint 0: HTTP server boot \u0026 Chi routers wiring",
+  "description": "Tie standard handlers, recovery, and ConnectRPC endpoints inside server boot",
+  "status": "done",
+  "priority": 2,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [],
+  "created_at": "2026-06-01T12:25:14.596096Z",
+  "updated_at": "2026-06-01T12:29:47.262842Z",
+  "completed_at": "2026-06-01T12:29:47.262842Z",
+  "external": {}
+}

@@ -1,0 +1,19 @@
+{
+  "project": "tk",
+  "ref": "76xz",
+  "title": "Sprint 0: Dev docker-compose setup",
+  "description": "Local services file for PostgreSQL and NATS JetStream",
+  "status": "done",
+  "priority": 2,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [],
+  "created_at": "2026-06-01T12:25:14.57914Z",
+  "updated_at": "2026-06-01T12:26:14.975342Z",
+  "completed_at": "2026-06-01T12:26:14.975342Z",
+  "external": {}
+}

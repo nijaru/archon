@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+vendor/
+target/
+dist/
+
+# Build output
+build/
+out/
+*.o
+*.so
+*.dylib
+*.dll
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test/coverage
+coverage/
+*.test
+tmp/
+
+# Agent scratch and local task artifacts
+ai/tmp/
+.tasks/tmp/

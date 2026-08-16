@@ -1,0 +1,24 @@
+{
+  "project": "tk",
+  "ref": "6jgl",
+  "title": "Reframe Fleet as distributed resource operating system",
+  "description": "Integrate the distributed-resource-os handoff into Fleet's canonical specification, architecture, decisions, plan, status, and README without changing implementation code.",
+  "status": "done",
+  "priority": 2,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [
+    {
+      "ts": "2026-08-16T21:25:51.657355Z",
+      "msg": "Reframed Fleet's canonical private docs around the distributed resource OS handoff: typed resource graph, universal leases, hierarchical scheduling, cells, node OS, provider boundaries, compatibility adapters, and Rust-first target. Rewrote spec, design, decisions, plan, status, architecture notes, initial scope, research docs, and private index; updated tracked README."
+    }
+  ],
+  "created_at": "2026-08-16T21:18:16.264281Z",
+  "updated_at": "2026-08-16T21:26:04.368677Z",
+  "completed_at": "2026-08-16T21:26:04.368677Z",
+  "external": {}
+}

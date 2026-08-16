@@ -1,0 +1,19 @@
+{
+  "project": "tk",
+  "ref": "5yfy",
+  "title": "Sprint 0: ConnectRPC and Protobuf definitions",
+  "description": "Construct buf.yaml/buf.gen.yaml and write proto control plane RPC interfaces",
+  "status": "done",
+  "priority": 2,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [],
+  "created_at": "2026-06-01T12:25:14.592184Z",
+  "updated_at": "2026-06-01T12:29:19.963279Z",
+  "completed_at": "2026-06-01T12:29:19.963279Z",
+  "external": {}
+}

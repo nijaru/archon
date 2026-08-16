@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package fleet.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service ControlService {
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc GetWorkloads(GetWorkloadsRequest) returns (GetWorkloadsResponse);
+}
+
+message RegisterNodeRequest {
+  string node_id = 1;
+  string hostname = 2;
+  string ip_address = 3;
+  repeated AcceleratorInfo accelerators = 4;
+}
+
+message AcceleratorInfo {
+  string vendor = 1;
+  string model = 2;
+  int64 vram_mb = 3;
+  string uuid = 4;
+}
+
+message RegisterNodeResponse {
+  bool success = 1;
+  string message = 2;
+  string hardware_pool_id = 3;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  float cpu_utilization = 3;
+  float memory_utilization = 4;
+  repeated AcceleratorTelemetry gpu_telemetry = 5;
+}
+
+message AcceleratorTelemetry {
+  string uuid = 1;
+  float utilization = 2;
+  float memory_utilization = 3;
+  float temperature_c = 4;
+  float power_usage_w = 5;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
+  string action = 2; // e.g. "none", "drain", "reboot"
+}
+
+message GetWorkloadsRequest {
+  string node_id = 1;
+}
+
+message Workload {
+  string id = 1;
+  string model_name = 2;
+  string model_version = 3;
+  string container_image = 4;
+  int32 port = 5;
+  repeated string env = 6;
+  repeated string gpu_uuids = 7;
+}
+
+message GetWorkloadsResponse {
+  repeated Workload workloads = 1;
+}
