@@ -4,8 +4,8 @@
 **Updated:** 2026-08-16
 
 Fleet is currently private inside `omendb/monorepo`. The checked-in
-`products/fleet/LICENSE` is inherited scaffold state and is not the final public
-release decision.
+`LICENSE` currently records that this is private pre-release software and does
+not grant public use rights. It is not the final public release text.
 
 ## Planned public boundary
 

@@ -1,8 +1,8 @@
 {
   "project": "tk",
   "ref": "n8e9",
-  "title": "Commercial: validate ELv2 pricing and support appetite",
-  "description": "After the direct-agent proof has real evidence, interview target operators about ELv2 acceptance, paid support/design partner appetite, annual GPU-count pricing, enterprise feature needs, and managed-control-plane demand.",
+  "title": "Commercial: validate AGPL Compute OS support model",
+  "description": "Validate customer and vendor response to AGPL core, commercial licensing, support, certification, managed control plane, and enterprise operations for the unified Compute OS. Do not center the old ELv2 or GPU-endpoint pricing model.",
   "status": "open",
   "priority": 2,
   "labels": null,
@@ -15,7 +15,7 @@
   "due_date": null,
   "logs": [],
   "created_at": "2026-06-06T10:14:38.459772Z",
-  "updated_at": "2026-06-06T10:14:43.293459Z",
+  "updated_at": "2026-08-16T23:16:18.800984Z",
   "completed_at": null,
   "external": {}
 }

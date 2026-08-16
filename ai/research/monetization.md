@@ -16,8 +16,8 @@ failure domains.
 
 | Component | License direction |
 |---|---|
-| Resource graph, lease, scheduler, node agent, core control plane | ELv2 |
-| Basic execution/provider integrations | ELv2 |
+| Resource graph, lease, scheduler, node agent, core control plane | AGPL-3.0-or-later |
+| Basic execution/provider integrations | AGPL-3.0-or-later |
 | SDKs, API schemas, policy/adapter interfaces, examples | Apache 2.0 |
 | Enterprise governance and operations | Proprietary |
 | Managed control plane | Proprietary service |

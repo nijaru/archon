@@ -1,10 +1,14 @@
 ---
 date: 2026-06-06
-summary: Commercial and source-boundary improvements to Fleet's plan and spec.
-status: active
+summary: Historical commercial and source-boundary review before Fleet's Compute OS and AGPL-first direction.
+status: superseded
 ---
 
 # Commercial Plan Improvements
+
+> Historical review. Fleet's current licensing and product boundary are in
+> `../design/LICENSE_BOUNDARY.md` and `../design/DISTRIBUTED_RESOURCE_OS.md`.
+> This document is preserved as prior reasoning, not current policy.
 
 ## Verdict
 

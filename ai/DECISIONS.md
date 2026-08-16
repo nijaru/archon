@@ -52,7 +52,7 @@ The complete architecture is [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRI
 | Compatibility | OCI, CDI, OpenTelemetry, Linux/KVM, standard protocols; optional integrations for K8s/Slurm/Flux/Ray/MPI | Adoption and composition without delegating native control |
 | Node model | Minimal immutable Linux with an agent | Clear ownership, rollback, and hardware access |
 | Extension model | Capability-limited WASM where practical | Policy extensibility without ambient host authority |
-| License direction | ELv2 core; Apache 2.0 SDKs, schemas, examples, adapter interfaces | Preserve a usable source-available core while retaining commercial options |
+| License direction | Planned AGPL-3.0-or-later core; Apache 2.0 SDKs, schemas, examples, adapter interfaces | Preserve the resource authority as open source while keeping integrations easy |
 
 ## Reused systems
 
@@ -89,7 +89,7 @@ constrain the resource, lease, or scheduler model.
 | 2026-06-07 | Use CDI as the initial device attachment boundary | Vendor-neutral device specification for OCI workloads |
 | 2026-06-06 | Keep NATS optional for the first local proof | Event durability and fanout should follow an actual control-plane need |
 | 2026-06-06 | Keep Fleet runtime-neutral | Fleet owns lifecycle and allocation, not inference-engine internals |
-| 2026-05-29 | Keep source-available core and Apache SDK/schema boundary | Adoption and integration need a useful free core |
+| 2026-05-29 | Keep source-available core and Apache SDK/schema boundary | Historical scaffold decision; superseded by the AGPL-first 2026-08-16 release plan |
 
 ## Open decisions
 

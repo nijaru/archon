@@ -1,0 +1,19 @@
+{
+  "project": "tk",
+  "ref": "byam",
+  "title": "Define Fleet kernel primitives and resource graph",
+  "description": "Design Resource, ResourceGraph, Lease, Binding, AllocationPlan, and Cell schemas, ownership boundaries, materialized indexes, and deterministic replay requirements for the unified Compute OS.",
+  "status": "open",
+  "priority": 1,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [],
+  "created_at": "2026-08-16T23:16:18.811141Z",
+  "updated_at": "2026-08-16T23:16:18.811141Z",
+  "completed_at": null,
+  "external": {}
+}
