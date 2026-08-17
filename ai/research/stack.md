@@ -1,6 +1,6 @@
 # Implementation Stack Direction
 
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
 
 Fleet's target core is Rust-first because the critical surface owns privileged
 Linux resources, leases, concurrency, provider lifecycles, and failure
@@ -29,14 +29,21 @@ compatibility shell, API experiment surface, or dependency contract.
 
 ## Target workspace
 
+This is the long-term responsibility map, not the first crate cut. Workspace
+layout remains an open decision. Do not create this tree until `tk-byam` names
+the kernel types.
+
+The first Cargo workspace should hold only the six primitives plus tests and,
+later, the deterministic simulator that shares that decision logic.
+
 ```text
 crates/
   api/ types/ resource-graph/ lease/ state/ raft/
-  scheduler-core/ scheduler-service/ scheduler-batch/ scheduler-ai/
-  planner-global/ node-agent/
-  runtime-oci/ runtime-microvm/ runtime-wasm/
-  device/ network/ storage/ baremetal/ telemetry/
-  policy-sdk/ simulator/ cli/
+  scheduler-core / scheduler-service / scheduler-batch / scheduler-ai/
+  planner-global / node-agent/
+  runtime-oci / runtime-microvm / runtime-wasm/
+  device / network / storage / baremetal / telemetry/
+  policy-sdk / simulator / cli/
 ```
 
 Keep pure graph, lease, and scheduler logic transport-independent. The simulator

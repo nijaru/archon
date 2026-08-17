@@ -68,10 +68,11 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 
 ## Immediate design work
 
-1. Define the resource graph schema and placement indexes.
-2. Define lease ownership, renewal, expiry, revocation, fencing, and nesting.
-3. Define scheduler transaction and control-plane state boundaries.
-4. Build the deterministic simulator around the same pure scheduling logic.
+1. `tk-byam`: define the six kernel primitives and placement indexes.
+2. `tk-l8xd`: specify lease epochs, node incarnations, and provider fencing.
+3. `tk-0lvx`: build the deterministic simulator around the same decision logic.
+4. Add a tiny Rust workspace only after those types exist. Do not scaffold the
+   full later crate map in `research/stack.md`.
 5. Add node execution only after the resource/lease contracts are explicit.
 
 ## Open questions
