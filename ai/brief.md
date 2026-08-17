@@ -18,16 +18,17 @@ substrate to reuse.
 
 ## Current truth
 
-- Repository: `omendb/fleet`, private at `../fleet`. Work is on `main`; the
-  kernel vocabulary/model is a working design, with no Rust implementation.
+- Repository: `omendb/fleet`, private at `../fleet`; clean on `main` at
+  `bb4244c`. `tk-byam` is active.
+- The kernel vocabulary/model is a working design, with no Rust implementation.
 - Implementation: none. No `Cargo.toml`, `crates/`, toolchain, or CI. The Go
   model-serving scaffold was deleted and is not a migration source.
 - Target core: Rust-first resource/lease kernel and simulator.
 - Canonical architecture: `ai/design/DISTRIBUTED_RESOURCE_OS.md`.
 - Working kernel vocabulary/design: `ai/design/kernel-primitives.md`.
   Cluster → Graph → Node/Edge → Request → Allocation → Lease → Binding → Agent.
-- Ready work: `tk-byam`, then `tk-l8xd` and `tk-0lvx`. Launch/commercial tasks
-  `tk-kwzc` and `tk-n8e9` stay later.
+- Next tasks: `tk-l8xd` (lease/binding fences), then `tk-0lvx` (deterministic
+  simulator). Launch/commercial tasks `tk-kwzc` and `tk-n8e9` stay later.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
 

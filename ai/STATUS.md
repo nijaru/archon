@@ -33,8 +33,8 @@ is now the resource operating system:
 - GPUs are accelerators, not the only resource type;
 - inference is one workload class, not the system definition;
 - model endpoints are one service experience, not the universal abstraction;
-- direct-node execution is one node path, not a rejection of cells or nested
-  schedulers;
+- direct-node execution is one node path, not a rejection of cluster boundaries
+  or nested schedulers;
 - Kubernetes, Slurm, Flux, Ray, MPI, and other systems are compatibility or
   nested-workload paths, not internal authorities.
 
@@ -49,7 +49,7 @@ The first principles are:
 1. typed resource graph;
 2. universal enforceable allocation/lease;
 3. separate mechanism and policy;
-4. hierarchical global/cell/node/workload scheduling;
+4. hierarchical global/cluster/node/workload scheduling;
 5. topology, data locality, health, and failure domains as first-class state;
 6. selectable process, container, microVM, VM, and WASM isolation;
 7. compatibility without architectural capture.
