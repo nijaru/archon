@@ -12,6 +12,8 @@ or nested workloads; Fleet is not merely a substrate that delegates control to
 them.
 
 The complete architecture is [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md).
+The accepted v0 kernel contract is [`design/kernel-primitives.md`](design/kernel-primitives.md).
+The accepted fencing protocol is [`design/lease-fencing.md`](design/lease-fencing.md).
 
 ## Principles
 
@@ -21,7 +23,7 @@ The complete architecture is [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRI
   consume enforceable leases.
 - **Mechanism separated from policy.** Discovery, state, fencing, and execution
   are core; placement and optimization are modular.
-- **Hierarchical scheduling.** Global planning, cell allocation, node resource
+- **Hierarchical scheduling.** Global planning, Cluster allocation, node resource
   management, and workload-local scheduling have separate responsibilities.
 - **Runtime and isolation neutrality.** Process, OCI, microVM, VM, and WASM are
   execution choices under one workload model.

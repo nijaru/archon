@@ -18,7 +18,7 @@ substrate to reuse.
 
 ## Current truth
 
-- Repository: `omendb/fleet`, private; clean work is on `main`.
+- Repository: `omendb/fleet`, private; clean on `main`.
 - Accepted kernel contract: `ai/design/kernel-primitives.md`.
   Cluster → Graph → Node/Edge → Request → Allocation → Lease → Binding → Agent.
 - Accepted fencing protocol: `ai/design/lease-fencing.md`.
@@ -26,9 +26,9 @@ substrate to reuse.
   model-serving scaffold was deleted and is not a migration source.
 - Target core: Rust-first resource/lease kernel and simulator.
 - Canonical long-term architecture: `ai/design/DISTRIBUTED_RESOURCE_OS.md`.
-- `tk-byam` and `tk-l8xd` are done. Next: `tk-0lvx` (deterministic simulator
-  and first tiny Rust workspace). Launch/commercial tasks `tk-kwzc` and
-  `tk-n8e9` stay later.
+- `tk-byam` and `tk-l8xd` are done. Next is `tk-0lvx`: first proof is the v0
+  kernel and fencing cases, not a 1M-node run. Launch/commercial tasks
+  `tk-kwzc` and `tk-n8e9` stay later.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
 

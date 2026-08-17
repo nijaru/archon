@@ -18,11 +18,13 @@ composable resources.
 
 The detailed contract is in:
 
-- [`ai/spec.md`](spec.md)
-- [`ai/DESIGN.md`](DESIGN.md)
-- [`ai/design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md)
-- [`ai/DECISIONS.md`](DECISIONS.md)
-- [`ai/PLAN.md`](PLAN.md)
+- [`design/kernel-primitives.md`](design/kernel-primitives.md)
+- [`design/lease-fencing.md`](design/lease-fencing.md)
+- [`spec.md`](spec.md)
+- [`DESIGN.md`](DESIGN.md)
+- [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md)
+- [`DECISIONS.md`](DECISIONS.md)
+- [`PLAN.md`](PLAN.md)
 
 ## What changed
 
