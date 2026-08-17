@@ -2,8 +2,8 @@
   "project": "tk",
   "ref": "byam",
   "title": "Define Fleet kernel primitives and resource graph",
-  "description": "Design Resource, ResourceGraph, Lease, Binding, AllocationPlan, and Cell schemas, ownership boundaries, materialized indexes, and deterministic replay requirements for the unified Compute OS.",
-  "status": "open",
+  "description": "Define the Fleet kernel model: Cluster, Graph, Node, Edge, Request, Allocation, Lease, Binding, and Agent; settle ownership, materialized indexes, endpoint fencing, and deterministic replay requirements.",
+  "status": "active",
   "priority": 1,
   "labels": null,
   "assignees": null,
@@ -11,9 +11,14 @@
   "blocked_by": [],
   "estimate": null,
   "due_date": null,
-  "logs": [],
+  "logs": [
+    {
+      "ts": "2026-08-17T09:18:39.75961Z",
+      "msg": "Vetted one cohesive vocabulary against Flux, Slurm, Kubernetes, Nomad, Borg, and Chubby terminology. Working model: Cluster → Graph → Node/Edge → Request → Allocation → Lease → Binding → Agent. Allocation is the concrete selected set; Lease is committed authority; Binding is endpoint enforcement. Rejected Cell, Placement, Plan, AllocationPlan, NodeIncarnation, and FenceToken for the kernel draft."
+    }
+  ],
   "created_at": "2026-08-16T23:16:18.811141Z",
-  "updated_at": "2026-08-16T23:16:18.811141Z",
+  "updated_at": "2026-08-17T09:18:39.75961Z",
   "completed_at": null,
   "external": {}
 }

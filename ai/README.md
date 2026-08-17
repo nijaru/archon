@@ -16,6 +16,7 @@ around mature runtimes and hardware systems.
 | `PLAN.md` | Staged implementation plan |
 | `DECISIONS.md` | Principles, decisions, and open questions |
 | `design/DISTRIBUTED_RESOURCE_OS.md` | Detailed resource OS architecture |
+| `design/kernel-primitives.md` | Working kernel design |
 | `design/architecture-notes.md` | Architecture rationale and invariants |
 | `design/mvp-scope.md` | Initial resource/lease kernel scope |
 | `research/` | Competitive, stack, UX, and commercial research |

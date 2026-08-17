@@ -68,8 +68,9 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 
 ## Immediate design work
 
-1. `tk-byam`: define the six kernel primitives and placement indexes.
-2. `tk-l8xd`: specify lease epochs, node incarnations, and provider fencing.
+1. `tk-byam`: settle the kernel vocabulary and model in
+   `design/kernel-primitives.md`.
+2. `tk-l8xd`: specify lease and binding fences under failure.
 3. `tk-0lvx`: build the deterministic simulator around the same decision logic.
 4. Add a tiny Rust workspace only after those types exist. Do not scaffold the
    full later crate map in `research/stack.md`.
@@ -78,8 +79,9 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 ## Open questions
 
 - graph representation and materialized indexes;
-- cell consensus and federation semantics;
-- lease and fencing details under partitions;
+- validate the authority name (`Cluster`) and its consensus boundary;
+- validate `Allocation` as the concrete result and `Lease` as the authority;
+- lease and binding-fence details under partitions;
 - dynamic topology, contention, and health representation;
 - provider contracts for accelerator partitioning and preemption;
 - virtual-cluster network, storage, and identity semantics;

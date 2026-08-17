@@ -21,24 +21,25 @@ initial kernel. Do not load `ai/review/` on ordinary startup.
 
 Prove these before runtime integrations:
 
-1. `Resource`, `ResourceGraph`, `Lease`, `Binding`, `AllocationPlan`, `Cell`
+1. Graph model: `Node`, `Edge`, `Request`, `Allocation`, `Lease`, `Binding`
 2. Deterministic graph/lease/scheduler simulation
-3. Fencing, node incarnation, partial binding, cell-partition correctness
+3. Binding fences, stale-agent sessions, partial preparation, and
+   authority-partition correctness
 4. Native Fleet scheduling and node enforcement
 5. Runtime, device, network, storage, and compatibility providers
 
 Do not start with vLLM, a GUI, Kubernetes, Slurm, Ceph, or cloud APIs.
 Do not recreate Postgres, NATS, ConnectRPC, model, endpoint, replica, or
-GPU-telemetry surfaces. Create a Cargo workspace only after the six primitives
-are named, and keep that first tree to kernel plus simulator.
+GPU-telemetry surfaces. Create a Cargo workspace only after those types exist,
+and keep that first tree to kernel plus simulator.
 
 ## Invariants
 
 - Exclusive leases never overlap.
-- Fenced epochs and node incarnations reject stale authority.
+- Older binding fences and agent sessions are rejected at resource endpoints.
 - Provider bindings enforce leases at resource endpoints.
-- A partial allocation reaches committed state or an explicit terminal failure.
-- Cells own ordinary allocation; global policy delegates bounded capacity.
+- Partial preparation reaches an active lease or an explicit failure.
+- One Cluster owns ordinary allocation; global policy delegates bounded capacity.
 - Telemetry is not authoritative allocation state.
 - Simulator and production share the same pure decision logic.
 
@@ -49,6 +50,7 @@ are named, and keep that first tree to kernel plus simulator.
 | Current work | `ai/brief.md`, then `ai/STATUS.md` if needed |
 | Product contract | `ai/spec.md` |
 | Architecture | `ai/design/DISTRIBUTED_RESOURCE_OS.md` |
+| Kernel design | `ai/design/kernel-primitives.md` |
 | Initial kernel scope | `ai/design/mvp-scope.md` |
 | Rationale | `ai/DECISIONS.md` |
 | Implementation stages | `ai/PLAN.md` |

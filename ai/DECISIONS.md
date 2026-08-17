@@ -83,6 +83,7 @@ constrain the resource, lease, or scheduler model.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-17 | Working kernel vocabulary | `Cluster → Graph → Node/Edge → Request → Allocation → Lease → Binding → Agent`. `Allocation` is the concrete selected set; `Lease` is the committed right to use it; `Binding` is endpoint enforcement. `Cell`, `Placement`, `Plan`, `AllocationPlan`, `NodeIncarnation`, and `FenceToken` are not used in the kernel draft. |
 | 2026-08-17 | Delete the Go model-serving scaffold | The stubs encoded models, endpoints, replicas, GPU telemetry, Postgres, and NATS; keeping them would define a second, wrong product |
 | 2026-08-16 | Reframe Fleet as a distributed resource OS | The resource graph, lease, hierarchy, and nested-scheduler model is the actual long-term product idea |
 | 2026-06-07 | Use a workload-agnostic node core | The agent should receive a workload spec and pass workload-specific metadata to runtimes |
@@ -94,9 +95,9 @@ constrain the resource, lease, or scheduler model.
 
 ## Open decisions
 
-- graph representation and placement indexes;
+- validate the linearizable authority name (`Cluster`) and its consensus boundary;
 - exact lease renewal, fencing, revocation, and nested-lease semantics;
-- cell consensus and global federation boundaries;
+- authority consensus and global federation boundaries;
 - scheduler transaction model and optimistic concurrency;
 - static versus dynamic topology and contention edges;
 - device-level preemption/reset contracts across vendors;
