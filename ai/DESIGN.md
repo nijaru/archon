@@ -1,6 +1,10 @@
 # Fleet Design
 
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
+
+The accepted v0 kernel contract is
+[`design/kernel-primitives.md`](design/kernel-primitives.md). Kernel types are
+Cluster, Graph, Node, Edge, Request, Allocation, Lease, Binding, and Agent.
 
 Fleet is a distributed resource operating system, not an inference-only control
 plane or a thin wrapper around existing schedulers. Its core question is:
@@ -21,7 +25,7 @@ Intent compiler and policy
       ↓
 Global planner
       ↓
-Cell allocator and lease service
+Cluster allocator and lease service
       ↓
 Typed resource graph and materialized indexes
       ↓

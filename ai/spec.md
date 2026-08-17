@@ -1,7 +1,11 @@
 # Fleet Distributed Resource OS Specification
 
 **Status:** canonical product and architecture specification
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
+
+The accepted v0 kernel contract is
+[`design/kernel-primitives.md`](design/kernel-primitives.md). Implement those
+types; older cell/host wording below maps to Cluster and `Node(kind=Machine)`.
 
 ## 1. Executive summary
 
@@ -412,12 +416,10 @@ Fleet succeeds when:
 
 ## 18. Open questions
 
-- graph storage and materialized placement indexes;
-- exact lease, fencing, renewal, revocation, and nested-lease semantics;
-- scheduler transaction boundaries and optimistic concurrency;
+- exact lease renewal, fence increment, partition recovery, and Binding close-versus-fence;
 - dynamic topology, contention, and health representation;
 - migration and reallocation safety;
-- cell state and federation semantics;
+- Cluster replication and federation beyond one log;
 - accelerator provider and device-preemption contracts;
 - virtual-cluster networking, storage, identity, and security;
 - which control invariants require model checking.

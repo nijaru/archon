@@ -44,7 +44,7 @@ The complete architecture is [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRI
 |---|---|---|
 | Product category | Distributed resource operating system | One substrate for services, batch, HPC, AI, VMs, and WASM |
 | Core primitive | Typed resource graph plus enforceable lease | Unifies heterogeneous capacity and ownership |
-| Scheduler shape | Global planner → cell allocator → node manager → native Fleet workload scheduler, with optional nested schedulers | Keeps policy and timing domains separate without delegating Fleet's control authority |
+| Scheduler shape | Global planner → Cluster allocator → node manager → native Fleet workload scheduler, with optional nested schedulers | Keeps policy and timing domains separate without delegating Fleet's control authority |
 | Resource scope | CPU, memory, accelerators, networks, storage, data, health, failure domains | Placement depends on more than node CPU/RAM |
 | Runtime modes | Process, OCI, sandbox, microVM, VM, WASM | Isolation is a workload property |
 | Implementation direction | Rust-first; no Go compatibility shell | Privileged infrastructure, concurrency, provider boundaries, WASM integration; the deleted Go scaffold encoded the wrong product |
@@ -83,7 +83,8 @@ constrain the resource, lease, or scheduler model.
 
 | Date | Decision | Rationale |
 |---|---|---|
-| 2026-08-17 | Working kernel vocabulary | `Cluster → Graph → Node/Edge → Request → Allocation → Lease → Binding → Agent`. `Allocation` is the concrete selected set; `Lease` is the committed right to use it; `Binding` is endpoint enforcement. `Cell`, `Placement`, `Plan`, `AllocationPlan`, `NodeIncarnation`, and `FenceToken` are not used in the kernel draft. |
+| 2026-08-17 | Accept v0 kernel contract | `ai/design/kernel-primitives.md` is the kernel vocabulary and model. `Cluster` is the linearizable authority. `Allocation` is claims against a Graph revision. `Lease` is committed authority. Occupancy is exclusive Node-unit claims; Memory is quantified, devices/cores are discrete Nodes. Graph and indexes rebuild from the command log. `Cell`, `Host`, `Placement`, `Plan`, `FenceToken`, and `NodeIncarnation` are not kernel types. |
+| 2026-08-17 | Working kernel vocabulary | Superseded by the accepted v0 kernel contract. The vocabulary itself did not change. |
 | 2026-08-17 | Delete the Go model-serving scaffold | The stubs encoded models, endpoints, replicas, GPU telemetry, Postgres, and NATS; keeping them would define a second, wrong product |
 | 2026-08-16 | Reframe Fleet as a distributed resource OS | The resource graph, lease, hierarchy, and nested-scheduler model is the actual long-term product idea |
 | 2026-06-07 | Use a workload-agnostic node core | The agent should receive a workload spec and pass workload-specific metadata to runtimes |
@@ -95,10 +96,8 @@ constrain the resource, lease, or scheduler model.
 
 ## Open decisions
 
-- validate the linearizable authority name (`Cluster`) and its consensus boundary;
-- exact lease renewal, fencing, revocation, and nested-lease semantics;
-- authority consensus and global federation boundaries;
-- scheduler transaction model and optimistic concurrency;
+- exact lease renewal, fence increment, partition recovery, and Binding close-versus-fence (`tk-l8xd`);
+- authority replication and global federation beyond one Cluster log;
 - static versus dynamic topology and contention edges;
 - device-level preemption/reset contracts across vendors;
 - virtual-cluster network, storage, and identity semantics;

@@ -1,9 +1,10 @@
 # Architecture Notes
 
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
 
 These notes explain the boundaries behind Fleet's distributed resource OS
-design. The complete contract is in
+design. The accepted kernel contract is
+[`kernel-primitives.md`](kernel-primitives.md). Long-term architecture is in
 [`DISTRIBUTED_RESOURCE_OS.md`](DISTRIBUTED_RESOURCE_OS.md).
 
 ## Resource graph over machine abstractions

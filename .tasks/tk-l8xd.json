@@ -1,9 +1,9 @@
 {
   "project": "tk",
   "ref": "l8xd",
-  "title": "Specify Fleet lease epochs and provider fencing",
-  "description": "Define lease renewal, expiry, revocation, node incarnations, resource-specific binding fencing, prepare/commit/reconcile, partial allocation, and failure semantics.",
-  "status": "open",
+  "title": "Specify Fleet lease and provider fencing",
+  "description": "Define lease renewal, expiry, revocation, Binding.fence increment, Agent.session rejection, provider fencing, prepare/commit/reconcile, no silent partial lease, and partition/failure semantics against the accepted kernel contract.",
+  "status": "active",
   "priority": 1,
   "labels": null,
   "assignees": null,
@@ -11,9 +11,14 @@
   "blocked_by": [],
   "estimate": null,
   "due_date": null,
-  "logs": [],
+  "logs": [
+    {
+      "ts": "2026-08-17T22:38:43.303869Z",
+      "msg": "Unblocked by accepted kernel contract. Specify renewal, fence increment, prepare/commit messages, partition recovery, and Binding close-versus-fence. Do not introduce NodeIncarnation or FenceToken; use Binding.fence and Agent.session."
+    }
+  ],
   "created_at": "2026-08-16T23:16:18.820855Z",
-  "updated_at": "2026-08-16T23:16:18.820855Z",
+  "updated_at": "2026-08-17T22:38:58.781126Z",
   "completed_at": null,
   "external": {}
 }

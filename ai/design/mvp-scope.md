@@ -1,6 +1,8 @@
 # Initial Kernel Scope
 
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
+
+Kernel types and commit path are in [`kernel-primitives.md`](kernel-primitives.md).
 
 Fleet's first implementation should prove the resource operating-system
 abstraction before integrating a large runtime surface. The first scope is a
@@ -18,7 +20,7 @@ replacement and not an inference-only product.
 - topology filtering and fast scoring;
 - atomic lease commit;
 - release, renewal, revoke, expiry, and fencing semantics;
-- parent/child and nested allocations;
+- parent/child and nested leases;
 - explainable placement and refusal results;
 - deterministic state replay;
 - simulated node/device failure;
@@ -29,7 +31,7 @@ replacement and not an inference-only product.
 1. Register heterogeneous synthetic nodes.
 2. Submit a service, batch, and gang allocation request.
 3. Reject candidates that violate hard topology or capability constraints.
-4. Commit a lease and verify exclusive resources cannot overlap.
+4. Commit a lease and verify exclusive claims cannot overlap.
 5. Create a nested lease and verify the child cannot escape its parent.
 6. Revoke or fence a lease and reject stale-agent writes.
 7. Release resources and prove they become schedulable again.

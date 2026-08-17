@@ -18,29 +18,28 @@ substrate to reuse.
 
 ## Current truth
 
-- Repository: `omendb/fleet`, private at `../fleet`; clean on `main` at
-  `bb4244c`. `tk-byam` is active.
-- The kernel vocabulary/model is a working design, with no Rust implementation.
+- Repository: `omendb/fleet`, private; clean work is on `main`.
+- Accepted kernel contract: `ai/design/kernel-primitives.md`.
+  Cluster → Graph → Node/Edge → Request → Allocation → Lease → Binding → Agent.
 - Implementation: none. No `Cargo.toml`, `crates/`, toolchain, or CI. The Go
   model-serving scaffold was deleted and is not a migration source.
 - Target core: Rust-first resource/lease kernel and simulator.
-- Canonical architecture: `ai/design/DISTRIBUTED_RESOURCE_OS.md`.
-- Working kernel vocabulary/design: `ai/design/kernel-primitives.md`.
-  Cluster → Graph → Node/Edge → Request → Allocation → Lease → Binding → Agent.
-- Next tasks: `tk-l8xd` (lease/binding fences), then `tk-0lvx` (deterministic
-  simulator). Launch/commercial tasks `tk-kwzc` and `tk-n8e9` stay later.
+- Canonical long-term architecture: `ai/design/DISTRIBUTED_RESOURCE_OS.md`.
+- `tk-byam` is done. Next: `tk-l8xd` (lease/binding fences), then `tk-0lvx`
+  (deterministic simulator). Launch/commercial tasks `tk-kwzc` and `tk-n8e9`
+  stay later.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
 
 ## Constraints
 
 - Do not revive Postgres, NATS, ConnectRPC, model, endpoint, or replica types.
+- Do not implement Cell, Host, FenceToken, or NodeIncarnation.
 - Do not scaffold the full `ai/research/stack.md` crate map. First Rust code
-  follows a confirmed `tk-byam` contract and should be a tiny kernel/simulator
-  workspace.
+  follows `tk-l8xd` and should be a tiny kernel/simulator workspace.
 - `ai/review/` is superseded history and is not on the session-start path.
 
 ## Next action
 
-Review the working vocabulary and commit path in
-`ai/design/kernel-primitives.md`; then settle `tk-byam` before Rust.
+Specify lease renewal, fence increment, prepare/commit, and partition
+recovery in `tk-l8xd` against the accepted kernel contract.

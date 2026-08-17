@@ -1,7 +1,12 @@
 # Distributed Resource OS Architecture
 
 **Status:** Fleet's current long-term architecture
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
+
+The accepted v0 kernel contract is [`kernel-primitives.md`](kernel-primitives.md).
+Implement `Cluster`, not `Cell`; `Node(kind=Machine)`, not `Host`; `Allocation`
+as selected claims and `Lease` as committed authority. Older cell/host wording
+in this document is planning language for that contract.
 
 Fleet is a Rust-first distributed resource operating system. It represents a
 datacenter as a graph of leaseable capabilities and places workloads against

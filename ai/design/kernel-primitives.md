@@ -1,14 +1,11 @@
 # Fleet Kernel Vocabulary and Model
 
-**Status:** working v0 design for `tk-byam`
+**Status:** accepted v0 kernel contract for `tk-byam`
 **Updated:** 2026-08-17
 
-This is the v0 vocabulary under review. Older architecture docs retain the
-broader planning vocabulary until this contract is accepted; do not implement
-both vocabularies.
-
-This vocabulary is chosen as a set. The terms should read naturally in one
-story, not win isolated naming contests.
+This is the kernel contract. Implement these types. Older architecture docs
+may still say cell, host, or treat Allocation as a lease; those names map
+here and must not become a second kernel vocabulary.
 
 ## The story
 
@@ -47,7 +44,7 @@ Example:
 | `Node` | One graph vertex; a resource or placement constraint |
 | `Edge` | A typed relationship between Nodes |
 | `Request` | Abstract workload requirements and policy |
-| `Allocation` | Concrete Nodes selected for a Request |
+| `Allocation` | Concrete claims selected for a Request |
 | `Lease` | Committed, time-bounded right to use an Allocation |
 | `Binding` | One Lease enforced on one Node by one Provider |
 | `Agent` | Long-running process on a machine Node that discovers and enforces |
@@ -55,6 +52,23 @@ Example:
 `resource` remains the domain word for anything Fleet can consume or use for
 placement. In the kernel data model, those things are `Node`s. There is no
 second `Resource` struct competing with `Node`.
+
+A product **Workload** compiles to one or more Requests. It is not a kernel
+type.
+
+## Older-doc mapping
+
+| Older name | Kernel name |
+|---|---|
+| Cell, cell allocator | `Cluster` |
+| Host | `Node(kind=Machine)` |
+| Allocation as ownership object | `Lease` |
+| Resource set / selected resources | `Allocation` |
+| FenceToken, fencing token | `Binding.fence` |
+| NodeIncarnation, AgentEpoch | `Agent.session` |
+| Placement, Plan, AllocationPlan | not kernel types |
+
+Do not implement the older names.
 
 ## Why these names
 
@@ -83,75 +97,145 @@ Evidence used for the terminology:
 ## Cluster
 
 A **Cluster** is the unit that may say yes. It owns one authoritative command
-log, one Graph, and one lease table. Its replicas agree on ownership
-transitions. Ordinary allocation stays inside the Cluster; a wider Fleet may
-delegate capacity or policy to it without sitting on every local decision.
+log, one Graph, one lease table, and the Binding records for those leases. Its
+replicas agree on ownership transitions. Ordinary allocation stays inside the
+Cluster; a wider Fleet may delegate capacity or policy to it without sitting on
+every local decision.
 
 A Cluster is not a Node and is not a `NodeKind`. Physical failure domains such
 as Region, Datacenter, Rack, and PowerDomain are Nodes in its Graph. A Fleet
-may manage multiple Clusters; a small installation has one.
+may manage multiple Clusters; they do not share a lease table. A small
+installation has one Cluster.
 
 `Cell` is not used in the kernel vocabulary. It is precise in Borg and Chubby,
 but has different meanings in Nova, storage systems, and topology discussions.
 `Cluster` is the term a new operator already understands for a managed set of
 machines and its authority.
 
+v0 implements one in-memory Cluster over the same log contract. Replication,
+membership, and federation are later implementations of this boundary, not new
+kernel types.
+
+If a Cluster cannot establish authoritative agreement:
+
+- existing work may continue under its Lease policy;
+- new exclusive Leases are refused;
+- unsafe failover is refused.
+
+After recovery, `Cluster.epoch` advances and commands from the previous epoch
+are rejected.
+
 ## Graph, Node, and Edge
 
 A **Graph** is the logical placement picture. It is not a graph database. The
 Cluster log is authoritative; the Graph and its indexes are derived and
-rebuildable.
+rebuildable. Node and Edge IDs are stable across revisions.
+
+```text
+Graph
+  revision     advances when topology or total capacity changes
+```
+
+```text
+Node
+  id
+  kind
+  attrs
+  capacity     dimension → total units
+```
 
 ```text
 Edge
   from
   to
-  kind       Contains | SameNuma | SamePcie | Connected
-  attrs      bandwidth, latency, or other edge data
+  kind         Contains | SameNuma | SamePcie | Connected
+  attrs        bandwidth, latency, or other edge data
 ```
 
-A **Node** is one vertex in the Graph. Its `kind` distinguishes a machine from
-an accelerator or a topology/failure-domain object:
+v0 `Node.kind` values:
 
 ```text
 Machine, Rack, PowerDomain, Socket, Numa, Cpu, Memory,
 PcieRoot, Gpu, Nic, Nvme
 ```
 
+Region and Datacenter are valid kinds when a Graph needs them. They are not
+required for the first synthetic 3–10 machine Graphs.
+
+Not v0 kinds: `Cell`, `AcceleratorPartition`, `DataObject`, `Switch`, `Fabric`,
+`StoragePool`, `CXLDevice`. Later kinds extend this enum. They do not add a
+second vertex type.
+
 A machine Node contains sockets, memory, devices, and local storage. An Agent
 runs on a machine Node. A GPU Node is not a machine and does not run an Agent.
 This resolves the two common meanings of “node” without a second generic
 resource type: Graph code uses Node; operators can say machine, GPU, or rack.
 
-The Graph has a `revision` and materialized indexes for:
+Default capacity:
+
+- `Cpu`, `Gpu`, `Nic`, `Nvme`: `{count: 1}` each. Model each core or device as
+  its own Node.
+- `Memory`: `{bytes: N}` on the NUMA-local Memory Node.
+- Topology Nodes (`Machine`, `Rack`, `Socket`, `Numa`, `PcieRoot`,
+  `PowerDomain`) constrain placement through Edges. They are not occupied
+  unless a Request claims exclusive use of that Node.
+
+v0 occupancy is exclusive. Shared capacity, oversubscription, and GPU
+partitioning are later.
+
+The Graph has materialized indexes for:
 
 - ID and kind lookup;
-- containment;
-- free exclusive capacity;
+- parent and children through `Contains`;
+- remaining exclusive capacity per Node;
 - adjacency by Edge kind;
 - attributes used in hard constraints.
 
-Indexes never grant or revoke a Lease. Health, temperature, and contention may
-influence an Allocation, but are not authoritative ownership state.
+Rebuild every index by folding the log from empty. Indexes never grant or
+revoke a Lease. Health, temperature, and contention may influence an
+Allocation, but are not authoritative ownership state.
 
-## Request and Allocation
+## Request, Need, and Allocation
 
-A **Request** is abstract intent. It contains resource quantities, hard
-constraints, preferences, topology requirements, lifetime, priority, and
-execution requirements. It does not name concrete Nodes.
+A **Request** is abstract intent. It does not name concrete Node IDs.
 
-An **Allocation** is the concrete result of matching a Request against a Graph
-revision:
+```text
+Request
+  class         Service | Batch | Gang
+  needs         list of Need
+  topology      required Edge relationships among selected Nodes
+  preferences   scoring only; never a hard filter
+  lifetime
+  priority
+```
+
+```text
+Need
+  kind          Node.kind to consume
+  quantity      dimension → units
+  filters       hard attribute and topology predicates
+```
+
+A **Claim** is one concrete consumption. An **Allocation** is the concrete
+result of matching a Request against a Graph revision:
+
+```text
+Claim
+  node
+  quantity      dimension → units; omitted means the Node's full capacity
+```
 
 ```text
 Allocation
-  nodes
+  claims
   graph_revision
   explanation
 ```
 
-Allocation is a value, not authority and not a lifecycle. The scheduler
-computes it; the Cluster may discard it if provider preparation fails.
+The claimed Node set is derived from `claims`. Allocation is a value, not
+authority and not a lifecycle. The scheduler computes it; the Cluster discards
+it if occupancy changed, `graph_revision` no longer matches, or provider
+preparation fails.
 
 This is **Allocation**, not `Placement` or `Plan`:
 
@@ -162,8 +246,11 @@ This is **Allocation**, not `Placement` or `Plan`:
 
 The distinction from Lease is direct:
 
-- **Allocation:** which Nodes;
+- **Allocation:** which Node units;
 - **Lease:** who may use them, until when, and under which authority.
+
+A gang Request prepares every member before commit. There is no silent partial
+Lease. Every refusal and Allocation includes an explanation.
 
 ## Lease
 
@@ -179,8 +266,8 @@ Lease
   state                  Preparing | Active | Released | Expired | Revoked | Failed
 ```
 
-A child Lease may use only Nodes already covered by its parent. An exclusive
-Node capacity cannot be covered by two active exclusive Leases.
+A child Lease may use only claims already covered by its parent. Two active
+exclusive Leases cannot cover the same Node units.
 
 The lifecycle is ordinary and explicit:
 
@@ -190,8 +277,12 @@ The lifecycle is ordinary and explicit:
 - it **fails** when required provider preparation cannot complete.
 
 `expires_at` is the deadline. `Expired` is the resulting state. Expiration is
-not fencing by itself; every Binding must be closed or fenced before its Nodes
+not fencing by itself; every Binding must be closed or fenced before its claims
 are available to another Lease.
+
+Renewal, fence increment, and partition recovery belong to `tk-l8xd`. The
+kernel requires those operations to preserve exclusive occupancy and Binding
+closure.
 
 ## Binding
 
@@ -211,7 +302,8 @@ Binding
 
 A compute Binding may install cgroups. An accelerator Binding may configure a
 device broker. A storage Binding may establish writer fencing. The Cluster
-owns Lease intent; the Provider owns endpoint-specific enforcement.
+owns Lease intent and Binding records; the Provider owns endpoint-specific
+enforcement.
 
 There is no `FenceToken` type. `Binding.fence` is a scalar carried in a
 provider request. The endpoint remembers its latest fence for that Node and
@@ -219,7 +311,7 @@ rejects an older one. The exact protocol belongs to `tk-l8xd`.
 
 A Lease ID or expiration time cannot stop a delayed old operation. The endpoint
 must reject an older fence. Closing or fencing all Bindings happens before
-making their Nodes available to a new Lease.
+making their claims available to a new Lease.
 
 ## Agent
 
@@ -247,6 +339,21 @@ appropriate for a Graph snapshot. `fence` is appropriate for endpoint
 ordering. `session` is appropriate for process identity. None needs a wrapper
 struct in the first kernel.
 
+IDs are opaque newtypes. v0 may use integers.
+
+`Cluster.now` is the clock used for `expires_at`. The simulator injects it.
+
+## Ownership
+
+| Object | Owner |
+|---|---|
+| Command log, Graph, lease table, Binding records | Cluster |
+| Endpoint enforcement | Provider, through a Binding |
+| Discovery, Binding apply, health report | Agent |
+| Scoring weights and preferences | Replaceable policy; not authority |
+
+Telemetry is not authoritative allocation state.
+
 ## Commit path
 
 ```text
@@ -260,31 +367,50 @@ Request
   → or release prepared Bindings and record Lease Failed
 ```
 
-A gang Request prepares every member before commit. There is no silent partial
-Lease. Every refusal and Allocation includes an explanation.
+Selection is a pure function of `(Graph, active claims, Request)`. It does not
+mutate Cluster state.
+
+Commit is accepted only when:
+
+- `Allocation.graph_revision` equals the current `Graph.revision`;
+- the claims are still free of overlapping exclusive Leases;
+- every required Binding is prepared.
+
+Otherwise the Allocation is discarded and selection may run again. A later
+lease commit can invalidate occupancy without advancing `Graph.revision`.
 
 When a Lease expires, is released, or is revoked, the Cluster closes or fences
-every Binding before making its Nodes available to another Lease. Revoking a
+every Binding before making its claims available to another Lease. Revoking a
 parent fences its children.
 
-## Split brain and replay
+## Command log and replay
 
-If a Cluster cannot establish authoritative agreement:
+Authoritative commands:
 
-- existing work may continue under its Lease policy;
-- new exclusive Leases are refused;
-- unsafe failover is refused.
+```text
+ApplyGraph              register or update Nodes, Edges, and total capacity
+OpenLease               Preparing
+ActivateLease           Active, with its Bindings
+FailLease
+ReleaseLease
+RevokeLease
+ExpireLease
+OpenBinding
+ActivateBinding
+FenceBinding
+FailBinding
+ReleaseBinding
+SetAgentSession
+```
 
-After recovery, `Cluster.epoch` advances and commands from the previous epoch
-are rejected. `Graph.revision` advances when topology or capacity state
-changes.
-
-The command log plus injected clock, health snapshot, and faults is the replay
-input. Production and the simulator use the same state-transition function.
+Replay input is the command log plus injected clock, health snapshot, and
+faults. Production and the simulator use the same state-transition function.
 The same input must produce the same Graph revision, Allocations, Leases,
 Binding states, and digest.
 
-Telemetry is not part of authoritative ownership state.
+`ApplyGraph` advances `Graph.revision`. Lease and Binding commands change
+occupancy and Binding state; they do not by themselves advance
+`Graph.revision`.
 
 ## v0 proof
 
@@ -292,12 +418,26 @@ Telemetry is not part of authoritative ownership state.
    Nodes.
 2. Build Graph indexes and replay them from the Cluster log.
 3. Produce explainable Allocations for service, batch, and gang Requests.
-4. Activate a Lease and prove exclusive capacity does not overlap.
+4. Activate a Lease and prove exclusive claims do not overlap.
 5. Activate a child Lease and prove it stays within its parent.
 6. Expire, release, and revoke Leases; prove Bindings close or fence.
 7. Restart an Agent; reject messages from its old session.
 8. Replay the trace and match the state digest.
 9. Fail a machine Node or Provider and produce an explicit recovery decision.
 
-Runtime integrations, a Cargo workspace, consensus implementation details, and
-production provider protocols follow this contract.
+## Deferred
+
+`tk-l8xd` specifies lease renewal, fence increment, prepare/commit messages,
+partition behavior, and Binding close-versus-fence.
+
+Not in this kernel contract:
+
+- dynamic contention or health edges as authority;
+- shared capacity and accelerator partitions;
+- data objects and cache edges;
+- virtual-cluster network, storage, and identity;
+- consensus implementation and crate layout;
+- runtime, device, network, and storage providers.
+
+Runtime integrations, a Cargo workspace, and production provider protocols
+follow this contract and `tk-l8xd`.

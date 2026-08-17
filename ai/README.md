@@ -16,7 +16,7 @@ around mature runtimes and hardware systems.
 | `PLAN.md` | Staged implementation plan |
 | `DECISIONS.md` | Principles, decisions, and open questions |
 | `design/DISTRIBUTED_RESOURCE_OS.md` | Detailed resource OS architecture |
-| `design/kernel-primitives.md` | Working kernel design |
+| `design/kernel-primitives.md` | Accepted v0 kernel contract |
 | `design/architecture-notes.md` | Architecture rationale and invariants |
 | `design/mvp-scope.md` | Initial resource/lease kernel scope |
 | `research/` | Competitive, stack, UX, and commercial research |
@@ -29,7 +29,7 @@ around mature runtimes and hardware systems.
   locality, health, and failure domains.
 - **Lease:** universal ownership, fencing, renewal, release, and nested
   allocation boundary.
-- **Scheduler hierarchy:** global planner, cell allocator, node manager, and
+- **Scheduler hierarchy:** global planner, Cluster allocator, node manager, and
   workload-local scheduler.
 - **Execution:** process, OCI, sandbox, microVM, VM, and WASM.
 - **Compatibility:** OCI, CDI, OpenTelemetry, Linux/KVM, and adapters for
@@ -41,8 +41,8 @@ workloads, not the product boundary.
 
 ## Working order
 
-1. Define resource graph and placement indexes.
-2. Define lease, fencing, renewal, revocation, and nested-lease semantics.
-3. Define scheduler transactions and cell state boundaries.
-4. Build deterministic simulation and failure replay.
+1. Kernel contract is accepted in `design/kernel-primitives.md`.
+2. Define lease fencing, renewal, revocation, and partition recovery.
+3. Build deterministic simulation and failure replay.
+4. Add a tiny Rust kernel/simulator workspace.
 5. Add node execution and runtime/provider adapters.
