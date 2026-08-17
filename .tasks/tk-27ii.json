@@ -3,7 +3,7 @@
   "ref": "27ii",
   "title": "Remove obsolete Go scaffold and inference leftovers",
   "description": "Remove the obsolete Go model-serving scaffold and close leftover inference/Go-shell paths so the repository matches the Rust-first Compute OS kernel.",
-  "status": "active",
+  "status": "done",
   "priority": 1,
   "labels": null,
   "assignees": null,
@@ -18,7 +18,7 @@
     }
   ],
   "created_at": "2026-08-17T06:16:01.783226Z",
-  "updated_at": "2026-08-17T06:18:22.852814Z",
-  "completed_at": null,
+  "updated_at": "2026-08-17T06:19:33.24225Z",
+  "completed_at": "2026-08-17T06:19:33.24225Z",
   "external": {}
 }
