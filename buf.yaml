@@ -1,5 +1,0 @@
-version: v2
-name: buf.build/omendb/fleet
-lint:
-  use:
-    - DEFAULT

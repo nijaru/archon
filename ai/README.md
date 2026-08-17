@@ -34,8 +34,9 @@ around mature runtimes and hardware systems.
 - **Compatibility:** OCI, CDI, OpenTelemetry, Linux/KVM, and adapters for
   Kubernetes, Slurm, Flux, Ray, MPI, and existing AI runtimes.
 
-The current Go code is an implementation scaffold. The target core is Rust-first.
-Inference and accelerator fleets are first workloads, not the product boundary.
+There is no implementation yet. The Go model-serving scaffold was deleted so it
+cannot shadow the Rust-first kernel. Inference and accelerator fleets are first
+workloads, not the product boundary.
 
 ## Working order
 

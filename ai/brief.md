@@ -1,7 +1,7 @@
 ---
 type: brief
 description: Active Fleet Compute OS context
-updated: 2026-08-16
+updated: 2026-08-17
 ---
 
 ## Scope
@@ -19,8 +19,8 @@ substrate to reuse.
 ## Current truth
 
 - Repository: `omendb/fleet`, private at `../fleet`.
-- Existing implementation: early Go scaffold only.
-- Target core: Rust-first.
+- Implementation: none yet. The Go model-serving scaffold was deleted.
+- Target core: Rust-first resource/lease kernel and simulator.
 - Canonical architecture: `ai/design/DISTRIBUTED_RESOURCE_OS.md`.
 - Kernel primitives: `Resource`, `ResourceGraph`, `Lease`, `Binding`,
   `AllocationPlan`, and `Cell`.

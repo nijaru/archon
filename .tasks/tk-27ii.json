@@ -1,0 +1,24 @@
+{
+  "project": "tk",
+  "ref": "27ii",
+  "title": "Remove obsolete Go scaffold and inference leftovers",
+  "description": "Remove the obsolete Go model-serving scaffold and close leftover inference/Go-shell paths so the repository matches the Rust-first Compute OS kernel.",
+  "status": "active",
+  "priority": 1,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [
+    {
+      "ts": "2026-08-17T06:18:22.852814Z",
+      "msg": "Deleted cmd/, internal/, proto/, gen/, migrations/, Go module, Makefile, docker-compose, buf/sqlc, and Go CI. Closed deferred vLLM/direct-agent tasks. Locked no-Go-shell decision in current docs."
+    }
+  ],
+  "created_at": "2026-08-17T06:16:01.783226Z",
+  "updated_at": "2026-08-17T06:18:22.852814Z",
+  "completed_at": null,
+  "external": {}
+}

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Fleet is the monorepo's primary product direction: an open-source, Rust-first
+Fleet is an open-source, Rust-first
 distributed resource operating system for VPSs, bare metal, datacenters, AI/HPC,
 services, batch jobs, VMs, containers, networking, storage, and heterogeneous
 accelerators.
@@ -26,14 +26,14 @@ workloads, not Fleet's architectural foundation.
 3. Read `ai/design/DISTRIBUTED_RESOURCE_OS.md` before changing architecture or
    core design.
 4. Read `ai/design/mvp-scope.md` before implementing the initial kernel.
-5. Check repository status before editing; unrelated DBNext changes may be
-   present in the parent worktree.
+5. Check repository status before editing.
 
 ## Current implementation boundary
 
-The existing Go code is an early scaffold and does not define the target
-architecture. The target implementation is Rust-first. Do not expand the old
-model-serving/control-plane scaffold as if it were the Compute OS kernel.
+This repository currently contains design, specification, and task context
+only. The old Go model-serving scaffold was removed so it cannot define or
+shadow the Rust-first kernel. Do not recreate Postgres, NATS, ConnectRPC,
+model-registry, endpoint, replica, or GPU-telemetry surfaces as the core.
 
 The first implementation sequence is:
 
@@ -75,13 +75,7 @@ third-party dependencies or generated artifacts without checking their notices.
 
 ## Verification
 
-For documentation changes, run link and `git diff --check` validation. For Go
-scaffold changes, run:
-
-```bash
-go test ./...
-```
-
-For the future Rust core, add the project-specific `cargo test`, Clippy,
-simulation, model-checking, and fault-injection commands to this file when the
-workspace exists.
+For documentation changes, run link and `git diff --check` validation. When
+the Rust workspace exists, add the project-specific `cargo test`, Clippy,
+simulation, model-checking, and fault-injection commands here and use those
+instead of inventing a second implementation stack.

@@ -1,6 +1,6 @@
 # Fleet Status
 
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
 
 ## Direction
 
@@ -38,8 +38,9 @@ is now the resource operating system:
 - Kubernetes, Slurm, Flux, Ray, MPI, and other systems are compatibility or
   nested-workload paths, not internal authorities.
 
-The existing Go code is a scaffold and does not define the target language or
-architecture. The target core is Rust-first.
+The Go model-serving scaffold was deleted. The repository is design-only until
+the Rust resource/lease kernel exists. Do not revive Postgres, NATS,
+ConnectRPC, model, endpoint, or replica types as a compatibility shell.
 
 ## Architectural center
 
@@ -62,8 +63,8 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 - Canonical architecture is recorded in `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.
-- The old vLLM/direct-node work remains a first workload and execution-adapter
-  reference.
+- The old vLLM/direct-node and Go control-plane work is historical only. It is
+  not a migration source and must not constrain the kernel.
 
 ## Immediate design work
 
@@ -81,4 +82,4 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 - dynamic topology, contention, and health representation;
 - provider contracts for accelerator partitioning and preemption;
 - virtual-cluster network, storage, and identity semantics;
-- Rust-core migration boundary for the current Go scaffold.
+- first Rust crate/workspace layout for the kernel and simulator.

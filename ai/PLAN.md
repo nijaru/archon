@@ -1,6 +1,6 @@
 # Fleet Plan
 
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
 
 ## Product hypothesis
 
@@ -13,6 +13,9 @@ through one control plane.
 The first accelerator/inference workload is a proof of the abstraction, not the
 product boundary. vLLM, Slurm, Flux, Ray, MPI, Kubernetes, and other runtimes
 may execute inside or beside Fleet allocations.
+
+Implementation starts from an empty Rust tree. The deleted Go model-serving
+scaffold is not a migration source.
 
 ## Workstream order
 

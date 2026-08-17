@@ -4,9 +4,8 @@
 
 Fleet's target core is Rust-first because the critical surface owns privileged
 Linux resources, leases, concurrency, provider lifecycles, and failure
-recovery. The current Go repository is a scaffold and may remain useful for
-API/operator experiments, but its dependency choices are not the target core
-contract.
+recovery. The former Go model-serving scaffold was deleted and is not a
+compatibility shell, API experiment surface, or dependency contract.
 
 ## Rust core boundaries
 
@@ -51,15 +50,12 @@ containerd, Cloud Hypervisor, Firecracker, Wasmtime, Ceph, NVMe-oF, SPDK,
 NCCL/RCCL, MPI, RDMA, or vendor drivers without a measured correctness or
 capability requirement.
 
-## Existing Go scaffold
+## Deleted Go scaffold
 
-The repository currently contains Go packages using Cobra, pgx/sqlc, Goose,
-ConnectRPC, chi, zerolog, PostgreSQL, SQLite, and NATS. Those choices remain
-historical scaffold context. They should not silently become the architecture
-contract for the Rust-first resource OS.
-
-If Go code is retained during the transition, keep it behind stable resource,
-lease, and API contracts rather than growing a second resource model.
+The former Go packages used Cobra, pgx/sqlc, Goose, ConnectRPC, chi, zerolog,
+PostgreSQL, and NATS to express a model/endpoint control plane. That stack is
+historical only. Do not recreate it, and do not grow a second resource model
+in another language while the Rust kernel is undefined.
 
 ## Stack questions
 
@@ -68,5 +64,4 @@ lease, and API contracts rather than growing a second resource model.
 - consensus and cell recovery behavior;
 - provider ABI and capability versioning;
 - WASM policy component boundaries;
-- Rust/Go transition and wire compatibility;
 - whether a workload runtime or provider requires a language-specific shim.

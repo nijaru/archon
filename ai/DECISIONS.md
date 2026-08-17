@@ -1,6 +1,6 @@
 # Fleet Decisions
 
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
 
 ## Current direction
 
@@ -47,7 +47,7 @@ The complete architecture is [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRI
 | Scheduler shape | Global planner → cell allocator → node manager → native Fleet workload scheduler, with optional nested schedulers | Keeps policy and timing domains separate without delegating Fleet's control authority |
 | Resource scope | CPU, memory, accelerators, networks, storage, data, health, failure domains | Placement depends on more than node CPU/RAM |
 | Runtime modes | Process, OCI, sandbox, microVM, VM, WASM | Isolation is a workload property |
-| Implementation direction | Rust-first | Privileged infrastructure, concurrency, provider boundaries, WASM integration |
+| Implementation direction | Rust-first; no Go compatibility shell | Privileged infrastructure, concurrency, provider boundaries, WASM integration; the deleted Go scaffold encoded the wrong product |
 | First workload | Accelerator-aware inference and services | Exercises topology, cache, health, cost, and runtime adapters |
 | Compatibility | OCI, CDI, OpenTelemetry, Linux/KVM, standard protocols; optional integrations for K8s/Slurm/Flux/Ray/MPI | Adoption and composition without delegating native control |
 | Node model | Minimal immutable Linux with an agent | Clear ownership, rollback, and hardware access |
@@ -83,6 +83,7 @@ constrain the resource, lease, or scheduler model.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-17 | Delete the Go model-serving scaffold | The stubs encoded models, endpoints, replicas, GPU telemetry, Postgres, and NATS; keeping them would define a second, wrong product |
 | 2026-08-16 | Reframe Fleet as a distributed resource OS | The resource graph, lease, hierarchy, and nested-scheduler model is the actual long-term product idea |
 | 2026-06-07 | Use a workload-agnostic node core | The agent should receive a workload spec and pass workload-specific metadata to runtimes |
 | 2026-06-07 | Use direct node execution as an initial path | Host-level device and lifecycle control should not depend on a pod abstraction |
@@ -101,4 +102,4 @@ constrain the resource, lease, or scheduler model.
 - device-level preemption/reset contracts across vendors;
 - virtual-cluster network, storage, and identity semantics;
 - security model for hostile multi-tenancy and confidential workloads;
-- whether existing Go code remains a compatibility shell during Rust-core work.
+- first Rust crate/workspace layout for the kernel and simulator.

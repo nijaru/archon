@@ -3,7 +3,7 @@
   "ref": "xigw",
   "title": "Direct-agent proof: NVIDIA hardware discovery",
   "description": "Standalone node agent discovers NVIDIA GPU hardware via go-nvml (count, model, VRAM, UUID). No control plane, no PostgreSQL, no ConnectRPC — agent reports inventory locally. Phase B adds registration with control plane.",
-  "status": "deferred",
+  "status": "closed",
   "priority": 1,
   "labels": null,
   "assignees": null,
@@ -15,10 +15,14 @@
     {
       "ts": "2026-06-07T13:24:43.821813Z",
       "msg": "Research validated: CDI (Container Device Interface) provides vendor-agnostic GPU container injection without K8s. go-nvml (v0.13.0, 428★, NVIDIA-maintained CGo bindings) is sufficient for GPU inventory/health. No K8s required — just NVIDIA drivers + nvidia-container-toolkit + CDI spec generation."
+    },
+    {
+      "ts": "2026-08-17T06:18:22.810954Z",
+      "msg": "Closed: this inference/direct-agent proof is out of scope until the Rust resource/lease kernel exists. The Go scaffold that these tasks targeted was deleted."
     }
   ],
   "created_at": "2026-06-06T03:28:43.046001Z",
-  "updated_at": "2026-08-16T23:16:18.70076Z",
+  "updated_at": "2026-08-17T06:18:22.821748Z",
   "completed_at": null,
   "external": {}
 }

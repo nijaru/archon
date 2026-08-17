@@ -198,9 +198,9 @@ policy-sdk / simulator / cli
 Pure scheduling/resource logic remains transport-independent and is executed by
 the simulator and production control path.
 
-The existing Go scaffold is not a long-term language decision. It can preserve
-API and operator experiments while the Rust core is designed; do not let its
-current package structure define the resource model.
+The deleted Go model-serving scaffold is not a language or architecture
+decision. Do not restore it as a compatibility shell or let its package
+structure define the resource model.
 
 ## Staged scope
 

@@ -1,11 +1,11 @@
 # Fleet License Boundary
 
 **Status:** private planning decision; not the current release license
-**Updated:** 2026-08-16
+**Updated:** 2026-08-17
 
-Fleet is currently private inside `omendb/monorepo`. The checked-in
-`LICENSE` currently records that this is private pre-release software and does
-not grant public use rights. It is not the final public release text.
+Fleet is currently private in `omendb/fleet`. The checked-in `LICENSE` records
+that this is private pre-release software and does not grant public use rights.
+It is not the final public release text.
 
 ## Planned public boundary
 
@@ -51,7 +51,7 @@ permissive license cannot generally be made exclusive afterward.
 
 ## Before public release
 
-- replace the scaffold license with the selected AGPL text;
+- replace the private pre-release `LICENSE` with the selected AGPL text;
 - add SPDX identifiers and copyright ownership policy;
 - choose DCO, CLA, or another contribution-rights mechanism;
 - decide whether future commercial relicensing requires explicit contributor
@@ -61,4 +61,4 @@ permissive license cannot generally be made exclusive afterward.
 - define documentation and trademark licenses separately;
 - publish security disclosure, contribution, and telemetry policies.
 
-This is a release boundary, not a reason to split the private monorepo today.
+This is a public-release boundary, not a reason to split the private repository today.

@@ -26,9 +26,10 @@ scheduling, and execution system for its supported workload classes. It reuses
 Linux, KVM, OCI, accelerator drivers, storage systems, network stacks, and
 workload runtimes as lower-level substrate or explicit integrations.
 
-The current Go repository is an implementation scaffold. The target core is
-Rust-first. The existing inference/model-serving concepts remain a first
-workload and operator experience, not Fleet's product boundary.
+The target core is Rust-first. There is no implementation in this repository
+yet; the former Go model-serving scaffold was removed. Inference and
+accelerator fleets remain a first workload and operator experience, not
+Fleet's product boundary.
 
 Detailed architecture: [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md).
 

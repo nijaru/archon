@@ -72,7 +72,7 @@ fleet cell status <id>
 fleet virtual-cluster create research-team.yaml
 ```
 
-The model-serving path remains available as a first workload:
+A later inference workload can reuse the same lease and workload commands:
 
 ```bash
 fleet model register llama-3.1-8b --source s3://models/llama

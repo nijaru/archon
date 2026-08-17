@@ -13,8 +13,9 @@ resource-control and scheduling authority for those workload classes. It reuses
 Linux, KVM, OCI, accelerator drivers, storage systems, network fabrics, and
 other lower-level substrate rather than replacing them.
 
-The current repository contains an early Go scaffold. The target core is
-Rust-first; the scaffold does not define the final architecture.
+The repository currently holds the Compute OS specification and design. The
+first implementation is a Rust resource/lease kernel and deterministic
+simulator. Do not treat deleted Go model-serving code as the architecture.
 
 ## Documentation
 
@@ -33,6 +34,6 @@ scheduling model.
 
 Fleet is currently private. The planned public release boundary is
 [AGPL-3.0-or-later](ai/design/LICENSE_BOUNDARY.md) for the core, with
-Apache-2.0 for schemas, SDKs, and provider/extension interfaces. The checked-in
-scaffold license is retained temporarily while the public release provenance
-and contribution policy are prepared.
+Apache-2.0 for schemas, SDKs, and provider/extension interfaces. Public
+license text, copyright ownership, and contribution policy will be published
+before open-source release.

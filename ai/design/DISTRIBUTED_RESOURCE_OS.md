@@ -16,11 +16,11 @@ inference, native processes, OCI containers, microVMs, VMs, WASM, and future
 composable resources such as CXL memory. It is not a Kubernetes reimplementation
 and it does not replace mature workload runtimes or device software.
 
-The existing Go Fleet scaffold and its model-serving terminology are an
-implementation starting point, not the architecture boundary. The target core
-is Rust-first. Inference and private accelerator fleets remain important first
-workloads because they exercise topology, cache, health, cost, and runtime
-interoperability, but Fleet is not limited to inference or GPUs.
+The deleted Go Fleet scaffold and its model-serving terminology are not an
+implementation starting point. The target core is Rust-first. Inference and
+private accelerator fleets remain important first workloads because they
+exercise topology, cache, health, cost, and runtime interoperability, but
+Fleet is not limited to inference or GPUs.
 
 ## 1. Product boundary
 
