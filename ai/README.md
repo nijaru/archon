@@ -17,6 +17,7 @@ around mature runtimes and hardware systems.
 | `DECISIONS.md` | Principles, decisions, and open questions |
 | `design/DISTRIBUTED_RESOURCE_OS.md` | Detailed resource OS architecture |
 | `design/kernel-primitives.md` | Accepted v0 kernel contract |
+| `design/lease-fencing.md` | Accepted v0 lease and Binding fencing protocol |
 | `design/architecture-notes.md` | Architecture rationale and invariants |
 | `design/mvp-scope.md` | Initial resource/lease kernel scope |
 | `research/` | Competitive, stack, UX, and commercial research |
@@ -41,8 +42,7 @@ workloads, not the product boundary.
 
 ## Working order
 
-1. Kernel contract is accepted in `design/kernel-primitives.md`.
-2. Define lease fencing, renewal, revocation, and partition recovery.
-3. Build deterministic simulation and failure replay.
-4. Add a tiny Rust kernel/simulator workspace.
-5. Add node execution and runtime/provider adapters.
+1. Kernel and fencing contracts are accepted.
+2. Build deterministic simulation and failure replay.
+3. Add a tiny Rust kernel/simulator workspace.
+4. Add node execution and runtime/provider adapters.

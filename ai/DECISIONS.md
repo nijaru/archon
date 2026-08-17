@@ -83,6 +83,7 @@ constrain the resource, lease, or scheduler model.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-17 | Accept v0 fencing protocol | Occupancy lasts until Binding close/fence ack or Node quarantine. `Binding.fence` increases per `(provider, node)`. `Release` is cooperative; `Fence` is forced; both close the generation. Uncertain apply is never success. `RenewLease` extends `expires_at` only. Stale `Agent.session` and `Cluster.epoch` are rejected. |
 | 2026-08-17 | Accept v0 kernel contract | `ai/design/kernel-primitives.md` is the kernel vocabulary and model. `Cluster` is the linearizable authority. `Allocation` is claims against a Graph revision. `Lease` is committed authority. Occupancy is exclusive Node-unit claims; Memory is quantified, devices/cores are discrete Nodes. Graph and indexes rebuild from the command log. `Cell`, `Host`, `Placement`, `Plan`, `FenceToken`, and `NodeIncarnation` are not kernel types. |
 | 2026-08-17 | Working kernel vocabulary | Superseded by the accepted v0 kernel contract. The vocabulary itself did not change. |
 | 2026-08-17 | Delete the Go model-serving scaffold | The stubs encoded models, endpoints, replicas, GPU telemetry, Postgres, and NATS; keeping them would define a second, wrong product |
@@ -96,7 +97,6 @@ constrain the resource, lease, or scheduler model.
 
 ## Open decisions
 
-- exact lease renewal, fence increment, partition recovery, and Binding close-versus-fence (`tk-l8xd`);
 - authority replication and global federation beyond one Cluster log;
 - static versus dynamic topology and contention edges;
 - device-level preemption/reset contracts across vendors;

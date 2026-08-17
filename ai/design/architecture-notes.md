@@ -24,8 +24,9 @@ Every execution path consumes an allocation lease. This gives services, batch
 jobs, VMs, devices, and nested schedulers one ownership contract.
 
 A lease must be enforceable, not merely descriptive. Node agents and providers
-need fencing tokens so stale agents cannot continue to mutate resources after a
-revocation or ownership transition. Parent leases bound nested schedulers and
+need `Binding.fence` and `Agent.session` so stale agents cannot continue to
+mutate resources after a revocation or ownership transition. Parent leases
+bound nested schedulers and
 virtual clusters.
 
 The contract must explicitly cover renewal, expiry, release, revocation, partial

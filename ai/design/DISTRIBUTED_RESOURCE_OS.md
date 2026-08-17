@@ -4,8 +4,9 @@
 **Updated:** 2026-08-17
 
 The accepted v0 kernel contract is [`kernel-primitives.md`](kernel-primitives.md).
-Implement `Cluster`, not `Cell`; `Node(kind=Machine)`, not `Host`; `Allocation`
-as selected claims and `Lease` as committed authority. Older cell/host wording
+The fencing protocol is [`lease-fencing.md`](lease-fencing.md). Implement
+`Cluster`, not `Cell`; `Node(kind=Machine)`, not `Host`; `Allocation` as
+selected claims and `Lease` as committed authority. Older cell/host wording
 in this document is planning language for that contract.
 
 Fleet is a Rust-first distributed resource operating system. It represents a

@@ -280,9 +280,9 @@ The lifecycle is ordinary and explicit:
 not fencing by itself; every Binding must be closed or fenced before its claims
 are available to another Lease.
 
-Renewal, fence increment, and partition recovery belong to `tk-l8xd`. The
-kernel requires those operations to preserve exclusive occupancy and Binding
-closure.
+Renewal, fence increment, and partition recovery are in
+[`lease-fencing.md`](lease-fencing.md). Those operations must preserve
+exclusive occupancy and Binding closure.
 
 ## Binding
 
@@ -307,7 +307,7 @@ enforcement.
 
 There is no `FenceToken` type. `Binding.fence` is a scalar carried in a
 provider request. The endpoint remembers its latest fence for that Node and
-rejects an older one. The exact protocol belongs to `tk-l8xd`.
+rejects an older one. The protocol is [`lease-fencing.md`](lease-fencing.md).
 
 A Lease ID or expiration time cannot stop a delayed old operation. The endpoint
 must reject an older fence. Closing or fencing all Bindings happens before
@@ -395,12 +395,15 @@ FailLease
 ReleaseLease
 RevokeLease
 ExpireLease
+RenewLease
 OpenBinding
 ActivateBinding
 FenceBinding
 FailBinding
 ReleaseBinding
 SetAgentSession
+QuarantineNode
+UnquarantineNode
 ```
 
 Replay input is the command log plus injected clock, health snapshot, and
@@ -427,8 +430,7 @@ occupancy and Binding state; they do not by themselves advance
 
 ## Deferred
 
-`tk-l8xd` specifies lease renewal, fence increment, prepare/commit messages,
-partition behavior, and Binding close-versus-fence.
+Fencing protocol: [`lease-fencing.md`](lease-fencing.md).
 
 Not in this kernel contract:
 

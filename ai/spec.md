@@ -4,8 +4,10 @@
 **Updated:** 2026-08-17
 
 The accepted v0 kernel contract is
-[`design/kernel-primitives.md`](design/kernel-primitives.md). Implement those
-types; older cell/host wording below maps to Cluster and `Node(kind=Machine)`.
+[`design/kernel-primitives.md`](design/kernel-primitives.md). The fencing
+protocol is [`design/lease-fencing.md`](design/lease-fencing.md). Implement
+those types; older cell/host wording below maps to Cluster and
+`Node(kind=Machine)`.
 
 ## 1. Executive summary
 
@@ -416,7 +418,6 @@ Fleet succeeds when:
 
 ## 18. Open questions
 
-- exact lease renewal, fence increment, partition recovery, and Binding close-versus-fence;
 - dynamic topology, contention, and health representation;
 - migration and reallocation safety;
 - Cluster replication and federation beyond one log;

@@ -61,6 +61,7 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 ## Current documentation state
 
 - Accepted v0 kernel contract: `design/kernel-primitives.md`.
+- Accepted v0 fencing protocol: `design/lease-fencing.md`.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.
@@ -71,15 +72,14 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 
 ## Immediate design work
 
-1. `tk-l8xd`: specify lease renewal, binding fences, and partition recovery.
-2. `tk-0lvx`: build the deterministic simulator around the same decision logic.
-3. Add a tiny Rust workspace only after those types exist. Do not scaffold the
+1. `tk-0lvx`: build the deterministic simulator around the kernel and fencing
+   contracts.
+2. Add a tiny Rust workspace for kernel plus simulator. Do not scaffold the
    full later crate map in `research/stack.md`.
-4. Add node execution only after the resource/lease contracts are explicit.
+3. Add node execution only after that proof exists.
 
 ## Open questions
 
-- lease and binding-fence details under partitions;
 - dynamic topology, contention, and health representation;
 - provider contracts for accelerator partitioning and preemption;
 - virtual-cluster network, storage, and identity semantics;
