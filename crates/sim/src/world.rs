@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use fleet_kernel::{
     Allocation, BindingId, Cluster, Command, Digest, Effect, Endpoint, EndpointOp, Error, LeaseId,
-    NodeId, OwnerId, ProviderId, Request,
+    NodeId, OwnerId, ProviderId, Queued, Request, RequestId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +30,8 @@ pub struct World {
     pub trace: Vec<TraceEvent>,
     next_session: u64,
     next_handle: u64,
+    pub queue: Vec<Queued>,
+    next_binding: u64,
 }
 
 impl Default for World {
@@ -48,6 +50,8 @@ impl World {
             trace: Vec::new(),
             next_session: 1,
             next_handle: 1,
+            queue: Vec::new(),
+            next_binding: 1,
         }
     }
 
@@ -155,6 +159,38 @@ impl World {
             .push(TraceEvent::RestartAgent { machine, session });
         self.apply(Command::SetAgentSession { machine, session })?;
         Ok(session)
+    }
+
+    pub fn enqueue(&mut self, request: Request) {
+        self.queue.push(Queued {
+            request,
+            submitted_at: self.cluster.now,
+        });
+    }
+
+    pub fn admit_next(
+        &mut self,
+        lease: LeaseId,
+        owner: OwnerId,
+    ) -> Result<Option<RequestId>, Error> {
+        let Some(admission) = self.cluster.admit(&self.queue) else {
+            return Ok(None);
+        };
+        self.queue
+            .retain(|queued| queued.request.id != admission.request.id);
+        let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
+        let prepare_deadline = self.cluster.now.saturating_add(20);
+        self.apply(Command::OpenLease {
+            lease,
+            owner,
+            allocation: admission.allocation,
+            parent: None,
+            expires_at,
+            prepare_deadline,
+        })?;
+        self.bind_enforced(lease, self.next_binding)?;
+        self.next_binding = self.next_binding.saturating_add(32);
+        Ok(Some(admission.request.id))
     }
 
     pub fn place(

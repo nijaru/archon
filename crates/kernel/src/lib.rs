@@ -3,6 +3,7 @@
 //! Production and the simulator share this crate. Delivery, clocks, and faults
 //! stay outside `Cluster::apply`.
 
+mod admit;
 mod cluster;
 mod command;
 mod endpoint;
@@ -13,6 +14,7 @@ mod occupancy;
 mod select;
 mod types;
 
+pub use admit::{Admission, Queued, admit, refuse_reason};
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
 pub use command::{Command, Effect};
 pub use endpoint::{EndpointError, EndpointOp};
@@ -43,5 +45,9 @@ impl Cluster {
 
     pub fn allocate(&self, request: &Request) -> Result<Allocation, Error> {
         select(&self.graph, &self.occupancy(), request)
+    }
+
+    pub fn admit(&self, queue: &[Queued]) -> Option<Admission> {
+        admit(&self.graph, &self.occupancy(), queue)
     }
 }

@@ -367,8 +367,9 @@ Request
   → or release prepared Bindings and record Lease Failed
 ```
 
-Selection is a pure function of `(Graph, active claims, Request)`. It does not
-mutate Cluster state.
+Selection is a pure function of `(Graph, active claims, Request)`. Admission
+walks a queue by priority, then submit time, then request id, and takes the
+first request that selects. Neither function mutates Cluster state.
 
 Commit is accepted only when:
 
