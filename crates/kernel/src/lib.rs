@@ -37,10 +37,10 @@ impl Cluster {
     }
 
     pub fn allocate(&self, request: &Request) -> Result<Allocation, Error> {
-        select(&self.graph, &self.occupancy(), request)
+        select(&self.graph, &self.occupancy(), request, &self.quarantine)
     }
 
     pub fn admit(&self, queue: &[Queued]) -> Option<Admission> {
-        admit(&self.graph, &self.occupancy(), queue)
+        admit(&self.graph, &self.occupancy(), queue, &self.quarantine)
     }
 }

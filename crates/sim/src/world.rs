@@ -279,6 +279,44 @@ impl World {
         Ok(Some(victims))
     }
 
+    pub fn fail_machine(&mut self, machine: NodeId) -> Result<Vec<LeaseId>, Error> {
+        let node = self
+            .cluster
+            .graph
+            .node(machine)
+            .ok_or(Error::UnknownNode(machine))?;
+        if node.kind != fleet_kernel::NodeKind::Machine {
+            return Err(Error::Invalid("fail_machine requires a machine node"));
+        }
+        self.apply(Command::QuarantineNode { node: machine })?;
+        let victims: Vec<LeaseId> = self
+            .cluster
+            .leases
+            .values()
+            .filter(|lease| lease.parent.is_none())
+            .filter(|lease| {
+                lease
+                    .allocation
+                    .claims
+                    .iter()
+                    .find_map(|claim| self.cluster.graph.machine_of(claim.node))
+                    == Some(machine)
+            })
+            .filter(|lease| self.cluster.occupies(lease.id))
+            .map(|lease| lease.id)
+            .collect();
+        for lease in &victims {
+            self.revoke_lease(*lease)?;
+        }
+        self.deliver_all()?;
+        Ok(victims)
+    }
+
+    pub fn unquarantine_machine(&mut self, machine: NodeId) -> Result<(), Error> {
+        let _ = self.apply(Command::UnquarantineNode { node: machine })?;
+        Ok(())
+    }
+
     pub fn expire_due(&mut self) -> Result<(), Error> {
         let due: Vec<LeaseId> = self
             .cluster

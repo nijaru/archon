@@ -1,6 +1,6 @@
 use fleet_kernel::{
-    BindingId, Dimension, Effect, EndpointOp, Error, LeaseId, LeaseState, Need, NodeKind, OwnerId,
-    ProviderId, Request, RequestClass, RequestId, TopologyConstraint, qty,
+    BindingId, Dimension, Effect, EndpointOp, Error, LeaseId, LeaseState, Need, NodeId, NodeKind,
+    OwnerId, ProviderId, Request, RequestClass, RequestId, TopologyConstraint, qty,
 };
 use fleet_sim::{GIB, World, tiny_graph};
 
@@ -347,9 +347,16 @@ fn quarantine_blocks_new_exclusive_lease() {
                 .node,
         )
         .unwrap();
-    world
-        .apply(fleet_kernel::Command::QuarantineNode { node: machine })
-        .unwrap();
+    let machines: Vec<NodeId> = world
+        .cluster
+        .graph
+        .nodes_of_kind(NodeKind::Machine)
+        .to_vec();
+    for node in &machines {
+        world
+            .apply(fleet_kernel::Command::QuarantineNode { node: *node })
+            .unwrap();
+    }
     world.revoke_lease(LeaseId::from_u64(1)).unwrap();
     world.deliver_all().unwrap();
     let err = world
@@ -363,6 +370,11 @@ fn quarantine_blocks_new_exclusive_lease() {
         )
         .unwrap_err();
     assert!(matches!(err, Error::Quarantined(_) | Error::Refused { .. }));
+    for node in &machines {
+        world
+            .apply(fleet_kernel::Command::UnquarantineNode { node: *node })
+            .unwrap();
+    }
     world
         .apply(fleet_kernel::Command::UnquarantineNode { node: machine })
         .unwrap();

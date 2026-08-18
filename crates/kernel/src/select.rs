@@ -28,12 +28,14 @@ pub fn select(
     graph: &Graph,
     occupancy: &Occupancy,
     request: &Request,
+    quarantine: &BTreeSet<NodeId>,
 ) -> Result<Allocation, Error> {
     let mode = pack_mode(request);
     let mut picked: Vec<Vec<Claim>> = Vec::new();
     let mut notes = Vec::new();
     for need in &request.needs {
-        let (claims, need_notes) = select_need(graph, occupancy, need, &picked, request, mode)?;
+        let (claims, need_notes) =
+            select_need(graph, occupancy, need, &picked, request, mode, quarantine)?;
         notes.extend(need_notes);
         picked.push(claims);
     }
@@ -84,8 +86,9 @@ fn select_need(
     already: &[Vec<Claim>],
     request: &Request,
     mode: PackMode,
+    quarantine: &BTreeSet<NodeId>,
 ) -> Result<(Vec<Claim>, Vec<String>), Error> {
-    let candidates = candidates(graph, occupancy, need)?;
+    let candidates = candidates(graph, occupancy, need, quarantine)?;
     if need.kind == NodeKind::Memory {
         let want = quantity_get(&need.quantity, Dimension::Bytes);
         if want == 0 {
@@ -160,10 +163,23 @@ fn select_need(
     Ok((chosen, notes))
 }
 
-fn candidates(graph: &Graph, occupancy: &Occupancy, need: &Need) -> Result<Vec<NodeId>, Error> {
+fn candidates(
+    graph: &Graph,
+    occupancy: &Occupancy,
+    need: &Need,
+    quarantine: &BTreeSet<NodeId>,
+) -> Result<Vec<NodeId>, Error> {
     let mut out = Vec::new();
     for id in graph.nodes_of_kind(need.kind) {
         let node = graph.node(*id).ok_or(Error::UnknownNode(*id))?;
+        if quarantine.contains(&node.id)
+            || graph
+                .ancestors(node.id)
+                .into_iter()
+                .any(|ancestor| quarantine.contains(&ancestor))
+        {
+            continue;
+        }
         if need
             .filters
             .iter()
