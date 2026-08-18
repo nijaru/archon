@@ -64,6 +64,7 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 
 - Accepted v0 kernel contract: `design/kernel-primitives.md`.
 - Accepted v0 fencing protocol: `design/lease-fencing.md`.
+- First Rust workspace: `crates/kernel` and `crates/sim`.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.
@@ -74,15 +75,13 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 
 ## Immediate design work
 
-1. `tk-0lvx`: build the deterministic simulator around the kernel and fencing
-   contracts.
-2. Add a tiny Rust workspace for kernel plus simulator. Do not scaffold the
-   full later crate map in `research/stack.md`.
-3. Add node execution only after that proof exists.
+1. Keep the kernel and simulator as the only crates until a node-execution
+   need is concrete.
+2. Do not scaffold the later crate map in `research/stack.md`.
+3. Launch and commercial work (`tk-kwzc`, `tk-n8e9`) stay later.
 
 ## Open questions
 
 - dynamic topology, contention, and health representation;
 - provider contracts for accelerator partitioning and preemption;
-- virtual-cluster network, storage, and identity semantics;
-- first Rust crate/workspace layout for the kernel and simulator.
+- virtual-cluster network, storage, and identity semantics.

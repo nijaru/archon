@@ -63,6 +63,6 @@ licenses without checking notices.
 ## Verification
 
 - Docs: resolve links in changed files; `git diff --check`.
-- After a Rust workspace exists, record `cargo test`, Clippy, simulation,
-  model-checking, and fault-injection commands here and use those. Do not
-  invent a second implementation stack.
+- Rust: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  and `cargo run -p fleet-sim`. The simulator is the v0 fault-injection harness.
+  Do not invent a second implementation stack.

@@ -1,0 +1,8 @@
+[package]
+name = "fleet-kernel"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "Fleet resource graph, lease, and binding transition function"
+
+[dependencies]

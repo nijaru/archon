@@ -29,13 +29,9 @@ compatibility shell, API experiment surface, or dependency contract.
 
 ## Target workspace
 
-This is the long-term responsibility map, not the first crate cut. Workspace
-layout remains an open decision. Do not create this tree until `tk-byam`
-accepts the kernel model.
-
-The first Cargo workspace should hold only the Graph, Node, Edge, Request,
-Allocation, Lease, and Binding model plus tests and, later, the deterministic
-simulator that shares that decision logic.
+This is the long-term responsibility map, not the current crate cut. The first
+workspace is `crates/kernel` and `crates/sim`. Do not create the rest of this
+tree until a later stage needs it.
 
 ```text
 crates/

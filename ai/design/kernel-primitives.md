@@ -441,5 +441,6 @@ Not in this kernel contract:
 - consensus implementation and crate layout;
 - runtime, device, network, and storage providers.
 
-Runtime integrations, a Cargo workspace, and production provider protocols
-follow this contract and `tk-l8xd`.
+Runtime integrations and production provider protocols follow this contract
+and [`lease-fencing.md`](lease-fencing.md). The first workspace is
+`crates/kernel` plus `crates/sim`.

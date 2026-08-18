@@ -14,7 +14,7 @@ The first accelerator/inference workload is a proof of the abstraction, not the
 product boundary. vLLM, Slurm, Flux, Ray, MPI, Kubernetes, and other runtimes
 may execute inside or beside Fleet allocations.
 
-Implementation starts from an empty Rust tree. The accepted kernel contract is
+The first tree is `crates/kernel` plus `crates/sim`. The accepted kernel contract is
 [`design/kernel-primitives.md`](design/kernel-primitives.md). The fencing
 protocol is [`design/lease-fencing.md`](design/lease-fencing.md). The deleted
 Go model-serving scaffold is not a migration source.

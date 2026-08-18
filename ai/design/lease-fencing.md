@@ -86,7 +86,7 @@ Release(binding, fence, session)
 Fence(binding, fence, session)
   reject stale session
   if fence < accepted_fence: already done
-  require fence == accepted_fence
+  accepted_fence = fence
   open = false
   binding = none
   phase = Idle

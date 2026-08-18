@@ -1,0 +1,540 @@
+use std::collections::{BTreeMap, VecDeque};
+
+use fleet_kernel::{
+    Allocation, BindingId, Cluster, Command, Digest, Effect, Endpoint, EndpointOp, Error, LeaseId,
+    NodeId, OwnerId, ProviderId, Request,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TraceEvent {
+    Command(Command),
+    SetNow(u64),
+    SetAgreement(bool),
+    AdvanceEpoch,
+    Deliver,
+    Drop,
+    RestartAgent { machine: NodeId, session: u64 },
+}
+
+#[derive(Clone, Debug)]
+struct Agent {
+    session: u64,
+    epoch: u64,
+}
+
+pub struct World {
+    pub cluster: Cluster,
+    agents: BTreeMap<NodeId, Agent>,
+    pub endpoints: BTreeMap<(ProviderId, NodeId), Endpoint>,
+    pending: VecDeque<Effect>,
+    pub trace: Vec<TraceEvent>,
+    next_session: u64,
+    next_handle: u64,
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl World {
+    pub fn new() -> Self {
+        Self {
+            cluster: Cluster::new(),
+            agents: BTreeMap::new(),
+            endpoints: BTreeMap::new(),
+            pending: VecDeque::new(),
+            trace: Vec::new(),
+            next_session: 1,
+            next_handle: 1,
+        }
+    }
+
+    pub fn apply_graph(
+        &mut self,
+        nodes: Vec<fleet_kernel::Node>,
+        edges: Vec<fleet_kernel::Edge>,
+    ) -> Result<(), Error> {
+        self.apply(Command::ApplyGraph { nodes, edges })?;
+        Ok(())
+    }
+
+    pub fn register_agent(&mut self, machine: NodeId) -> Result<u64, Error> {
+        let session = self.next_session;
+        self.next_session += 1;
+        self.agents.insert(
+            machine,
+            Agent {
+                session,
+                epoch: self.cluster.epoch,
+            },
+        );
+        for node in enforced_under(&self.cluster, machine) {
+            self.endpoints
+                .entry((ProviderId::ENFORCE, node))
+                .and_modify(|endpoint| endpoint.handshake(session))
+                .or_insert_with(|| Endpoint::new(ProviderId::ENFORCE, node, session));
+        }
+        self.apply(Command::SetAgentSession { machine, session })?;
+        Ok(session)
+    }
+
+    pub fn apply(&mut self, command: Command) -> Result<Vec<Effect>, Error> {
+        let effects = self.commit(command)?;
+        for effect in &effects {
+            self.pending.push_back(effect.clone());
+        }
+        Ok(effects)
+    }
+
+    fn commit(&mut self, command: Command) -> Result<Vec<Effect>, Error> {
+        let effects = self.cluster.apply(command.clone())?;
+        self.trace.push(TraceEvent::Command(command));
+        Ok(effects)
+    }
+
+    pub fn set_now(&mut self, now: u64) {
+        self.cluster.set_now(now);
+        self.trace.push(TraceEvent::SetNow(now));
+    }
+
+    pub fn set_agreement(&mut self, agreed: bool) {
+        self.cluster.set_agreement(agreed);
+        self.trace.push(TraceEvent::SetAgreement(agreed));
+    }
+
+    pub fn advance_epoch(&mut self) {
+        self.cluster.advance_epoch();
+        self.trace.push(TraceEvent::AdvanceEpoch);
+    }
+
+    pub fn deliver_all(&mut self) -> Result<(), Error> {
+        while self.deliver_one()? {}
+        Ok(())
+    }
+
+    pub fn drop_one(&mut self) -> bool {
+        if self.pending.pop_front().is_some() {
+            self.trace.push(TraceEvent::Drop);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn deliver_one(&mut self) -> Result<bool, Error> {
+        let Some(effect) = self.pending.pop_front() else {
+            return Ok(false);
+        };
+        self.trace.push(TraceEvent::Deliver);
+        self.dispatch(effect)?;
+        Ok(true)
+    }
+
+    pub fn inject(&mut self, effect: Effect) -> Result<(), Error> {
+        self.dispatch(effect)
+    }
+
+    pub fn restart_agent(&mut self, machine: NodeId) -> Result<u64, Error> {
+        let session = self.next_session;
+        self.next_session += 1;
+        self.agents.insert(
+            machine,
+            Agent {
+                session,
+                epoch: self.cluster.epoch,
+            },
+        );
+        for endpoint in self.endpoints.values_mut() {
+            if self.cluster.graph.machine_of(endpoint.node) == Some(machine) {
+                endpoint.handshake(session);
+            }
+        }
+        self.trace
+            .push(TraceEvent::RestartAgent { machine, session });
+        self.apply(Command::SetAgentSession { machine, session })?;
+        Ok(session)
+    }
+
+    pub fn place(
+        &mut self,
+        request: &Request,
+        lease: LeaseId,
+        owner: OwnerId,
+        parent: Option<LeaseId>,
+        expires_at: u64,
+        prepare_deadline: u64,
+    ) -> Result<Allocation, Error> {
+        let allocation = self.cluster.allocate(request)?;
+        self.apply(Command::OpenLease {
+            lease,
+            owner,
+            allocation: allocation.clone(),
+            parent,
+            expires_at,
+            prepare_deadline,
+        })?;
+        Ok(allocation)
+    }
+
+    pub fn bind_enforced(&mut self, lease: LeaseId, start: u64) -> Result<Vec<BindingId>, Error> {
+        let claims = self
+            .cluster
+            .leases
+            .get(&lease)
+            .ok_or(Error::UnknownLease(lease))?
+            .allocation
+            .claims
+            .clone();
+        let mut bindings = Vec::new();
+        let mut next = start;
+        for claim in claims {
+            let kind = self
+                .cluster
+                .graph
+                .node(claim.node)
+                .ok_or(Error::UnknownNode(claim.node))?
+                .kind;
+            if !kind.is_enforced() {
+                continue;
+            }
+            let binding = BindingId::from_u64(next);
+            next += 1;
+            self.apply(Command::OpenBinding {
+                binding,
+                lease,
+                node: claim.node,
+                provider: ProviderId::ENFORCE,
+            })?;
+            bindings.push(binding);
+        }
+        Ok(bindings)
+    }
+
+    pub fn activate_lease(&mut self, lease: LeaseId) -> Result<(), Error> {
+        self.apply(Command::ActivateLease { lease })?;
+        let bindings = self.cluster.bindings_for(lease);
+        for binding in bindings {
+            self.apply(Command::ActivateBinding { binding })?;
+        }
+        Ok(())
+    }
+
+    pub fn release_lease(&mut self, lease: LeaseId) -> Result<(), Error> {
+        self.apply(Command::ReleaseLease { lease })?;
+        Ok(())
+    }
+
+    pub fn revoke_lease(&mut self, lease: LeaseId) -> Result<(), Error> {
+        self.apply(Command::RevokeLease { lease })?;
+        Ok(())
+    }
+
+    pub fn expire_due(&mut self) -> Result<(), Error> {
+        let due: Vec<LeaseId> = self
+            .cluster
+            .leases
+            .values()
+            .filter(|lease| {
+                lease.state == fleet_kernel::LeaseState::Active
+                    && self.cluster.now >= lease.expires_at
+            })
+            .map(|lease| lease.id)
+            .collect();
+        for lease in due {
+            self.apply(Command::ExpireLease { lease })?;
+        }
+        Ok(())
+    }
+
+    pub fn fail_late_prepares(&mut self) -> Result<(), Error> {
+        let due: Vec<LeaseId> = self
+            .cluster
+            .leases
+            .values()
+            .filter(|lease| {
+                lease.state == fleet_kernel::LeaseState::Preparing
+                    && self.cluster.now >= lease.prepare_deadline
+            })
+            .map(|lease| lease.id)
+            .collect();
+        for lease in due {
+            self.apply(Command::FailLease {
+                lease,
+                reason: "prepare_deadline".into(),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn digest(&self) -> Digest {
+        self.cluster.digest()
+    }
+
+    pub fn replay_trace(&self) -> Result<Cluster, Error> {
+        let mut cluster = Cluster::new();
+        for event in &self.trace {
+            match event {
+                TraceEvent::Command(command) => {
+                    cluster.apply(command.clone())?;
+                }
+                TraceEvent::SetNow(now) => cluster.set_now(*now),
+                TraceEvent::SetAgreement(agreed) => cluster.set_agreement(*agreed),
+                TraceEvent::AdvanceEpoch => cluster.advance_epoch(),
+                TraceEvent::Deliver | TraceEvent::Drop | TraceEvent::RestartAgent { .. } => {}
+            }
+        }
+        Ok(cluster)
+    }
+
+    fn dispatch(&mut self, effect: Effect) -> Result<(), Error> {
+        match effect {
+            Effect::Reconcile {
+                machine,
+                session,
+                epoch,
+                bindings,
+            } => self.reconcile(machine, session, epoch, bindings),
+            other => {
+                if let Some(command) = apply_effect(
+                    &self.cluster,
+                    &mut self.agents,
+                    &mut self.endpoints,
+                    other,
+                    &mut self.next_handle,
+                )? {
+                    let effects = self.commit(command)?;
+                    self.pending.extend(effects);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn reconcile(
+        &mut self,
+        machine: NodeId,
+        session: u64,
+        epoch: u64,
+        bindings: Vec<BindingId>,
+    ) -> Result<(), Error> {
+        let Some(agent) = self.agents.get_mut(&machine) else {
+            return Ok(());
+        };
+        if epoch < agent.epoch {
+            return Ok(());
+        }
+        agent.epoch = epoch;
+        agent.session = session;
+        for binding_id in bindings {
+            let Some(binding) = self.cluster.bindings.get(&binding_id).cloned() else {
+                continue;
+            };
+            let key = (binding.provider, binding.node);
+            let endpoint = self.endpoints.get(&key);
+            let same = endpoint.is_some_and(|endpoint| {
+                endpoint.open
+                    && endpoint.binding == Some(binding_id)
+                    && endpoint.accepted_fence == binding.fence
+            });
+            if same {
+                self.commit(Command::RebindSession {
+                    binding: binding_id,
+                    session,
+                })?;
+                if binding.state == fleet_kernel::BindingState::Preparing {
+                    self.pending.push_back(Effect::Prepare {
+                        binding: binding_id,
+                        node: binding.node,
+                        provider: binding.provider,
+                        fence: binding.fence,
+                        session,
+                        epoch,
+                    });
+                }
+                if binding.state == fleet_kernel::BindingState::Active {
+                    self.pending.push_back(Effect::Activate {
+                        binding: binding_id,
+                        node: binding.node,
+                        provider: binding.provider,
+                        fence: binding.fence,
+                        session,
+                        epoch,
+                    });
+                }
+            } else if matches!(
+                binding.state,
+                fleet_kernel::BindingState::Preparing | fleet_kernel::BindingState::Active
+            ) {
+                self.pending.push_back(Effect::Fence {
+                    binding: binding_id,
+                    node: binding.node,
+                    provider: binding.provider,
+                    fence: binding.fence,
+                    session,
+                    epoch,
+                });
+            }
+        }
+        for ((_, node), endpoint) in &self.endpoints {
+            if self.cluster.graph.machine_of(*node) != Some(machine) || !endpoint.open {
+                continue;
+            }
+            let expected = endpoint
+                .binding
+                .and_then(|id| self.cluster.bindings.get(&id));
+            if expected.is_none_or(|binding| {
+                !matches!(
+                    binding.state,
+                    fleet_kernel::BindingState::Preparing | fleet_kernel::BindingState::Active
+                )
+            }) && let Some(binding) = endpoint.binding
+            {
+                self.pending.push_back(Effect::Fence {
+                    binding,
+                    node: *node,
+                    provider: endpoint.provider,
+                    fence: endpoint.accepted_fence,
+                    session,
+                    epoch,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn enforced_under(cluster: &Cluster, machine: NodeId) -> Vec<NodeId> {
+    let mut nodes = cluster.graph.descendants(machine);
+    nodes.push(machine);
+    nodes
+        .into_iter()
+        .filter(|id| {
+            cluster
+                .graph
+                .node(*id)
+                .is_some_and(|node| node.kind.is_enforced())
+        })
+        .collect()
+}
+
+fn apply_effect(
+    cluster: &Cluster,
+    agents: &mut BTreeMap<NodeId, Agent>,
+    endpoints: &mut BTreeMap<(ProviderId, NodeId), Endpoint>,
+    effect: Effect,
+    next_handle: &mut u64,
+) -> Result<Option<Command>, Error> {
+    let (op, binding, node, provider, fence, session, epoch) = match effect {
+        Effect::Prepare {
+            binding,
+            node,
+            provider,
+            fence,
+            session,
+            epoch,
+        } => (
+            EndpointOp::Prepare,
+            binding,
+            node,
+            provider,
+            fence,
+            session,
+            epoch,
+        ),
+        Effect::Activate {
+            binding,
+            node,
+            provider,
+            fence,
+            session,
+            epoch,
+        } => (
+            EndpointOp::Activate,
+            binding,
+            node,
+            provider,
+            fence,
+            session,
+            epoch,
+        ),
+        Effect::Release {
+            binding,
+            node,
+            provider,
+            fence,
+            session,
+            epoch,
+        } => (
+            EndpointOp::Release,
+            binding,
+            node,
+            provider,
+            fence,
+            session,
+            epoch,
+        ),
+        Effect::Fence {
+            binding,
+            node,
+            provider,
+            fence,
+            session,
+            epoch,
+        } => (
+            EndpointOp::Fence,
+            binding,
+            node,
+            provider,
+            fence,
+            session,
+            epoch,
+        ),
+        Effect::Reconcile { .. } => return Ok(None),
+    };
+    let Some(machine) = cluster.graph.machine_of(node) else {
+        return Ok(None);
+    };
+    let Some(agent) = agents.get_mut(&machine) else {
+        return Ok(None);
+    };
+    if epoch < agent.epoch || session != agent.session {
+        return Ok(None);
+    }
+    if epoch > agent.epoch {
+        agent.epoch = epoch;
+    }
+    let endpoint = endpoints
+        .entry((provider, node))
+        .or_insert_with(|| Endpoint::new(provider, node, agent.session));
+    match endpoint.apply(op, binding, fence, session) {
+        Ok(()) => {
+            let command = match op {
+                EndpointOp::Prepare => {
+                    let handle = *next_handle;
+                    *next_handle += 1;
+                    Command::RecordBindingPrepared {
+                        binding,
+                        session,
+                        provider_handle: handle,
+                    }
+                }
+                EndpointOp::Activate => Command::RecordBindingActive { binding, session },
+                EndpointOp::Release => Command::RecordBindingReleased { binding, session },
+                EndpointOp::Fence => Command::RecordBindingFenced { binding, session },
+            };
+            return Ok(Some(command));
+        }
+        Err(_) => {
+            if matches!(op, EndpointOp::Prepare) {
+                return Ok(Some(Command::RecordBindingFailed {
+                    binding,
+                    session,
+                    reason: "endpoint rejected prepare".into(),
+                }));
+            }
+        }
+    }
+    Ok(None)
+}

@@ -43,6 +43,5 @@ workloads, not the product boundary.
 ## Working order
 
 1. Kernel and fencing contracts are accepted.
-2. Build deterministic simulation and failure replay.
-3. Add a tiny Rust kernel/simulator workspace.
-4. Add node execution and runtime/provider adapters.
+2. `crates/kernel` and `crates/sim` prove the v0 commit and fencing cases.
+3. Add node execution and runtime/provider adapters when a v1 need is concrete.

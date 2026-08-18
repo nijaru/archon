@@ -13,9 +13,15 @@ resource-control and scheduling authority for those workload classes. It reuses
 Linux, KVM, OCI, accelerator drivers, storage systems, network fabrics, and
 other lower-level substrate rather than replacing them.
 
-The repository currently holds the Compute OS specification and design. The
-first implementation is a Rust resource/lease kernel and deterministic
-simulator. Do not treat deleted Go model-serving code as the architecture.
+The first implementation is a Rust resource/lease kernel and deterministic
+simulator in `crates/kernel` and `crates/sim`. Do not treat deleted Go
+model-serving code as the architecture.
+
+```text
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p fleet-sim
+```
 
 ## Documentation
 

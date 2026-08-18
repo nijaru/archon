@@ -1,0 +1,9 @@
+[package]
+name = "fleet-sim"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+description = "Deterministic Fleet kernel simulator"
+
+[dependencies]
+fleet-kernel = { path = "../kernel" }

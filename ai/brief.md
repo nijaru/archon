@@ -18,16 +18,13 @@ substrate to reuse.
 
 ## Current truth
 
-- Repository: `omendb/fleet`, private; clean on `main`.
+- Repository: `omendb/fleet`, private; `main` has the v0 kernel and simulator.
 - Accepted kernel contract: `ai/design/kernel-primitives.md`.
-  Cluster → Graph → Node/Edge → Request → Allocation → Lease → Binding → Agent.
 - Accepted fencing protocol: `ai/design/lease-fencing.md`.
-- Implementation: none. No `Cargo.toml`, `crates/`, toolchain, or CI. The Go
-  model-serving scaffold was deleted and is not a migration source.
-- Target core: Rust-first resource/lease kernel and simulator.
-- Canonical long-term architecture: `ai/design/DISTRIBUTED_RESOURCE_OS.md`.
-- `tk-byam` and `tk-l8xd` are done. Next is `tk-0lvx`: first proof is the v0
-  kernel and fencing cases, not a 1M-node run. Launch/commercial tasks
+- First workspace: `crates/kernel` (`fleet-kernel`) and `crates/sim`
+  (`fleet-sim`). Shared transition function; simulator owns delivery, clock,
+  and faults.
+- `tk-byam`, `tk-l8xd`, and `tk-0lvx` are done. Launch/commercial tasks
   `tk-kwzc` and `tk-n8e9` stay later.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
@@ -36,11 +33,10 @@ substrate to reuse.
 
 - Do not revive Postgres, NATS, ConnectRPC, model, endpoint, or replica types.
 - Do not implement Cell, Host, FenceToken, or NodeIncarnation.
-- Do not scaffold the full `ai/research/stack.md` crate map. First Rust code
-  is a tiny kernel/simulator workspace for `tk-0lvx`.
+- Do not scaffold the full `ai/research/stack.md` crate map.
 - `ai/review/` is superseded history and is not on the session-start path.
 
 ## Next action
 
-Start `tk-0lvx`: tiny Rust workspace with the kernel types and a deterministic
-simulator of the accepted commit and fencing protocols.
+Add node execution and provider adapters only after a concrete v1 need.
+Leave `tk-kwzc` and `tk-n8e9` until launch work starts.
