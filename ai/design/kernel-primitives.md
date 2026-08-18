@@ -204,7 +204,7 @@ Request
   class         Service | Batch | Gang
   needs         list of Need
   topology      required Edge relationships among selected Nodes
-  preferences   scoring only; never a hard filter
+  preferences   Pack | Spread | PreferAttr; scoring only, never a hard filter
   lifetime
   priority
 ```

@@ -30,6 +30,10 @@ impl Occupancy {
     pub fn used_on(&self, node: NodeId) -> Quantity {
         self.used.get(&node).cloned().unwrap_or_default()
     }
+
+    pub fn is_used(&self, node: NodeId) -> bool {
+        !self.used_on(node).is_empty()
+    }
 }
 
 pub fn lease_occupies(lease: &Lease, open_bindings: bool) -> bool {

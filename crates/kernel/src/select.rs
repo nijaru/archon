@@ -4,16 +4,37 @@ use crate::error::Error;
 use crate::graph::Graph;
 use crate::ids::NodeId;
 use crate::occupancy::Occupancy;
-use crate::types::{Allocation, Claim, Dimension, Need, NodeKind, Request, qty, quantity_get};
+use crate::types::{
+    Allocation, Claim, Dimension, EdgeKind, Need, NodeKind, Preference, Request, RequestClass, qty,
+    quantity_get,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PackMode {
+    Pack,
+    Spread,
+}
+
+struct ScoreCtx<'a> {
+    graph: &'a Graph,
+    occupancy: &'a Occupancy,
+    request: &'a Request,
+    already: &'a [Vec<Claim>],
+    mode: PackMode,
+    memory_want: u64,
+}
 
 pub fn select(
     graph: &Graph,
     occupancy: &Occupancy,
     request: &Request,
 ) -> Result<Allocation, Error> {
+    let mode = pack_mode(request);
     let mut picked: Vec<Vec<Claim>> = Vec::new();
+    let mut notes = Vec::new();
     for need in &request.needs {
-        let claims = select_need(graph, occupancy, need, &picked, request)?;
+        let (claims, need_notes) = select_need(graph, occupancy, need, &picked, request, mode)?;
+        notes.extend(need_notes);
         picked.push(claims);
     }
     let mut claims = Vec::new();
@@ -29,11 +50,31 @@ pub fn select(
         claims,
         graph_revision: graph.revision,
         explanation: format!(
-            "{:?} request selected {} claims by deterministic first-fit",
+            "{:?} {:?} selected {} claims{}",
             request.class,
-            picked.iter().map(Vec::len).sum::<usize>()
+            mode,
+            notes.len(),
+            if notes.is_empty() {
+                String::new()
+            } else {
+                format!("; {}", notes.join("; "))
+            }
         ),
     })
+}
+
+fn pack_mode(request: &Request) -> PackMode {
+    let mut mode = match request.class {
+        RequestClass::Service | RequestClass::Batch | RequestClass::Gang => PackMode::Pack,
+    };
+    for preference in &request.preferences {
+        match preference {
+            Preference::Pack => mode = PackMode::Pack,
+            Preference::Spread => mode = PackMode::Spread,
+            Preference::PreferAttr { .. } => {}
+        }
+    }
+    mode
 }
 
 fn select_need(
@@ -42,7 +83,8 @@ fn select_need(
     need: &Need,
     already: &[Vec<Claim>],
     request: &Request,
-) -> Result<Vec<Claim>, Error> {
+    mode: PackMode,
+) -> Result<(Vec<Claim>, Vec<String>), Error> {
     let candidates = candidates(graph, occupancy, need)?;
     if need.kind == NodeKind::Memory {
         let want = quantity_get(&need.quantity, Dimension::Bytes);
@@ -51,7 +93,15 @@ fn select_need(
                 explanation: "memory need has zero bytes".into(),
             });
         }
-        for node in candidates {
+        let ctx = ScoreCtx {
+            graph,
+            occupancy,
+            request,
+            already,
+            mode,
+            memory_want: want,
+        };
+        for node in rank(&ctx, &[], &candidates)? {
             let remaining = occupancy.remaining(graph, node)?;
             if quantity_get(&remaining, Dimension::Bytes) < want {
                 continue;
@@ -63,7 +113,8 @@ fn select_need(
             let mut trial = already.to_vec();
             trial.push(vec![claim.clone()]);
             if topology_holds(graph, &trial, request) {
-                return Ok(vec![claim]);
+                let score = score_node(&ctx, &[], node)?;
+                return Ok((vec![claim], vec![format!("{node} score={score}")]));
             }
         }
         return Err(Error::Refused {
@@ -73,7 +124,17 @@ fn select_need(
 
     let count = quantity_get(&need.quantity, Dimension::Count).max(1);
     let mut chosen = Vec::new();
-    for node in candidates {
+    let mut notes = Vec::new();
+    let ctx = ScoreCtx {
+        graph,
+        occupancy,
+        request,
+        already,
+        mode,
+        memory_want: 0,
+    };
+    let ranked = rank(&ctx, &chosen, &candidates)?;
+    for node in ranked {
         if chosen.len() as u64 >= count {
             break;
         }
@@ -86,6 +147,8 @@ fn select_need(
         group.push(claim.clone());
         trial.push(group);
         if topology_holds(graph, &trial, request) {
+            let score = score_node(&ctx, &chosen, node)?;
+            notes.push(format!("{node} score={score}"));
             chosen.push(claim);
         }
     }
@@ -94,7 +157,7 @@ fn select_need(
             explanation: format!("need {:?} x{count} found only {}", need.kind, chosen.len()),
         });
     }
-    Ok(chosen)
+    Ok((chosen, notes))
 }
 
 fn candidates(graph: &Graph, occupancy: &Occupancy, need: &Need) -> Result<Vec<NodeId>, Error> {
@@ -130,6 +193,81 @@ fn need_unit(need: &Need) -> crate::types::Quantity {
     } else {
         qty(Dimension::Count, 1)
     }
+}
+
+fn rank(ctx: &ScoreCtx<'_>, chosen: &[Claim], candidates: &[NodeId]) -> Result<Vec<NodeId>, Error> {
+    let mut scored = Vec::new();
+    for node in candidates {
+        scored.push((score_node(ctx, chosen, *node)?, *node));
+    }
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    Ok(scored.into_iter().map(|(_, node)| node).collect())
+}
+
+fn score_node(ctx: &ScoreCtx<'_>, chosen: &[Claim], node: NodeId) -> Result<i64, Error> {
+    let mut score = 0;
+    let extras = extras(ctx.already, chosen);
+    if let Some(machine) = ctx.graph.machine_of(node) {
+        let same_request = extras
+            .iter()
+            .filter(|claim| ctx.graph.machine_of(claim.node) == Some(machine))
+            .count() as i64;
+        let load = machine_load(ctx.graph, ctx.occupancy, machine, &extras) as i64;
+        match ctx.mode {
+            PackMode::Pack => {
+                score += 100 * same_request;
+                score += 10 * load;
+            }
+            PackMode::Spread => {
+                score -= 100 * same_request;
+                score -= 10 * load;
+            }
+        }
+        if extras
+            .iter()
+            .any(|claim| ctx.graph.related(node, claim.node, EdgeKind::SameNuma))
+            && ctx.mode == PackMode::Pack
+        {
+            score += 50;
+        }
+    }
+    for preference in &ctx.request.preferences {
+        if let Preference::PreferAttr { key, value } = preference
+            && ctx
+                .graph
+                .node(node)
+                .is_some_and(|item| item.attrs.get(key) == Some(value))
+        {
+            score += 1_000_000;
+        }
+    }
+    if ctx.memory_want > 0 {
+        let leftover = quantity_get(&ctx.occupancy.remaining(ctx.graph, node)?, Dimension::Bytes)
+            .saturating_sub(ctx.memory_want)
+            / (1 << 20);
+        match ctx.mode {
+            PackMode::Pack => score -= leftover as i64,
+            PackMode::Spread => score += leftover as i64,
+        }
+    }
+    Ok(score)
+}
+
+fn extras(already: &[Vec<Claim>], chosen: &[Claim]) -> Vec<Claim> {
+    let mut out = Vec::new();
+    for group in already {
+        out.extend(group.iter().cloned());
+    }
+    out.extend(chosen.iter().cloned());
+    out
+}
+
+fn machine_load(graph: &Graph, occupancy: &Occupancy, machine: NodeId, extra: &[Claim]) -> u64 {
+    graph
+        .descendants(machine)
+        .into_iter()
+        .filter(|id| occupancy.is_used(*id) || extra.iter().any(|claim| claim.node == *id))
+        .count() as u64
 }
 
 fn topology_holds(graph: &Graph, picked: &[Vec<Claim>], request: &Request) -> bool {

@@ -40,9 +40,9 @@ is now the resource operating system:
 - Kubernetes, Slurm, Flux, Ray, MPI, and other systems are compatibility or
   nested-workload paths, not internal authorities.
 
-The Go model-serving scaffold was deleted. The repository is design-only until
-the Rust resource/lease kernel exists. Do not revive Postgres, NATS,
-ConnectRPC, model, endpoint, or replica types as a compatibility shell.
+The Go model-serving scaffold was deleted. The first Rust tree is the kernel
+and simulator. Do not revive Postgres, NATS, ConnectRPC, model, endpoint, or
+replica types as a compatibility shell.
 
 ## Architectural center
 

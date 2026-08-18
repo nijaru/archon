@@ -23,7 +23,8 @@ substrate to reuse.
 - Accepted fencing protocol: `ai/design/lease-fencing.md`.
 - First workspace: `crates/kernel` (`fleet-kernel`) and `crates/sim`
   (`fleet-sim`). Shared transition function; simulator owns delivery, clock,
-  and faults.
+  and faults. Placement is deterministic scored selection: Pack, Spread, and
+  PreferAttr are soft.
 - `tk-byam`, `tk-l8xd`, and `tk-0lvx` are done. Launch/commercial tasks
   `tk-kwzc` and `tk-n8e9` stay later.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and

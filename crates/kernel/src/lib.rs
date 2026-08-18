@@ -23,7 +23,7 @@ pub use occupancy::{Occupancy, occupancy_from_leases};
 pub use select::select;
 pub use types::{
     Allocation, Attrs, Binding, BindingState, Claim, Dimension, Edge, EdgeKind, Endpoint,
-    EndpointPhase, Filter, Lease, LeaseState, Need, Node, NodeKind, Quantity, Request,
+    EndpointPhase, Filter, Lease, LeaseState, Need, Node, NodeKind, Preference, Quantity, Request,
     RequestClass, TopologyConstraint, qty,
 };
 

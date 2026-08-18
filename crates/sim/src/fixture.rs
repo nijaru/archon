@@ -69,7 +69,7 @@ pub fn tiny_graph(machines: usize) -> TinyGraph {
                 NodeKind::Gpu,
                 qty(Dimension::Count, 1),
                 "model",
-                "h100",
+                if index % 2 == 0 { "h100" } else { "a100" },
             ),
             node(nic, NodeKind::Nic, qty(Dimension::Count, 1)),
             node(nvme, NodeKind::Nvme, qty(Dimension::Count, 1)),

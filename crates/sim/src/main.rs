@@ -31,6 +31,7 @@ fn main() {
             },
         ],
         topology: vec![],
+        preferences: vec![],
         lifetime: 100,
         priority: 10,
     };
@@ -53,10 +54,13 @@ fn main() {
     world.deliver_all().expect("activate deliver");
     let digest = world.digest();
     println!(
-        "epoch={} revision={} leases={} bindings={}",
+        "epoch={} revision={} leases={} bindings={}\n{}",
         digest.epoch,
         digest.graph_revision,
         digest.leases.len(),
-        digest.bindings.len()
+        digest.bindings.len(),
+        world.cluster.leases[&LeaseId::from_u64(1)]
+            .allocation
+            .explanation
     );
 }

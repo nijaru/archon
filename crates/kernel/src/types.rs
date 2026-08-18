@@ -138,11 +138,19 @@ pub struct TopologyConstraint {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Preference {
+    Pack,
+    Spread,
+    PreferAttr { key: String, value: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub id: crate::ids::RequestId,
     pub class: RequestClass,
     pub needs: Vec<Need>,
     pub topology: Vec<TopologyConstraint>,
+    pub preferences: Vec<Preference>,
     pub lifetime: u64,
     pub priority: u32,
 }

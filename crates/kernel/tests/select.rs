@@ -51,6 +51,7 @@ fn request(class: RequestClass, needs: Vec<Need>) -> Request {
         class,
         needs,
         topology: vec![],
+        preferences: vec![],
         lifetime: 10,
         priority: 1,
     }
@@ -86,7 +87,7 @@ fn selects_service_batch_and_gang() {
             ))
             .unwrap();
         assert_eq!(allocation.claims.len(), 2);
-        assert!(allocation.explanation.contains("first-fit"));
+        assert!(allocation.explanation.contains("Pack"));
     }
 }
 

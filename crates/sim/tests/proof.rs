@@ -25,6 +25,7 @@ fn service_request() -> Request {
             right: 1,
             kind: fleet_kernel::EdgeKind::SameNuma,
         }],
+        preferences: vec![],
         lifetime: 100,
         priority: 10,
     }

@@ -1,0 +1,24 @@
+{
+  "project": "tk",
+  "ref": "2vsh",
+  "title": "Add native Fleet placement scoring",
+  "description": "Replace first-fit with deterministic scored placement. Preferences are scoring only. Prove pack, spread, soft attrs, and hard-filter refusal on the shared kernel selector.",
+  "status": "done",
+  "priority": 1,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [
+    {
+      "ts": "2026-08-18T00:17:09.917675Z",
+      "msg": "Deterministic scored placement: Pack, Spread, PreferAttr. Preferences never hard-filter. 23 cargo tests pass."
+    }
+  ],
+  "created_at": "2026-08-18T00:15:44.397983Z",
+  "updated_at": "2026-08-18T00:17:09.94664Z",
+  "completed_at": "2026-08-18T00:17:09.94664Z",
+  "external": {}
+}
