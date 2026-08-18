@@ -85,6 +85,7 @@ constrain the resource, lease, or scheduler model.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-17 | All nine required v0 scenarios pass | Registration, service/batch/gang, hard-filter refusal, exclusive claims, nested leases, revoke/fence/stale-agent, release-and-replace, deterministic replay, and machine failure with quarantine recovery. |
 | 2026-08-17 | First workspace is kernel plus simulator | `crates/kernel` owns types and `Cluster::apply`. `crates/sim` owns delivery, clock, faults, and v0 proofs. Do not add the later `research/stack.md` crate map yet. |
 | 2026-08-17 | Accept v0 fencing protocol | Occupancy lasts until Binding close/fence ack or Node quarantine. `Binding.fence` increases per `(provider, node)`. `Release` is cooperative; `Fence` is forced; both close the generation. Uncertain apply is never success. `RenewLease` extends `expires_at` only. Stale `Agent.session` and `Cluster.epoch` are rejected. |
 | 2026-08-17 | Accept v0 kernel contract | `ai/design/kernel-primitives.md` is the kernel vocabulary and model. `Cluster` is the linearizable authority. `Allocation` is claims against a Graph revision. `Lease` is committed authority. Occupancy is exclusive Node-unit claims; Memory is quantified, devices/cores are discrete Nodes. Graph and indexes rebuild from the command log. `Cell`, `Host`, `Placement`, `Plan`, `FenceToken`, and `NodeIncarnation` are not kernel types. |
@@ -102,6 +103,7 @@ constrain the resource, lease, or scheduler model.
 
 - authority replication and global federation beyond one Cluster log;
 - static versus dynamic topology and contention edges;
+- first v1 scheduling policy after v0 (fair share, reservations, backfill);
 - device-level preemption/reset contracts across vendors;
 - virtual-cluster network, storage, and identity semantics;
 - security model for hostile multi-tenancy and confidential workloads.

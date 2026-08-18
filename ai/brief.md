@@ -26,8 +26,9 @@ substrate to reuse.
   and faults. Placement is deterministic scored selection plus `admit()`:
   priority, then submit time; first feasible request wins. Lower-priority
   occupying roots can be preempted; equal or higher priority cannot.
-- `tk-byam`, `tk-l8xd`, and `tk-0lvx` are done. Launch/commercial tasks
-  `tk-kwzc` and `tk-n8e9` stay later.
+- `tk-byam`, `tk-l8xd`, `tk-0lvx`, `tk-2vsh`, `tk-kmcj`, `tk-1idx`, and
+  `tk-e0n5` are done. All nine required v0 scenarios pass. Launch/commercial
+  tasks `tk-kwzc` and `tk-n8e9` stay later.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
 
