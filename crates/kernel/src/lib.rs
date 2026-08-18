@@ -3,6 +3,8 @@
 //! Production and the simulator share this crate. Delivery, clocks, and faults
 //! stay outside `Cluster::apply`.
 
+use std::collections::BTreeMap;
+
 mod admit;
 mod cluster;
 mod command;
@@ -15,7 +17,7 @@ mod preempt;
 mod select;
 mod types;
 
-pub use admit::{Admission, Queued, admit, refuse_reason};
+pub use admit::{Admission, Queued, admit, admit_fair, refuse_reason};
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
 pub use command::{Command, Effect};
 pub use endpoint::{EndpointError, EndpointOp};
@@ -27,8 +29,8 @@ pub use preempt::preempt_victims;
 pub use select::select;
 pub use types::{
     Allocation, Attrs, Binding, BindingState, Claim, Dimension, Edge, EdgeKind, Endpoint,
-    EndpointPhase, Filter, Lease, LeaseState, Need, Node, NodeKind, Preference, Quantity, Request,
-    RequestClass, TopologyConstraint, qty,
+    EndpointPhase, Filter, Lease, LeaseState, Need, Node, NodeKind, Preference, Quantity,
+    QueuedRequest, Request, RequestClass, TopologyConstraint, qty,
 };
 
 impl Cluster {
@@ -42,5 +44,22 @@ impl Cluster {
 
     pub fn admit(&self, queue: &[Queued]) -> Option<Admission> {
         admit(&self.graph, &self.occupancy(), queue, &self.quarantine)
+    }
+
+    /// Budget-aware admission with a per-owner fair-share ceiling.
+    pub fn admit_fair(
+        &self,
+        queue: &[Queued],
+        fair_share: &Quantity,
+        leases: &BTreeMap<LeaseId, Lease>,
+    ) -> Option<Admission> {
+        admit_fair(
+            &self.graph,
+            &self.occupancy(),
+            &self.quarantine,
+            fair_share,
+            queue,
+            leases,
+        )
     }
 }

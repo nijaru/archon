@@ -41,9 +41,15 @@ fn take(world: &mut World, lease: u64) -> RequestId {
 #[test]
 fn priority_then_time() {
     let mut world = boot();
-    world.enqueue(request(1, RequestClass::Service, NodeKind::Cpu, 1, 1));
+    world.enqueue(
+        request(1, RequestClass::Service, NodeKind::Cpu, 1, 1),
+        OwnerId::from_u64(1),
+    );
     world.set_now(2);
-    world.enqueue(request(2, RequestClass::Service, NodeKind::Cpu, 1, 10));
+    world.enqueue(
+        request(2, RequestClass::Service, NodeKind::Cpu, 1, 10),
+        OwnerId::from_u64(2),
+    );
     assert_eq!(take(&mut world, 1), RequestId::from_u64(2));
     assert_eq!(take(&mut world, 2), RequestId::from_u64(1));
 }
@@ -51,9 +57,18 @@ fn priority_then_time() {
 #[test]
 fn waits_then_places_after_release() {
     let mut world = boot();
-    world.enqueue(request(1, RequestClass::Batch, NodeKind::Gpu, 1, 1));
-    world.enqueue(request(2, RequestClass::Batch, NodeKind::Gpu, 1, 1));
-    world.enqueue(request(3, RequestClass::Batch, NodeKind::Gpu, 1, 1));
+    world.enqueue(
+        request(1, RequestClass::Batch, NodeKind::Gpu, 1, 1),
+        OwnerId::from_u64(1),
+    );
+    world.enqueue(
+        request(2, RequestClass::Batch, NodeKind::Gpu, 1, 1),
+        OwnerId::from_u64(2),
+    );
+    world.enqueue(
+        request(3, RequestClass::Batch, NodeKind::Gpu, 1, 1),
+        OwnerId::from_u64(3),
+    );
     take(&mut world, 1);
     world.deliver_all().unwrap();
     world.activate_lease(LeaseId::from_u64(1)).unwrap();
@@ -77,8 +92,14 @@ fn waits_then_places_after_release() {
 #[test]
 fn waiting_gang_does_not_block_other_kind() {
     let mut world = boot();
-    world.enqueue(request(1, RequestClass::Gang, NodeKind::Gpu, 4, 100));
-    world.enqueue(request(2, RequestClass::Service, NodeKind::Cpu, 1, 1));
+    world.enqueue(
+        request(1, RequestClass::Gang, NodeKind::Gpu, 4, 100),
+        OwnerId::from_u64(1),
+    );
+    world.enqueue(
+        request(2, RequestClass::Service, NodeKind::Cpu, 1, 1),
+        OwnerId::from_u64(2),
+    );
     assert_eq!(take(&mut world, 1), RequestId::from_u64(2));
     assert_eq!(world.queue[0].request.id, RequestId::from_u64(1));
     assert_eq!(world.queue[0].request.class, RequestClass::Gang);

@@ -155,6 +155,14 @@ pub struct Request {
     pub priority: u32,
 }
 
+/// A queued request carries the owner that submitted it and the submit time,
+/// so fair-share admission can attribute consumption and break ties.
+pub struct QueuedRequest {
+    pub request: Request,
+    pub owner: crate::ids::OwnerId,
+    pub submitted_at: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claim {
     pub node: NodeId,

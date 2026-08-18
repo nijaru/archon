@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use fleet_kernel::{
     Allocation, BindingId, Cluster, Command, Digest, Effect, Endpoint, EndpointOp, Error, LeaseId,
-    NodeId, OwnerId, ProviderId, Queued, Request, RequestId,
+    NodeId, OwnerId, ProviderId, Quantity, Queued, Request, RequestId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,19 +161,53 @@ impl World {
         Ok(session)
     }
 
-    pub fn enqueue(&mut self, request: Request) {
+    pub fn enqueue(&mut self, request: Request, owner: OwnerId) {
         self.queue.push(Queued {
             request,
+            owner,
             submitted_at: self.cluster.now,
         });
     }
 
+    /// Admit the head of the queue under an optional per-owner fair-share
+    /// ceiling. An empty ceiling disables the budget.
     pub fn admit_next(
         &mut self,
         lease: LeaseId,
         owner: OwnerId,
     ) -> Result<Option<RequestId>, Error> {
         let Some(admission) = self.cluster.admit(&self.queue) else {
+            return Ok(None);
+        };
+        self.queue
+            .retain(|queued| queued.request.id != admission.request.id);
+        let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
+        let prepare_deadline = self.cluster.now.saturating_add(20);
+        self.apply(Command::OpenLease {
+            lease,
+            owner,
+            allocation: admission.allocation,
+            parent: None,
+            expires_at,
+            prepare_deadline,
+            priority: admission.request.priority,
+        })?;
+        self.bind_enforced(lease, self.next_binding)?;
+        self.next_binding = self.next_binding.saturating_add(32);
+        Ok(Some(admission.request.id))
+    }
+
+    /// Admit with a per-owner fair-share ceiling.
+    pub fn admit_next_fair(
+        &mut self,
+        lease: LeaseId,
+        owner: OwnerId,
+        fair_share: &Quantity,
+    ) -> Result<Option<RequestId>, Error> {
+        let Some(admission) =
+            self.cluster
+                .admit_fair(&self.queue, fair_share, &self.cluster.leases)
+        else {
             return Ok(None);
         };
         self.queue

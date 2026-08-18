@@ -1,7 +1,8 @@
 use fleet_kernel::{
-    Cluster, Command, Dimension, Need, Node, NodeId, NodeKind, Quantity, Queued, Request,
+    Cluster, Command, Dimension, Need, Node, NodeId, NodeKind, OwnerId, Quantity, Queued, Request,
     RequestClass, RequestId, admit, qty,
 };
+use std::collections::BTreeSet;
 
 fn node(id: u64, kind: NodeKind, capacity: Quantity) -> Node {
     Node {
@@ -68,13 +69,16 @@ fn higher_priority_wins() {
         &[
             Queued {
                 request: cpu_request(1, 1, 1),
+                owner: OwnerId::from_u64(1),
                 submitted_at: 1,
             },
             Queued {
                 request: cpu_request(2, 1, 10),
+                owner: OwnerId::from_u64(2),
                 submitted_at: 2,
             },
         ],
+        &BTreeSet::new(),
     )
     .unwrap();
     assert_eq!(admission.request.id, RequestId::from_u64(2));
@@ -89,13 +93,16 @@ fn earlier_submit_breaks_priority_ties() {
         &[
             Queued {
                 request: cpu_request(2, 1, 5),
+                owner: OwnerId::from_u64(2),
                 submitted_at: 8,
             },
             Queued {
                 request: cpu_request(1, 1, 5),
+                owner: OwnerId::from_u64(1),
                 submitted_at: 3,
             },
         ],
+        &BTreeSet::new(),
     )
     .unwrap();
     assert_eq!(admission.request.id, RequestId::from_u64(1));
@@ -110,13 +117,16 @@ fn skips_infeasible_head() {
         &[
             Queued {
                 request: cpu_request(1, 8, 100),
+                owner: OwnerId::from_u64(1),
                 submitted_at: 1,
             },
             Queued {
                 request: cpu_request(2, 1, 1),
+                owner: OwnerId::from_u64(2),
                 submitted_at: 2,
             },
         ],
+        &BTreeSet::new(),
     )
     .unwrap();
     assert_eq!(admission.request.id, RequestId::from_u64(2));
