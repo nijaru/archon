@@ -116,6 +116,7 @@ fn exclusive_claims_do_not_overlap() {
             parent: None,
             expires_at: 10,
             prepare_deadline: 5,
+            priority: 1,
         })
         .unwrap();
     let err = cluster
@@ -126,6 +127,7 @@ fn exclusive_claims_do_not_overlap() {
             parent: None,
             expires_at: 10,
             prepare_deadline: 5,
+            priority: 1,
         })
         .unwrap_err();
     assert!(matches!(err, fleet_kernel::Error::Overlap { .. }));
@@ -155,6 +157,7 @@ fn child_cannot_escape_parent() {
             parent: None,
             expires_at: 10,
             prepare_deadline: 5,
+            priority: 1,
         })
         .unwrap();
     cluster
@@ -175,6 +178,7 @@ fn child_cannot_escape_parent() {
                 explanation: "child".into(),
             },
             parent: Some(LeaseId::from_u64(1)),
+            priority: 1,
             expires_at: 10,
             prepare_deadline: 5,
         })

@@ -187,6 +187,7 @@ impl World {
             parent: None,
             expires_at,
             prepare_deadline,
+            priority: admission.request.priority,
         })?;
         self.bind_enforced(lease, self.next_binding)?;
         self.next_binding = self.next_binding.saturating_add(32);
@@ -210,6 +211,7 @@ impl World {
             parent,
             expires_at,
             prepare_deadline,
+            priority: request.priority,
         })?;
         Ok(allocation)
     }
@@ -265,6 +267,16 @@ impl World {
     pub fn revoke_lease(&mut self, lease: LeaseId) -> Result<(), Error> {
         self.apply(Command::RevokeLease { lease })?;
         Ok(())
+    }
+
+    pub fn preempt_for(&mut self, request: &Request) -> Result<Option<Vec<LeaseId>>, Error> {
+        let Some(victims) = fleet_kernel::preempt_victims(&self.cluster, request) else {
+            return Ok(None);
+        };
+        for victim in &victims {
+            self.revoke_lease(*victim)?;
+        }
+        Ok(Some(victims))
     }
 
     pub fn expire_due(&mut self) -> Result<(), Error> {

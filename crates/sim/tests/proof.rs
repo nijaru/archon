@@ -306,6 +306,7 @@ fn parent_revoke_fences_child_first() {
             parent: Some(LeaseId::from_u64(1)),
             expires_at: 100,
             prepare_deadline: 20,
+            priority: 1,
         })
         .unwrap();
     world
@@ -453,6 +454,7 @@ fn child_stays_within_parent() {
             parent: Some(LeaseId::from_u64(1)),
             expires_at: 100,
             prepare_deadline: 20,
+            priority: 1,
         })
         .unwrap();
     world

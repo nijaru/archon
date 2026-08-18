@@ -186,6 +186,7 @@ pub struct Lease {
     pub parent: Option<LeaseId>,
     pub expires_at: u64,
     pub prepare_deadline: u64,
+    pub priority: u32,
     pub state: LeaseState,
 }
 

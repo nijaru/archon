@@ -137,6 +137,10 @@ impl Cluster {
         }
     }
 
+    pub fn occupancy_except(&self, except: &BTreeSet<LeaseId>) -> crate::occupancy::Occupancy {
+        occupancy_from_leases(self.leases.values(), &self.open_binding_leases(), except)
+    }
+
     pub fn occupies(&self, lease: LeaseId) -> bool {
         self.leases.get(&lease).is_some_and(|lease| {
             matches!(lease.state, LeaseState::Preparing | LeaseState::Active)
@@ -262,21 +266,7 @@ impl Cluster {
     fn dispatch(&mut self, command: &Command) -> Result<Vec<Effect>, Error> {
         match command {
             Command::ApplyGraph { nodes, edges } => self.apply_graph(nodes.clone(), edges.clone()),
-            Command::OpenLease {
-                lease,
-                owner,
-                allocation,
-                parent,
-                expires_at,
-                prepare_deadline,
-            } => self.open_lease(
-                *lease,
-                *owner,
-                allocation.clone(),
-                *parent,
-                *expires_at,
-                *prepare_deadline,
-            ),
+            command @ Command::OpenLease { .. } => self.open_lease(command),
             Command::ActivateLease { lease } => self.activate_lease(*lease),
             Command::FailLease { lease, reason } => self.fail_lease(*lease, reason),
             Command::ReleaseLease { lease } => self.release_lease(*lease),
@@ -336,15 +326,26 @@ impl Cluster {
         Ok(Vec::new())
     }
 
-    fn open_lease(
-        &mut self,
-        id: LeaseId,
-        owner: crate::ids::OwnerId,
-        mut allocation: crate::types::Allocation,
-        parent: Option<LeaseId>,
-        expires_at: u64,
-        prepare_deadline: u64,
-    ) -> Result<Vec<Effect>, Error> {
+    fn open_lease(&mut self, command: &Command) -> Result<Vec<Effect>, Error> {
+        let Command::OpenLease {
+            lease: id,
+            owner,
+            allocation,
+            parent,
+            expires_at,
+            prepare_deadline,
+            priority,
+        } = command
+        else {
+            return Err(Error::Invalid("open_lease requires OpenLease"));
+        };
+        let id = *id;
+        let owner = *owner;
+        let parent = *parent;
+        let expires_at = *expires_at;
+        let prepare_deadline = *prepare_deadline;
+        let priority = *priority;
+        let mut allocation = allocation.clone();
         if !self.agreed {
             return Err(Error::NotAgreed);
         }
@@ -424,6 +425,7 @@ impl Cluster {
                 parent,
                 expires_at,
                 prepare_deadline,
+                priority,
                 state: LeaseState::Preparing,
             },
         );

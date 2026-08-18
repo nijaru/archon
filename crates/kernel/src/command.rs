@@ -14,6 +14,7 @@ pub enum Command {
         parent: Option<LeaseId>,
         expires_at: u64,
         prepare_deadline: u64,
+        priority: u32,
     },
     ActivateLease {
         lease: LeaseId,

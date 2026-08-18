@@ -11,6 +11,7 @@ mod error;
 mod graph;
 mod ids;
 mod occupancy;
+mod preempt;
 mod select;
 mod types;
 
@@ -22,6 +23,7 @@ pub use error::Error;
 pub use graph::Graph;
 pub use ids::{BindingId, LeaseId, NodeId, OwnerId, ProviderId, RequestId};
 pub use occupancy::{Occupancy, occupancy_from_leases};
+pub use preempt::preempt_victims;
 pub use select::select;
 pub use types::{
     Allocation, Attrs, Binding, BindingState, Claim, Dimension, Edge, EdgeKind, Endpoint,
@@ -31,16 +33,7 @@ pub use types::{
 
 impl Cluster {
     pub fn occupancy(&self) -> Occupancy {
-        occupancy_from_leases(
-            self.leases.values(),
-            &self
-                .bindings
-                .values()
-                .filter(|binding| !binding.state.is_closed())
-                .map(|binding| binding.lease)
-                .collect(),
-            &std::collections::BTreeSet::new(),
-        )
+        self.occupancy_except(&std::collections::BTreeSet::new())
     }
 
     pub fn allocate(&self, request: &Request) -> Result<Allocation, Error> {

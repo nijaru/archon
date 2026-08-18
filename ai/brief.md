@@ -24,7 +24,8 @@ substrate to reuse.
 - First workspace: `crates/kernel` (`fleet-kernel`) and `crates/sim`
   (`fleet-sim`). Shared transition function; simulator owns delivery, clock,
   and faults. Placement is deterministic scored selection plus `admit()`:
-  priority, then submit time; first feasible request wins.
+  priority, then submit time; first feasible request wins. Lower-priority
+  occupying roots can be preempted; equal or higher priority cannot.
 - `tk-byam`, `tk-l8xd`, and `tk-0lvx` are done. Launch/commercial tasks
   `tk-kwzc` and `tk-n8e9` stay later.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and

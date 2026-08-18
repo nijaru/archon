@@ -263,6 +263,7 @@ Lease
   allocation
   parent                 optional enclosing Lease
   expires_at
+  priority
   state                  Preparing | Active | Released | Expired | Revoked | Failed
 ```
 
