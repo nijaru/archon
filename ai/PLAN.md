@@ -1,6 +1,6 @@
 # Fleet Plan
 
-**Updated:** 2026-08-17
+**Updated:** 2026-08-20
 
 ## Product hypothesis
 
@@ -121,11 +121,12 @@ After local leases, fencing, and failure behavior are proven, add:
 
 ## Roadmap
 
-### v0: resource/lease kernel
+### v0: resource/lease kernel — done 2026-08-18
 
 Graph, allocation, lease, fencing, topology-aware scoring, explanations,
-nested leases, deterministic replay, synthetic failure simulation, CLI, and
-native/OCI execution boundaries.
+nested leases, deterministic replay, synthetic failure simulation, and CLI.
+Native/OCI execution boundaries moved to v1; see the v1 transition trigger in
+[`ai/brief.md`](../brief.md).
 
 ### v1: operational substrate
 
@@ -160,13 +161,17 @@ verification.
 
 ## Decision gates
 
-Advance from the kernel when:
+The v0 kernel is done (2026-08-18) when:
 
 - leases are correctly fenced through simulated failure and stale agents;
 - replay produces identical placement/state results;
-- resource graph and placement queries remain bounded;
+- resource graph and placement queries remain bounded.
+
+These held. The execution gates move to v1 entry, reached only through the
+trigger in `ai/brief.md`:
+
 - node execution sees only allocated resources;
-- the same workload contract can run as a process and OCI workload;
+- the same workload contract runs as a process and OCI workload;
 - a real accelerator workload validates topology and lifecycle behavior.
 
 Advance to cells/federation only when local ownership transitions, recovery,

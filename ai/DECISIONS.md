@@ -1,6 +1,6 @@
 # Fleet Decisions
 
-**Updated:** 2026-08-17
+**Updated:** 2026-08-20
 
 ## Current direction
 
@@ -85,6 +85,7 @@ constrain the resource, lease, or scheduler model.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-20 | Define the v0-to-v1 transition trigger | v0 shipped as decision logic without node execution; the execution gates move to v1 entry. v1 starts on a named real workload, a needed provider adapter, or a policy requiring real-node timing/enforcement. Simulator-first stays the default for policies the simulator can validate fairly. |
 | 2026-08-17 | Fair-share admission is a per-owner budget ceiling, not a reservation | An owner under budget is never blocked by another owner's consumption. An empty ceiling disables the budget and matches plain `admit`. |
 | 2026-08-17 | All nine required v0 scenarios pass | Registration, service/batch/gang, hard-filter refusal, exclusive claims, nested leases, revoke/fence/stale-agent, release-and-replace, deterministic replay, and machine failure with quarantine recovery. |
 | 2026-08-17 | First workspace is kernel plus simulator | `crates/kernel` owns types and `Cluster::apply`. `crates/sim` owns delivery, clock, faults, and v0 proofs. Do not add the later `research/stack.md` crate map yet. |
@@ -104,7 +105,7 @@ constrain the resource, lease, or scheduler model.
 
 - authority replication and global federation beyond one Cluster log;
 - static versus dynamic topology and contention edges;
-- first v1 scheduling policy after v0 (fair share, reservations, backfill);
+- first v1 scheduling policy after fair share (reservations, backfill);
 - gang-as-distinct-policy versus gang-as-soft-preference;
 - device-level preemption/reset contracts across vendors;
 - virtual-cluster network, storage, and identity semantics;

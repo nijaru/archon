@@ -1,7 +1,7 @@
 ---
 type: brief
 description: Active Fleet Compute OS context
-updated: 2026-08-17
+updated: 2026-08-20
 ---
 
 ## Scope
@@ -29,7 +29,7 @@ substrate to reuse.
   admission (`admit_fair`) adds a per-owner budget ceiling on top of the same
   queue; an empty ceiling disables it and matches `admit`.
 - `tk-byam`, `tk-l8xd`, `tk-0lvx`, `tk-2vsh`, `tk-kmcj`, `tk-1idx`, `tk-e0n5`,
-  and `tk-fair` are done. All nine required v0 scenarios pass. Launch/commercial
+  and `tk-s1ff` are done. All nine required v0 scenarios pass. Launch/commercial
   tasks `tk-kwzc` and `tk-n8e9` stay later.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
@@ -41,7 +41,25 @@ substrate to reuse.
 - Do not scaffold the full `ai/research/stack.md` crate map.
 - `ai/review/` is superseded history and is not on the session-start path.
 
+## v1 transition trigger
+
+v1 (operational substrate) begins when at least one of these is true, not
+before:
+
+1. A named real workload must execute on real hardware through Fleet — the
+   deliverable is running code, not a scheduling decision the simulator can
+   already prove.
+2. A real deployment target needs a provider adapter (device, accelerator,
+   storage, or network) that the simulator cannot validate.
+3. A scheduling policy under consideration depends on node timing, enforcement,
+   or failure behavior that only a real node can exercise.
+
+Node execution and provider adapters stay out of the workspace until then.
+Simulator-first remains the default: policies the simulator can validate fairly
+(reservations, backfill, gang semantics) are v1 work that does not need the
+trigger.
+
 ## Next action
 
-Add node execution and provider adapters only after a concrete v1 need.
-Leave `tk-kwzc` and `tk-n8e9` until launch work starts.
+No engineering task is queued. Leave `tk-kwzc` and `tk-n8e9` until launch work
+starts. Start v1 only through the trigger above.

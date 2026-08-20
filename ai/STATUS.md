@@ -1,6 +1,6 @@
 # Fleet Status
 
-**Updated:** 2026-08-17
+**Updated:** 2026-08-20
 
 ## Direction
 
@@ -78,11 +78,12 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 
 ## Immediate design work
 
-1. Keep the kernel and simulator as the only crates until a node-execution
-   need is concrete.
+1. Keep the kernel and simulator as the only crates until the v1 transition
+   trigger in `ai/brief.md` fires.
 2. Do not scaffold the later crate map in `research/stack.md`.
 3. Launch and commercial work (`tk-kwzc`, `tk-n8e9`) stays later.
-4. Next scheduling policy after v0: fair share, reservations, or backfill.
+4. Fair share shipped (`admit_fair`, `tk-s1ff`). Next scheduling policy:
+   reservations or backfill.
 5. Gang-as-distinct-policy versus gang-as-soft-preference.
 ## Open questions
 

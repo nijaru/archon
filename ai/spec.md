@@ -1,7 +1,7 @@
 # Fleet Distributed Resource OS Specification
 
 **Status:** canonical product and architecture specification
-**Updated:** 2026-08-17
+**Updated:** 2026-08-20
 
 The accepted v0 kernel contract is
 [`design/kernel-primitives.md`](design/kernel-primitives.md). The fencing
@@ -336,7 +336,6 @@ policy extensions remain replaceable without making the core a plugin marketplac
 - atomic lease commit, release, revoke, fencing, and nested allocations;
 - explainable placement;
 - deterministic replay and simulated node failure;
-- native process and OCI execution boundaries;
 - CLI and simulator.
 
 The first prototype registers 3–10 synthetic nodes, submits requests, chooses
@@ -345,6 +344,8 @@ leases, explains decisions, replays state, and simulates failure.
 
 ### v1 — operational substrate
 
+- native process and OCI execution boundaries, gated on the v1 trigger in
+  `ai/brief.md`;
 - gang scheduling, queues, reservations, fair share, and backfill;
 - GPU/accelerator topology and CDI/provider attachment;
 - microVMs;
