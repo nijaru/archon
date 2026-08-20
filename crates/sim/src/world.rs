@@ -228,6 +228,38 @@ impl World {
         Ok(Some(admission.request.id))
     }
 
+    /// Commit capacity for a future request as a Reserved lease. Reserved
+    /// capacity occupies the graph but has no bindings and enforces nothing.
+    pub fn reserve(
+        &mut self,
+        request: &Request,
+        lease: LeaseId,
+        owner: OwnerId,
+        expires_at: u64,
+    ) -> Result<Allocation, Error> {
+        let allocation = self.cluster.allocate(request)?;
+        self.apply(Command::ReserveLease {
+            lease,
+            owner,
+            allocation: allocation.clone(),
+            expires_at,
+            priority: request.priority,
+        })?;
+        Ok(allocation)
+    }
+
+    /// Move a Reserved lease into the ordinary prepare/bind/activate path.
+    pub fn promote(&mut self, lease: LeaseId) -> Result<(), Error> {
+        let prepare_deadline = self.cluster.now.saturating_add(20);
+        self.apply(Command::PromoteLease {
+            lease,
+            prepare_deadline,
+        })?;
+        self.bind_enforced(lease, self.next_binding)?;
+        self.next_binding = self.next_binding.saturating_add(32);
+        Ok(())
+    }
+
     pub fn place(
         &mut self,
         request: &Request,
@@ -357,8 +389,10 @@ impl World {
             .leases
             .values()
             .filter(|lease| {
-                lease.state == fleet_kernel::LeaseState::Active
-                    && self.cluster.now >= lease.expires_at
+                matches!(
+                    lease.state,
+                    fleet_kernel::LeaseState::Active | fleet_kernel::LeaseState::Reserved
+                ) && self.cluster.now >= lease.expires_at
             })
             .map(|lease| lease.id)
             .collect();

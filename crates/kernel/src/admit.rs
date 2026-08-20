@@ -106,7 +106,9 @@ pub fn owner_usage(
         }
         if !matches!(
             lease.state,
-            crate::types::LeaseState::Preparing | crate::types::LeaseState::Active
+            crate::types::LeaseState::Reserved
+                | crate::types::LeaseState::Preparing
+                | crate::types::LeaseState::Active
         ) {
             continue;
         }

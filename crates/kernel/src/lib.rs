@@ -17,7 +17,7 @@ mod preempt;
 mod select;
 mod types;
 
-pub use admit::{Admission, Queued, admit, admit_fair, refuse_reason};
+pub use admit::{Admission, Queued, admit, admit_fair, owner_usage, refuse_reason};
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
 pub use command::{Command, Effect};
 pub use endpoint::{EndpointError, EndpointOp};

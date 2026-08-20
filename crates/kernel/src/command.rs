@@ -7,6 +7,17 @@ pub enum Command {
         nodes: Vec<Node>,
         edges: Vec<Edge>,
     },
+    ReserveLease {
+        lease: LeaseId,
+        owner: OwnerId,
+        allocation: Allocation,
+        expires_at: u64,
+        priority: u32,
+    },
+    PromoteLease {
+        lease: LeaseId,
+        prepare_deadline: u64,
+    },
     OpenLease {
         lease: LeaseId,
         owner: OwnerId,

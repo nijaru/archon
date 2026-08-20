@@ -143,7 +143,10 @@ impl Cluster {
 
     pub fn occupies(&self, lease: LeaseId) -> bool {
         self.leases.get(&lease).is_some_and(|lease| {
-            matches!(lease.state, LeaseState::Preparing | LeaseState::Active)
+            matches!(
+                lease.state,
+                LeaseState::Reserved | LeaseState::Preparing | LeaseState::Active
+            )
                 || self.open_bindings(lease.id)
         })
     }
@@ -266,6 +269,11 @@ impl Cluster {
     fn dispatch(&mut self, command: &Command) -> Result<Vec<Effect>, Error> {
         match command {
             Command::ApplyGraph { nodes, edges } => self.apply_graph(nodes.clone(), edges.clone()),
+            command @ Command::ReserveLease { .. } => self.reserve_lease(command),
+            Command::PromoteLease {
+                lease,
+                prepare_deadline,
+            } => self.promote_lease(*lease, *prepare_deadline),
             command @ Command::OpenLease { .. } => self.open_lease(command),
             Command::ActivateLease { lease } => self.activate_lease(*lease),
             Command::FailLease { lease, reason } => self.fail_lease(*lease, reason),
@@ -323,6 +331,104 @@ impl Cluster {
             return Err(Error::NotAgreed);
         }
         self.graph.apply(nodes, edges)?;
+        Ok(Vec::new())
+    }
+
+    fn reserve_lease(&mut self, command: &Command) -> Result<Vec<Effect>, Error> {
+        let Command::ReserveLease {
+            lease: id,
+            owner,
+            allocation,
+            expires_at,
+            priority,
+        } = command
+        else {
+            return Err(Error::Invalid("reserve_lease requires ReserveLease"));
+        };
+        let id = *id;
+        let owner = *owner;
+        let expires_at = *expires_at;
+        let priority = *priority;
+        let mut allocation = allocation.clone();
+        if !self.agreed {
+            return Err(Error::NotAgreed);
+        }
+        if self.leases.contains_key(&id) {
+            return Err(Error::DuplicateLease(id));
+        }
+        if allocation.graph_revision != self.graph.revision {
+            return Err(Error::StaleGraphRevision {
+                current: self.graph.revision,
+                got: allocation.graph_revision,
+            });
+        }
+        let mut claims = Vec::new();
+        for claim in &allocation.claims {
+            claims.push(resolve_claim(&self.graph, claim)?);
+        }
+        for claim in &claims {
+            if self.node_quarantined(claim.node) {
+                return Err(Error::Quarantined(claim.node));
+            }
+        }
+        let except = BTreeSet::from([id]);
+        let occupancy =
+            occupancy_from_leases(self.leases.values(), &self.open_binding_leases(), &except);
+        for claim in &claims {
+            if !occupancy.can_cover(&self.graph, claim)? {
+                return Err(Error::Overlap { node: claim.node });
+            }
+        }
+        allocation.claims = claims;
+        self.leases.insert(
+            id,
+            Lease {
+                id,
+                owner,
+                allocation,
+                parent: None,
+                expires_at,
+                prepare_deadline: 0,
+                priority,
+                state: LeaseState::Reserved,
+            },
+        );
+        Ok(Vec::new())
+    }
+
+    fn promote_lease(&mut self, id: LeaseId, prepare_deadline: u64) -> Result<Vec<Effect>, Error> {
+        if !self.agreed {
+            return Err(Error::NotAgreed);
+        }
+        let lease = self.leases.get(&id).ok_or(Error::UnknownLease(id))?;
+        if lease.state == LeaseState::Preparing {
+            return Ok(Vec::new());
+        }
+        if lease.state != LeaseState::Reserved {
+            return Err(Error::LeaseState {
+                lease: id,
+                state: lease.state,
+            });
+        }
+        if lease.allocation.graph_revision != self.graph.revision {
+            return Err(Error::StaleGraphRevision {
+                current: self.graph.revision,
+                got: lease.allocation.graph_revision,
+            });
+        }
+        let claims = lease.allocation.claims.clone();
+        let except = BTreeSet::from([id]);
+        let occupancy =
+            occupancy_from_leases(self.leases.values(), &self.open_binding_leases(), &except);
+        for claim in &claims {
+            if !occupancy.can_cover(&self.graph, claim)? {
+                return Err(Error::Overlap { node: claim.node });
+            }
+        }
+        if let Some(lease) = self.leases.get_mut(&id) {
+            lease.state = LeaseState::Preparing;
+            lease.prepare_deadline = prepare_deadline;
+        }
         Ok(Vec::new())
     }
 
@@ -508,7 +614,7 @@ impl Cluster {
         if lease.state == LeaseState::Released {
             return Ok(self.release_effects(id));
         }
-        if lease.state != LeaseState::Active {
+        if !matches!(lease.state, LeaseState::Active | LeaseState::Reserved) {
             return Err(Error::LeaseState {
                 lease: id,
                 state: lease.state,
@@ -552,7 +658,7 @@ impl Cluster {
         if lease.state == LeaseState::Expired {
             return Ok(self.fence_effects(id));
         }
-        if lease.state != LeaseState::Active {
+        if !matches!(lease.state, LeaseState::Active | LeaseState::Reserved) {
             return Err(Error::LeaseState {
                 lease: id,
                 state: lease.state,
@@ -571,7 +677,7 @@ impl Cluster {
         }
         let now = self.now;
         let lease = self.leases.get_mut(&id).ok_or(Error::UnknownLease(id))?;
-        if lease.state != LeaseState::Active {
+        if !matches!(lease.state, LeaseState::Active | LeaseState::Reserved) {
             return Err(Error::LeaseState {
                 lease: id,
                 state: lease.state,

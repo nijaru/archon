@@ -68,6 +68,9 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 - All nine required v0 scenarios pass (`cargo test --workspace`: 40 tests).
 - Fair-share admission (`admit_fair`) is a per-owner budget ceiling on top of
   the priority queue; an empty ceiling disables it and matches `admit`.
+- Reservations are a Lease in `Reserved` state (`ReserveLease`/`PromoteLease`):
+  committed capacity with no Bindings; promotion re-enters the ordinary
+  prepare/bind/activate path. Six reservation scenarios pass.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.
@@ -82,8 +85,8 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
    trigger in `ai/brief.md` fires.
 2. Do not scaffold the later crate map in `research/stack.md`.
 3. Launch and commercial work (`tk-kwzc`, `tk-n8e9`) stays later.
-4. Fair share shipped (`admit_fair`, `tk-s1ff`). Next scheduling policy:
-   reservations or backfill.
+4. Fair share and reservations shipped (`admit_fair`; `Reserved` lease state).
+   Next scheduling policy: backfill over the priority queue.
 5. Gang-as-distinct-policy versus gang-as-soft-preference.
 ## Open questions
 

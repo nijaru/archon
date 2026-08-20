@@ -37,7 +37,10 @@ impl Occupancy {
 }
 
 pub fn lease_occupies(lease: &Lease, open_bindings: bool) -> bool {
-    matches!(lease.state, LeaseState::Preparing | LeaseState::Active) || open_bindings
+    matches!(
+        lease.state,
+        LeaseState::Reserved | LeaseState::Preparing | LeaseState::Active
+    ) || open_bindings
 }
 
 pub fn resolve_claim(graph: &Graph, claim: &Claim) -> Result<Claim, Error> {

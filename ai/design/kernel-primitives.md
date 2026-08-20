@@ -1,7 +1,7 @@
 # Fleet Kernel Vocabulary and Model
 
 **Status:** accepted v0 kernel contract for `tk-byam`
-**Updated:** 2026-08-17
+**Updated:** 2026-08-20
 
 This is the kernel contract. Implement these types. Older architecture docs
 may still say cell, host, or treat Allocation as a lease; those names map
@@ -272,6 +272,11 @@ exclusive Leases cannot cover the same Node units.
 
 The lifecycle is ordinary and explicit:
 
+- it is **reserved** when the Cluster commits capacity for a named future
+  Request before that Request runs; a reserved Lease occupies its claims but
+  has no Bindings and enforces nothing;
+- it **prepares** when promoted from Reserved, entering the ordinary
+  Bind/activate path;
 - it **expires** when `expires_at` passes;
 - it is **released** when its owner gives it back;
 - it is **revoked** when the Cluster takes it back;
@@ -391,6 +396,8 @@ Authoritative commands:
 
 ```text
 ApplyGraph              register or update Nodes, Edges, and total capacity
+ReserveLease            Reserved, no Bindings
+PromoteLease            Reserved → Preparing
 OpenLease               Preparing
 ActivateLease           Active, with its Bindings
 FailLease

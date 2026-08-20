@@ -85,6 +85,7 @@ constrain the resource, lease, or scheduler model.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-20 | A reservation is a Lease in `Reserved` state, not a second ownership type | Lease-first ownership: committed capacity with no Bindings, reusing lease expiry, release, revoke, occupancy, preemption, fair-share usage, and replay. `ReserveLease` opens root-only; `PromoteLease` moves Reserved → Preparing and re-checks graph revision and overlap before the ordinary prepare path. Reservations occupy, so lower-priority reservations preempt like running work. |
 | 2026-08-20 | Define the v0-to-v1 transition trigger | v0 shipped as decision logic without node execution; the execution gates move to v1 entry. v1 starts on a named real workload, a needed provider adapter, or a policy requiring real-node timing/enforcement. Simulator-first stays the default for policies the simulator can validate fairly. |
 | 2026-08-17 | Fair-share admission is a per-owner budget ceiling, not a reservation | An owner under budget is never blocked by another owner's consumption. An empty ceiling disables the budget and matches plain `admit`. |
 | 2026-08-17 | All nine required v0 scenarios pass | Registration, service/batch/gang, hard-filter refusal, exclusive claims, nested leases, revoke/fence/stale-agent, release-and-replace, deterministic replay, and machine failure with quarantine recovery. |
@@ -105,7 +106,7 @@ constrain the resource, lease, or scheduler model.
 
 - authority replication and global federation beyond one Cluster log;
 - static versus dynamic topology and contention edges;
-- first v1 scheduling policy after fair share (reservations, backfill);
+- first v1 scheduling policy after fair share and reservations (backfill);
 - gang-as-distinct-policy versus gang-as-soft-preference;
 - device-level preemption/reset contracts across vendors;
 - virtual-cluster network, storage, and identity semantics;

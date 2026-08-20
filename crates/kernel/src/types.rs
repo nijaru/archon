@@ -178,6 +178,7 @@ pub struct Allocation {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LeaseState {
+    Reserved,
     Preparing,
     Active,
     Released,
