@@ -29,11 +29,11 @@ substrate to reuse.
   admission (`admit_fair`) adds a per-owner budget ceiling on top of the same
   queue; an empty ceiling disables it and matches `admit`.
 - `tk-byam`, `tk-l8xd`, `tk-0lvx`, `tk-2vsh`, `tk-kmcj`, `tk-1idx`, `tk-e0n5`,
-  `tk-s1ff`, and `tk-vbsh` are done. All nine required v0 scenarios pass.
-  Reservations (`tk-vbsh`) are a Lease in `Reserved` state: committed capacity,
-  no Bindings, `PromoteLease` re-enters the ordinary prepare path; admission,
-  preemption, fair-share usage, expiry, and replay all see them through
-  existing occupancy. Launch/commercial tasks `tk-kwzc` and `tk-n8e9` stay
+  `tk-s1ff`, `tk-vbsh`, and `tk-b9xb` are done. All nine required v0 scenarios
+  pass. Reservations (`tk-vbsh`) are a Lease in `Reserved` state: committed
+  capacity, no Bindings, `PromoteLease` re-enters the ordinary prepare path.
+  Backfill (`tk-b9xb`) is EASY-style over the priority queue with shadow times
+  from lease expiry. Launch/commercial tasks `tk-kwzc` and `tk-n8e9` stay
   later.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.

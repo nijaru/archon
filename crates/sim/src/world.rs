@@ -197,6 +197,34 @@ impl World {
         Ok(Some(admission.request.id))
     }
 
+    /// Admit with EASY-style backfill: later requests may start when they do
+    /// not delay a blocked higher-priority request.
+    pub fn admit_next_backfill(
+        &mut self,
+        lease: LeaseId,
+        owner: OwnerId,
+    ) -> Result<Option<RequestId>, Error> {
+        let Some(admission) = self.cluster.admit_backfill(&self.queue) else {
+            return Ok(None);
+        };
+        self.queue
+            .retain(|queued| queued.request.id != admission.request.id);
+        let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
+        let prepare_deadline = self.cluster.now.saturating_add(20);
+        self.apply(Command::OpenLease {
+            lease,
+            owner,
+            allocation: admission.allocation,
+            parent: None,
+            expires_at,
+            prepare_deadline,
+            priority: admission.request.priority,
+        })?;
+        self.bind_enforced(lease, self.next_binding)?;
+        self.next_binding = self.next_binding.saturating_add(32);
+        Ok(Some(admission.request.id))
+    }
+
     /// Admit with a per-owner fair-share ceiling.
     pub fn admit_next_fair(
         &mut self,

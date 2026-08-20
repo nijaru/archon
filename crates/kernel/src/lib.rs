@@ -17,7 +17,9 @@ mod preempt;
 mod select;
 mod types;
 
-pub use admit::{Admission, Queued, admit, admit_fair, owner_usage, refuse_reason};
+pub use admit::{
+    Admission, BackfillCtx, Queued, admit, admit_backfill, admit_fair, owner_usage, refuse_reason,
+};
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
 pub use command::{Command, Effect};
 pub use endpoint::{EndpointError, EndpointOp};
@@ -60,6 +62,23 @@ impl Cluster {
             fair_share,
             queue,
             leases,
+        )
+    }
+
+    /// EASY-style backfill over the priority queue with an optional
+    /// per-owner fair-share ceiling.
+    pub fn admit_backfill(&self, queue: &[Queued]) -> Option<Admission> {
+        admit_backfill(
+            &self.graph,
+            &self.occupancy(),
+            &self.quarantine,
+            &Quantity::new(),
+            queue,
+            &crate::admit::BackfillCtx {
+                now: self.now,
+                leases: &self.leases,
+                open_bindings: &self.open_binding_leases(),
+            },
         )
     }
 }

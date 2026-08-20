@@ -85,6 +85,7 @@ constrain the resource, lease, or scheduler model.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-20 | Backfill is EASY-style over the priority queue, shadow from lease expiry | `admit_backfill` walks the queue in admission order; a request that cannot select becomes a blocked head with shadow = earliest expiry event time at which it selects. A later request starts only if it finishes by every blocked head's shadow or claims none of that head's shadow claims — it can delay nothing. Unsatisfiable requests are dead and block nobody. The model is optimistic: renewals may push real starts later, never earlier. |
 | 2026-08-20 | A reservation is a Lease in `Reserved` state, not a second ownership type | Lease-first ownership: committed capacity with no Bindings, reusing lease expiry, release, revoke, occupancy, preemption, fair-share usage, and replay. `ReserveLease` opens root-only; `PromoteLease` moves Reserved → Preparing and re-checks graph revision and overlap before the ordinary prepare path. Reservations occupy, so lower-priority reservations preempt like running work. |
 | 2026-08-20 | Define the v0-to-v1 transition trigger | v0 shipped as decision logic without node execution; the execution gates move to v1 entry. v1 starts on a named real workload, a needed provider adapter, or a policy requiring real-node timing/enforcement. Simulator-first stays the default for policies the simulator can validate fairly. |
 | 2026-08-17 | Fair-share admission is a per-owner budget ceiling, not a reservation | An owner under budget is never blocked by another owner's consumption. An empty ceiling disables the budget and matches plain `admit`. |
@@ -106,7 +107,8 @@ constrain the resource, lease, or scheduler model.
 
 - authority replication and global federation beyond one Cluster log;
 - static versus dynamic topology and contention edges;
-- first v1 scheduling policy after fair share and reservations (backfill);
+- next scheduling decision: gang-as-distinct-policy versus
+  gang-as-soft-preference (backfill and fair share shipped);
 - gang-as-distinct-policy versus gang-as-soft-preference;
 - device-level preemption/reset contracts across vendors;
 - virtual-cluster network, storage, and identity semantics;

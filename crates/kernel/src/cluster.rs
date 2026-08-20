@@ -210,7 +210,7 @@ impl Cluster {
             .any(|binding| binding.lease == lease && !binding.state.is_closed())
     }
 
-    fn open_binding_leases(&self) -> BTreeSet<LeaseId> {
+    pub(crate) fn open_binding_leases(&self) -> BTreeSet<LeaseId> {
         self.bindings
             .values()
             .filter(|binding| !binding.state.is_closed())
