@@ -446,7 +446,13 @@ fn stale_agent_hello_cannot_reinstate_an_old_session() {
             session: 1,
         })
         .unwrap_err();
-    assert!(matches!(err, Error::StaleSession { expected: 2, got: 1 }));
+    assert!(matches!(
+        err,
+        Error::StaleSession {
+            expected: 2,
+            got: 1
+        }
+    ));
     // An equal-session retransmission is idempotent and re-emits reconcile.
     let effects = cluster
         .apply(Command::SetAgentSession {
@@ -486,17 +492,20 @@ fn contains_cycles_and_multi_parent_are_rejected_atomically() {
     let err = cluster
         .apply(Command::ApplyGraph {
             nodes: vec![],
-            edges: vec![fleet_kernel::Edge {
-                from: NodeId::from_u64(1),
-                to: NodeId::from_u64(2),
-                kind: fleet_kernel::EdgeKind::Contains,
-                attrs: Default::default(),
-            }, fleet_kernel::Edge {
-                from: NodeId::from_u64(2),
-                to: NodeId::from_u64(1),
-                kind: fleet_kernel::EdgeKind::Contains,
-                attrs: Default::default(),
-            }],
+            edges: vec![
+                fleet_kernel::Edge {
+                    from: NodeId::from_u64(1),
+                    to: NodeId::from_u64(2),
+                    kind: fleet_kernel::EdgeKind::Contains,
+                    attrs: Default::default(),
+                },
+                fleet_kernel::Edge {
+                    from: NodeId::from_u64(2),
+                    to: NodeId::from_u64(1),
+                    kind: fleet_kernel::EdgeKind::Contains,
+                    attrs: Default::default(),
+                },
+            ],
         })
         .unwrap_err();
     assert!(matches!(err, Error::InvalidTopology { .. }));
@@ -557,7 +566,12 @@ fn health_updates_do_not_strand_in_flight_allocations() {
         cluster.leases[&LeaseId::from_u64(1)].state,
         LeaseState::Active
     ));
-    assert!(cluster.graph.degraded_ancestor(NodeId::from_u64(2)).is_some());
+    assert!(
+        cluster
+            .graph
+            .degraded_ancestor(NodeId::from_u64(2))
+            .is_some()
+    );
     let replayed = Cluster::replay(&cluster.log).unwrap();
     assert_eq!(replayed.digest(), cluster.digest());
 }
@@ -655,7 +669,11 @@ fn backfill_honors_the_fair_share_ceiling() {
     // though capacity is free.
     let fair = fleet_kernel::KindUsage::from([(NodeKind::Cpu, qty(Dimension::Count, 1))]);
     assert!(cluster.admit_backfill(&queue, &fair).is_none());
-    assert!(cluster.admit_backfill(&queue, &fleet_kernel::KindUsage::new()).is_some());
+    assert!(
+        cluster
+            .admit_backfill(&queue, &fleet_kernel::KindUsage::new())
+            .is_some()
+    );
 }
 
 #[test]
@@ -888,8 +906,5 @@ fn digest_distinguishes_capacity_and_edge_changes() {
             }],
         })
         .unwrap();
-    assert_ne!(
-        cluster.digest(), after_capacity,
-        "edge change must show"
-    );
+    assert_ne!(cluster.digest(), after_capacity, "edge change must show");
 }

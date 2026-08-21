@@ -1,6 +1,5 @@
 use fleet_kernel::{
-    Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass,
-    RequestId, qty,
+    Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
 use fleet_sim::{World, tiny_graph};
 
@@ -67,7 +66,9 @@ fn gpu_hold(world: &mut World, lease: u64, expires_at: u64) {
             20,
         )
         .unwrap();
-    world.bind_enforced(LeaseId::from_u64(lease), 1_000).unwrap();
+    world
+        .bind_enforced(LeaseId::from_u64(lease), 1_000)
+        .unwrap();
     world.deliver_all().unwrap();
     world.activate_lease(LeaseId::from_u64(lease)).unwrap();
     world.deliver_all().unwrap();

@@ -119,7 +119,12 @@ impl Cluster {
             graph_nodes: self
                 .graph
                 .nodes()
-                .map(|node| (node.id, (node.kind, node.capacity.clone(), node.attrs.clone())))
+                .map(|node| {
+                    (
+                        node.id,
+                        (node.kind, node.capacity.clone(), node.attrs.clone()),
+                    )
+                })
                 .collect(),
             graph_edges: self
                 .graph
@@ -183,8 +188,7 @@ impl Cluster {
             matches!(
                 lease.state,
                 LeaseState::Reserved | LeaseState::Preparing | LeaseState::Active
-            )
-                || self.open_bindings(lease.id)
+            ) || self.open_bindings(lease.id)
         })
     }
 
@@ -337,15 +341,21 @@ impl Cluster {
                 provider_handle,
                 fence,
             } => self.record_prepared(*binding, *session, *provider_handle, *fence),
-            Command::RecordBindingActive { binding, session, fence } => {
-                self.record_active(*binding, *session, *fence)
-            }
-            Command::RecordBindingReleased { binding, session, fence } => {
-                self.record_released(*binding, *session, *fence)
-            }
-            Command::RecordBindingFenced { binding, session, fence } => {
-                self.record_fenced(*binding, *session, *fence)
-            }
+            Command::RecordBindingActive {
+                binding,
+                session,
+                fence,
+            } => self.record_active(*binding, *session, *fence),
+            Command::RecordBindingReleased {
+                binding,
+                session,
+                fence,
+            } => self.record_released(*binding, *session, *fence),
+            Command::RecordBindingFenced {
+                binding,
+                session,
+                fence,
+            } => self.record_fenced(*binding, *session, *fence),
             Command::RecordBindingFailed {
                 binding,
                 session,
@@ -355,9 +365,7 @@ impl Cluster {
             Command::SetAgentSession { machine, session } => {
                 self.set_agent_session(*machine, *session)
             }
-            Command::SetNodeHealth { node, health } => {
-                self.set_node_health(*node, health.clone())
-            }
+            Command::SetNodeHealth { node, health } => self.set_node_health(*node, health.clone()),
             Command::RebindSession { binding, session } => self.rebind_session(*binding, *session),
             Command::QuarantineNode { node } => self.quarantine_node(*node),
             Command::UnquarantineNode { node } => self.unquarantine_node(*node),
@@ -814,10 +822,7 @@ impl Cluster {
             state,
             LeaseState::Preparing | LeaseState::Active | LeaseState::Reserved
         ) {
-            return Err(Error::LeaseState {
-                lease: id,
-                state,
-            });
+            return Err(Error::LeaseState { lease: id, state });
         }
         if now < expires_at {
             return Err(Error::ExpireNotDue);
@@ -872,7 +877,8 @@ impl Cluster {
         provider: crate::ids::ProviderId,
     ) -> Result<Vec<Effect>, Error> {
         if let Some(existing) = self.bindings.get(&id) {
-            if existing.lease == lease_id && existing.node == node && existing.provider == provider {
+            if existing.lease == lease_id && existing.node == node && existing.provider == provider
+            {
                 // Retry of a committed OpenBinding: re-emit Prepare only while
                 // still preparing; never disturb Active or closed Bindings.
                 if existing.state == BindingState::Preparing {
@@ -1113,7 +1119,12 @@ impl Cluster {
         })
     }
 
-    fn record_active(&mut self, id: BindingId, session: u64, fence: u64) -> Result<Vec<Effect>, Error> {
+    fn record_active(
+        &mut self,
+        id: BindingId,
+        session: u64,
+        fence: u64,
+    ) -> Result<Vec<Effect>, Error> {
         let binding = self.bindings.get(&id).ok_or(Error::UnknownBinding(id))?;
         self.require_session(binding.node, session)?;
         self.require_fence(id, binding.fence, fence)?;
@@ -1129,7 +1140,12 @@ impl Cluster {
         })
     }
 
-    fn record_released(&mut self, id: BindingId, session: u64, fence: u64) -> Result<Vec<Effect>, Error> {
+    fn record_released(
+        &mut self,
+        id: BindingId,
+        session: u64,
+        fence: u64,
+    ) -> Result<Vec<Effect>, Error> {
         let binding = self.bindings.get(&id).ok_or(Error::UnknownBinding(id))?;
         self.require_session(binding.node, session)?;
         self.require_fence(id, binding.fence, fence)?;
@@ -1140,7 +1156,12 @@ impl Cluster {
         Ok(Vec::new())
     }
 
-    fn record_fenced(&mut self, id: BindingId, session: u64, fence: u64) -> Result<Vec<Effect>, Error> {
+    fn record_fenced(
+        &mut self,
+        id: BindingId,
+        session: u64,
+        fence: u64,
+    ) -> Result<Vec<Effect>, Error> {
         let binding = self.bindings.get(&id).ok_or(Error::UnknownBinding(id))?;
         self.require_session(binding.node, session)?;
         self.require_fence(id, binding.fence, fence)?;
@@ -1170,7 +1191,10 @@ impl Cluster {
         }
         // A failed Binding means enforcement was lost or never established;
         // the Lease cannot stay Active or continue preparing past it.
-        let lease = self.leases.get_mut(&lease_id).ok_or(Error::UnknownLease(lease_id))?;
+        let lease = self
+            .leases
+            .get_mut(&lease_id)
+            .ok_or(Error::UnknownLease(lease_id))?;
         if !matches!(
             lease.state,
             LeaseState::Failed | LeaseState::Released | LeaseState::Revoked | LeaseState::Expired

@@ -210,9 +210,9 @@ impl World {
         lease: LeaseId,
         owner: OwnerId,
     ) -> Result<Option<RequestId>, Error> {
-        let Some(admission) =
-            self.cluster
-                .admit_backfill(&self.queue, &fleet_kernel::KindUsage::new())
+        let Some(admission) = self
+            .cluster
+            .admit_backfill(&self.queue, &fleet_kernel::KindUsage::new())
         else {
             return Ok(None);
         };
@@ -409,9 +409,11 @@ impl World {
             .values()
             .filter(|lease| lease.parent.is_none())
             .filter(|lease| {
-                lease.allocation.claims.iter().any(|claim| {
-                    self.cluster.graph.machine_of(claim.node) == Some(machine)
-                })
+                lease
+                    .allocation
+                    .claims
+                    .iter()
+                    .any(|claim| self.cluster.graph.machine_of(claim.node) == Some(machine))
             })
             .filter(|lease| self.cluster.occupies(lease.id))
             .map(|lease| lease.id)
@@ -536,14 +538,18 @@ impl World {
             let endpoint = self.endpoints.get(&key);
             // A binding whose lease is terminal must fence on reconcile even
             // if the endpoint still looks consistent: the authority is gone.
-            let lease_live = self.cluster.leases.get(&binding.lease).is_some_and(|lease| {
-                matches!(
-                    lease.state,
-                    fleet_kernel::LeaseState::Reserved
-                        | fleet_kernel::LeaseState::Preparing
-                        | fleet_kernel::LeaseState::Active
-                )
-            });
+            let lease_live = self
+                .cluster
+                .leases
+                .get(&binding.lease)
+                .is_some_and(|lease| {
+                    matches!(
+                        lease.state,
+                        fleet_kernel::LeaseState::Reserved
+                            | fleet_kernel::LeaseState::Preparing
+                            | fleet_kernel::LeaseState::Active
+                    )
+                });
             let same = lease_live
                 && endpoint.is_some_and(|endpoint| {
                     endpoint.open
@@ -733,15 +739,21 @@ fn apply_effect(
                         fence,
                     }
                 }
-                EndpointOp::Activate => {
-                    Command::RecordBindingActive { binding, session, fence }
-                }
-                EndpointOp::Release => {
-                    Command::RecordBindingReleased { binding, session, fence }
-                }
-                EndpointOp::Fence => {
-                    Command::RecordBindingFenced { binding, session, fence }
-                }
+                EndpointOp::Activate => Command::RecordBindingActive {
+                    binding,
+                    session,
+                    fence,
+                },
+                EndpointOp::Release => Command::RecordBindingReleased {
+                    binding,
+                    session,
+                    fence,
+                },
+                EndpointOp::Fence => Command::RecordBindingFenced {
+                    binding,
+                    session,
+                    fence,
+                },
             };
             return Ok(Some(command));
         }

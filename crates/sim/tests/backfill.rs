@@ -1,4 +1,6 @@
-use fleet_kernel::{Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty};
+use fleet_kernel::{
+    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+};
 use fleet_sim::{World, tiny_graph};
 
 fn boot() -> World {
@@ -41,7 +43,9 @@ fn hold_gpu(world: &mut World, lease: u64, expires_at: u64) {
             20,
         )
         .unwrap();
-    world.bind_enforced(LeaseId::from_u64(lease), 1_000).unwrap();
+    world
+        .bind_enforced(LeaseId::from_u64(lease), 1_000)
+        .unwrap();
     world.deliver_all().unwrap();
     world.activate_lease(LeaseId::from_u64(lease)).unwrap();
     world.deliver_all().unwrap();
@@ -56,7 +60,9 @@ fn backfill_starts_job_that_finishes_before_shadow() {
     // Low-priority job needs one GPU and finishes at 11, long before 1_000.
     world.enqueue(request(3, NodeKind::Gpu, 1, 10, 1), OwnerId::from_u64(3));
     assert_eq!(
-        world.admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3)).unwrap(),
+        world
+            .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))
+            .unwrap(),
         Some(RequestId::from_u64(3)),
         "short job must backfill past the blocked head"
     );
@@ -80,7 +86,9 @@ fn backfill_skips_job_that_would_delay_the_head() {
     // A short GPU job behind it still backfills.
     world.enqueue(request(4, NodeKind::Gpu, 1, 10, 1), OwnerId::from_u64(4));
     assert_eq!(
-        world.admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4)).unwrap(),
+        world
+            .admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4))
+            .unwrap(),
         Some(RequestId::from_u64(4))
     );
     // Head and the skipped delaying job both remain queued.
@@ -95,7 +103,9 @@ fn non_conflicting_job_backfills_past_the_shadow() {
     // CPU-only job never claims a node the GPU head would take.
     world.enqueue(request(3, NodeKind::Cpu, 1, 5_000, 1), OwnerId::from_u64(3));
     assert_eq!(
-        world.admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3)).unwrap(),
+        world
+            .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))
+            .unwrap(),
         Some(RequestId::from_u64(3))
     );
 }
@@ -106,7 +116,9 @@ fn unsatisfiable_head_does_not_block() {
     world.enqueue(request(1, NodeKind::Gpu, 5, 100, 100), OwnerId::from_u64(1));
     world.enqueue(request(2, NodeKind::Gpu, 1, 100, 1), OwnerId::from_u64(2));
     assert_eq!(
-        world.admit_next_backfill(LeaseId::from_u64(2), OwnerId::from_u64(2)).unwrap(),
+        world
+            .admit_next_backfill(LeaseId::from_u64(2), OwnerId::from_u64(2))
+            .unwrap(),
         Some(RequestId::from_u64(2)),
         "a request no cluster state can satisfy must not block others"
     );
@@ -135,7 +147,9 @@ fn reservation_expiry_feeds_the_shadow() {
     // Finishes at 11, before 50.
     world.enqueue(request(4, NodeKind::Gpu, 1, 10, 1), OwnerId::from_u64(4));
     assert_eq!(
-        world.admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4)).unwrap(),
+        world
+            .admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4))
+            .unwrap(),
         Some(RequestId::from_u64(4))
     );
 }
@@ -162,7 +176,9 @@ fn unproven_shadow_admits_only_disjoint_jobs() {
     // A CPU job shares nothing with the head: safe to backfill.
     world.enqueue(request(4, NodeKind::Cpu, 1, 5_000, 1), OwnerId::from_u64(4));
     assert_eq!(
-        world.admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4)).unwrap(),
+        world
+            .admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4))
+            .unwrap(),
         Some(RequestId::from_u64(4))
     );
 }
@@ -205,7 +221,9 @@ fn quarantine_blocked_head_still_protects_capacity() {
         .to_vec();
     // Quarantine one machine: its GPU and CPUs are hard-filtered.
     world
-        .apply(fleet_kernel::Command::QuarantineNode { node: graph_machines[0] })
+        .apply(fleet_kernel::Command::QuarantineNode {
+            node: graph_machines[0],
+        })
         .unwrap();
     // Head needs both GPUs; one is behind quarantine, so it cannot select —
     // but quarantine is temporary, so the head must not be treated as dead.
@@ -221,10 +239,14 @@ fn quarantine_blocked_head_still_protects_capacity() {
     );
     // Unquarantine: the head places immediately, unobstructed.
     world
-        .apply(fleet_kernel::Command::UnquarantineNode { node: graph_machines[0] })
+        .apply(fleet_kernel::Command::UnquarantineNode {
+            node: graph_machines[0],
+        })
         .unwrap();
     assert_eq!(
-        world.admit_next_backfill(LeaseId::from_u64(1), OwnerId::from_u64(1)).unwrap(),
+        world
+            .admit_next_backfill(LeaseId::from_u64(1), OwnerId::from_u64(1))
+            .unwrap(),
         Some(fleet_kernel::RequestId::from_u64(1))
     );
 }

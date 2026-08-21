@@ -1,4 +1,6 @@
-use fleet_kernel::{Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty};
+use fleet_kernel::{
+    Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+};
 use fleet_sim::{World, tiny_graph};
 
 fn boot() -> World {
@@ -58,7 +60,10 @@ fn reservation_blocks_admission_until_released() {
             1_000,
         )
         .unwrap();
-    assert_eq!(world.cluster.leases[&LeaseId::from_u64(1)].state, LeaseState::Reserved);
+    assert_eq!(
+        world.cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Reserved
+    );
 
     world.enqueue(gpu_request(2, 1, 10), OwnerId::from_u64(2));
     assert!(
@@ -100,7 +105,10 @@ fn reservation_expires_and_frees_capacity() {
 
     world.set_now(10);
     world.expire_due().unwrap();
-    assert_eq!(world.cluster.leases[&LeaseId::from_u64(1)].state, LeaseState::Expired);
+    assert_eq!(
+        world.cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Expired
+    );
     assert_eq!(
         world
             .admit_next(LeaseId::from_u64(2), OwnerId::from_u64(2))
@@ -121,11 +129,17 @@ fn promoted_reservation_runs_the_ordinary_lifecycle() {
         )
         .unwrap();
     world.promote(LeaseId::from_u64(1)).unwrap();
-    assert_eq!(world.cluster.leases[&LeaseId::from_u64(1)].state, LeaseState::Preparing);
+    assert_eq!(
+        world.cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Preparing
+    );
     world.deliver_all().unwrap();
     world.activate_lease(LeaseId::from_u64(1)).unwrap();
     world.deliver_all().unwrap();
-    assert_eq!(world.cluster.leases[&LeaseId::from_u64(1)].state, LeaseState::Active);
+    assert_eq!(
+        world.cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Active
+    );
 
     // The promoted lease now enforces exclusivity like any other lease: the
     // remaining GPU on the other machine admits, but the occupied one cannot
@@ -145,9 +159,7 @@ fn promoted_reservation_runs_the_ordinary_lifecycle() {
         .allocation
         .claims
         .iter()
-        .find(|claim| {
-            world.cluster.graph.node(claim.node).unwrap().kind == NodeKind::Gpu
-        })
+        .find(|claim| world.cluster.graph.node(claim.node).unwrap().kind == NodeKind::Gpu)
         .unwrap()
         .node;
     assert_eq!(
@@ -177,7 +189,10 @@ fn higher_priority_request_preempts_a_reservation() {
     );
     let victims = world.preempt_for(&gpu_request(2, 2, 100)).unwrap().unwrap();
     assert_eq!(victims, vec![LeaseId::from_u64(1)]);
-    assert_eq!(world.cluster.leases[&LeaseId::from_u64(1)].state, LeaseState::Revoked);
+    assert_eq!(
+        world.cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Revoked
+    );
     assert_eq!(
         world
             .admit_next(LeaseId::from_u64(2), OwnerId::from_u64(2))
@@ -203,7 +218,10 @@ fn reservation_consumes_its_own_kind_budget() {
         .and_then(|per_kind| per_kind.get(&NodeKind::Cpu))
         .map(|q| q.len())
         .unwrap_or(0);
-    assert_eq!(charged, 1, "reserved leases must charge their owner by kind");
+    assert_eq!(
+        charged, 1,
+        "reserved leases must charge their owner by kind"
+    );
 
     let cpu_ceiling = fleet_kernel::KindUsage::from([(
         fleet_kernel::NodeKind::Cpu,
@@ -281,5 +299,8 @@ fn reservation_trace_replays_to_the_same_digest() {
     world.release_lease(LeaseId::from_u64(2)).unwrap();
 
     let replayed = world.replay_trace().unwrap();
-    assert_eq!(format!("{:?}", replayed.digest()), format!("{:?}", world.digest()));
+    assert_eq!(
+        format!("{:?}", replayed.digest()),
+        format!("{:?}", world.digest())
+    );
 }

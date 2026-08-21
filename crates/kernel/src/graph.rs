@@ -135,23 +135,25 @@ impl Graph {
     /// `CachedOn` edge from `data` — i.e. the data is resident near `id`.
     pub fn caches(&self, id: NodeId, data: NodeId) -> bool {
         self.has_edge(data, id, EdgeKind::CachedOn)
-            || self.ancestors(id).into_iter().any(|ancestor| {
-                self.has_edge(data, ancestor, EdgeKind::CachedOn)
-            })
+            || self
+                .ancestors(id)
+                .into_iter()
+                .any(|ancestor| self.has_edge(data, ancestor, EdgeKind::CachedOn))
     }
 
     /// The nearest ancestry node (including `id` itself) marked
     /// `health=degraded`, if any. Health is scoring input, never authority.
     pub fn degraded_ancestor(&self, id: NodeId) -> Option<NodeId> {
         let degraded = |node: NodeId| {
-            self.node(node)
-                .and_then(|item| item.attrs.get("health"))
+            self.node(node).and_then(|item| item.attrs.get("health"))
                 == Some(&"degraded".to_string())
         };
         if degraded(id) {
             return Some(id);
         }
-        self.ancestors(id).into_iter().find(|ancestor| degraded(*ancestor))
+        self.ancestors(id)
+            .into_iter()
+            .find(|ancestor| degraded(*ancestor))
     }
 
     pub fn related(&self, left: NodeId, right: NodeId, kind: EdgeKind) -> bool {

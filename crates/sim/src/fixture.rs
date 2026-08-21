@@ -14,6 +14,7 @@ impl IdGen {
     }
 }
 
+#[derive(Clone)]
 pub struct MachineIds {
     pub machine: NodeId,
     pub numa: NodeId,

@@ -36,7 +36,10 @@ fn cpu_request(id: u64) -> Request {
 }
 
 fn machine_of(world: &World, lease: u64) -> fleet_kernel::NodeId {
-    let claim = world.cluster.leases[&LeaseId::from_u64(lease)].allocation.claims[0].node;
+    let claim = world.cluster.leases[&LeaseId::from_u64(lease)]
+        .allocation
+        .claims[0]
+        .node;
     world.cluster.graph.machine_of(claim).unwrap()
 }
 
@@ -63,7 +66,11 @@ fn healthy_machine_is_preferred() {
         .nodes_of_kind(fleet_kernel::NodeKind::Machine)
         .to_vec();
     let degraded = machines[0];
-    assert_eq!(machine_of(&world, 1), machines[1], "must avoid the degraded machine");
+    assert_eq!(
+        machine_of(&world, 1),
+        machines[1],
+        "must avoid the degraded machine"
+    );
     assert_ne!(degraded, machines[1]);
 }
 
@@ -75,7 +82,10 @@ fn degraded_stays_usable_when_healthy_is_full() {
     admit_on(&mut world, 2, 2);
     // The degraded machine still serves the request.
     admit_on(&mut world, 3, 3);
-    let claim = world.cluster.leases[&LeaseId::from_u64(3)].allocation.claims[0].node;
+    let claim = world.cluster.leases[&LeaseId::from_u64(3)]
+        .allocation
+        .claims[0]
+        .node;
     assert!(
         world.cluster.graph.degraded_ancestor(claim).is_some(),
         "degraded capacity must remain usable"

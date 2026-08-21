@@ -140,10 +140,7 @@ impl fmt::Display for Error {
             }
             Self::InvalidTopology { reason } => write!(f, "invalid topology: {reason}"),
             Self::CapacityBelowOccupancy { node } => {
-                write!(
-                    f,
-                    "node {node} capacity would drop below occupied units"
-                )
+                write!(f, "node {node} capacity would drop below occupied units")
             }
             Self::DuplicateClaim { node } => {
                 write!(f, "allocation claims node {node} more than once")

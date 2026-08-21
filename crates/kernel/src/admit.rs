@@ -3,13 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::error::Error;
 use crate::graph::Graph;
 use crate::ids::{LeaseId, NodeId, OwnerId};
-use crate::occupancy::{
-    Occupancy, claims_by_node, lease_occupies, occupancy_from_leases,
-};
+use crate::occupancy::{Occupancy, claims_by_node, lease_occupies, occupancy_from_leases};
 use crate::select::select;
 use crate::types::{
-    Allocation, Dimension, Lease, NodeKind, Quantity, Queued, Request, quantity_add_assign,
-    quantity_get, quantity_le, qty,
+    Allocation, Dimension, Lease, NodeKind, Quantity, Queued, Request, qty, quantity_add_assign,
+    quantity_get, quantity_le,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,7 +113,10 @@ pub fn owner_usage(
 
 /// Deterministic tiebreak only: total charge across kinds.
 fn usage_total(usage: &KindUsage) -> u64 {
-    usage.values().map(|quantity| quantity.values().sum::<u64>()).sum()
+    usage
+        .values()
+        .map(|quantity| quantity.values().sum::<u64>())
+        .sum()
 }
 
 fn order_queue(queue: &[Queued], usage: &BTreeMap<OwnerId, KindUsage>) -> Vec<usize> {
@@ -200,9 +201,7 @@ pub fn admit_backfill(
                     allocation.claims.iter().map(|claim| claim.node).collect();
                 let finishes = now.saturating_add(queued.request.lifetime);
                 let safe = blocked.iter().all(|head| match head.shadow {
-                    Some(shadow) => {
-                        finishes <= shadow || claims.is_disjoint(&head.shadow_claims)
-                    }
+                    Some(shadow) => finishes <= shadow || claims.is_disjoint(&head.shadow_claims),
                     // No finite release is proven: only a job that never
                     // touches the head's nodes can be sure not to delay it.
                     None => claims.is_disjoint(&head.shadow_claims),
@@ -219,14 +218,11 @@ pub fn admit_backfill(
                 // A request the cluster could satisfy but for quarantine is
                 // temporarily blocked: no proven release time exists, so
                 // only claim-disjoint jobs may backfill past it.
-                if let Ok(allocation) =
-                    select(graph, occupancy, &queued.request, &BTreeSet::new())
+                if let Ok(allocation) = select(graph, occupancy, &queued.request, &BTreeSet::new())
                 {
                     blocked.push(BlockedHead {
                         shadow: None,
-                        shadow_claims: claims_by_node(&allocation.claims)
-                            .into_keys()
-                            .collect(),
+                        shadow_claims: claims_by_node(&allocation.claims).into_keys().collect(),
                     });
                 } else if let Some(head) = shadow_head(
                     graph,
@@ -299,21 +295,19 @@ fn shadow_head(
         .map(|lease| lease.id)
         .collect();
     let projected = occupancy_from_leases(leases.values(), open_bindings, &all);
-    select(graph, &projected, request, quarantine).ok().map(|allocation| BlockedHead {
-        shadow: None,
-        shadow_claims: claims_by_node(&allocation.claims).into_keys().collect(),
-    })
+    select(graph, &projected, request, quarantine)
+        .ok()
+        .map(|allocation| BlockedHead {
+            shadow: None,
+            shadow_claims: claims_by_node(&allocation.claims).into_keys().collect(),
+        })
 }
 
 /// Whether `request` fits under `fair_share` given per-kind usage. Kinds
 /// without a ceiling are unconstrained; an empty map disables the budget.
 /// Charges match what select grants: count-based needs claim at least one
 /// unit of their kind, memory claims bytes.
-pub fn within_budget(
-    usage: KindUsage,
-    request: &Request,
-    fair_share: &KindUsage,
-) -> bool {
+pub fn within_budget(usage: KindUsage, request: &Request, fair_share: &KindUsage) -> bool {
     if fair_share.is_empty() {
         return true;
     }

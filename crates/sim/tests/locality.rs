@@ -63,14 +63,19 @@ fn hold_cpu_at(world: &mut World, lease: u64, binding: u64) {
             20,
         )
         .unwrap();
-    world.bind_enforced(LeaseId::from_u64(lease), binding).unwrap();
+    world
+        .bind_enforced(LeaseId::from_u64(lease), binding)
+        .unwrap();
     world.deliver_all().unwrap();
     world.activate_lease(LeaseId::from_u64(lease)).unwrap();
     world.deliver_all().unwrap();
 }
 
 fn placed_node(world: &World, lease: u64) -> NodeId {
-    world.cluster.leases[&LeaseId::from_u64(lease)].allocation.claims[0].node
+    world.cluster.leases[&LeaseId::from_u64(lease)]
+        .allocation
+        .claims[0]
+        .node
 }
 
 #[test]
