@@ -81,7 +81,11 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
   cascades and subtree sibling accounting, fence-carrying binding acks,
   monotonic sessions, atomic ApplyGraph, state-aware binding retries, backfill
   shadow soundness, fair-share usage from the Cluster's own table, and
-  simulator fence-ack withholding until Agent restart. 63 tests pass.
+  simulator fence-ack withholding until Agent restart.
+- Follow-up design passes fixed: topology validated as a forest, root-only
+  Bindings, non-revision health (`SetNodeHealth`), capacity-shrink refusal,
+  preparing-lease expiry, duplicate-claim rejection, `Queued` type
+  unification, and fair-share-carrying backfill. 78 tests pass.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.

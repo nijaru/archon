@@ -97,6 +97,10 @@ impl Cluster {
         Ok(effects)
     }
 
+    /// Replay the command log into a fresh Cluster. Clock, agreement, and
+    /// epoch changes live outside the command log; replaying a trace that
+    /// used them needs the simulator's `World::replay_trace`, which carries
+    /// those events.
     pub fn replay(commands: &[Command]) -> Result<Self, Error> {
         let mut cluster = Self::new();
         for command in commands {
