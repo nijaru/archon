@@ -3,7 +3,17 @@
 version = 4
 
 [[package]]
-name = "fleet-ctl"
+name = "fleet-cli"
+version = "0.0.0"
+dependencies = [
+ "fleet-control",
+ "fleet-kernel",
+ "fleet-node",
+ "serde_json",
+]
+
+[[package]]
+name = "fleet-control"
 version = "0.0.0"
 dependencies = [
  "fleet-kernel",

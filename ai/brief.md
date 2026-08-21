@@ -54,7 +54,7 @@ substrate to reuse.
   Known gap: spawn happens before cgroup attach (brief escape window);
   fix with clone3-into-cgroup when the runtime seam is next touched.
 - **Control plane (2026-08-21): cluster state outlives processes.**
-  `crates/ctl` (`fleet-ctl`): every applied command is appended to a JSONL
+  `crates/control` (the `fleet` binary): every applied command is appended to a JSONL
   log (kernel serde is an opt-in feature; the kernel stays dep-free);
   restart replays the log exactly and revokes live leases instead of
   re-executing them. API server (TCP JSON frames) + CLI (submit/status/

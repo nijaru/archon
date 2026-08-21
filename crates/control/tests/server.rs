@@ -5,8 +5,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use fleet_ctl::api::{ClientRequest, ServerResponse, read_response, write_frame};
-use fleet_ctl::server::ControlPlane;
+use fleet_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
+use fleet_control::server::ControlPlane;
 
 fn temp_log(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -23,7 +23,7 @@ fn spawn_server(name: &str) -> String {
     let addr = listener.local_addr().unwrap().to_string();
     let log = temp_log(name);
     std::thread::spawn(move || {
-        let link = fleet_ctl::server::AgentLink::Local { cgroup_root: None };
+        let link = fleet_control::server::AgentLink::Local { cgroup_root: None };
         let mut plane = ControlPlane::boot(link, log).expect("boot");
         plane.serve(listener).ok();
     });

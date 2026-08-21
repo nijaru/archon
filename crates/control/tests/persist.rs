@@ -24,7 +24,7 @@ fn logged_service(path: &Path) -> NodeService {
     let mut service = NodeService::new();
     let log_path = path.clone();
     service.set_command_sink(Some(Box::new(move |command: &Command| {
-        let mut log = fleet_ctl::log::CommandLog::open(&log_path).expect("open log");
+        let mut log = fleet_control::log::CommandLog::open(&log_path).expect("open log");
         log.append(command).expect("append log");
     })));
     let (_local, nodes, edges) = fleet_node::discover::discover();
@@ -64,7 +64,7 @@ fn replay_reproduces_cluster_state_exactly() {
     submit_sleep(&mut service, 1, 3_600);
     let before = format!("{:?}", service.cluster.leases);
 
-    let commands = fleet_ctl::log::CommandLog::read(&path).expect("read log");
+    let commands = fleet_control::log::CommandLog::read(&path).expect("read log");
     assert!(commands.len() > 5, "log must capture the full lifecycle");
 
     let mut recovered = NodeService::new();
@@ -83,7 +83,7 @@ fn recovery_revokes_live_leases_without_reexecution() {
     assert!(service.is_running(lease));
 
     // A restart replays the log into a fresh agent that holds no processes.
-    let commands = fleet_ctl::log::CommandLog::read(&path).expect("read log");
+    let commands = fleet_control::log::CommandLog::read(&path).expect("read log");
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
     assert_eq!(

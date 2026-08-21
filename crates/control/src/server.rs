@@ -68,7 +68,7 @@ impl ControlPlane {
             .map(|id| id.as_u64() + 1)
             .unwrap_or(1);
         eprintln!(
-            "fleet-ctl: {}boot, recovered {replayed} commands, revoked {recovered} live leases",
+            "fleet: {}boot, recovered {replayed} commands, revoked {recovered} live leases",
             if first_boot { "first " } else { "" }
         );
         Ok(Self {
@@ -89,7 +89,7 @@ impl ControlPlane {
                 .peer_addr()
                 .map(|addr| addr.to_string())
                 .unwrap_or_default();
-            eprintln!("fleet-ctl: client connected from {peer}");
+            eprintln!("fleet: client connected from {peer}");
             while let Ok(request) = crate::api::read_request(&mut stream) {
                 self.service.tick().ok();
                 let response = self.handle(request);
@@ -97,7 +97,7 @@ impl ControlPlane {
                     break;
                 }
             }
-            eprintln!("fleet-ctl: client {peer} disconnected");
+            eprintln!("fleet: client {peer} disconnected");
         }
         Ok(())
     }
