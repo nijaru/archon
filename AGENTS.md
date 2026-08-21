@@ -1,6 +1,6 @@
 # Archon Compute OS
 
-Rust-first distributed resource OS. Fleet is the resource and scheduling
+Rust-first distributed resource OS. Archon is the resource and scheduling
 authority. Linux, KVM, OCI, and drivers are substrate. Kubernetes, Slurm, Ray,
 and MPI are optional integrations or nested workloads.
 
@@ -64,5 +64,5 @@ licenses without checking notices.
 
 - Docs: resolve links in changed files; `git diff --check`.
 - Rust: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
-  and `cargo run -p fleet-sim`. The simulator is the v0 fault-injection harness.
+  and `cargo run -p archon-sim`. The simulator is the v0 fault-injection harness.
   Do not invent a second implementation stack.

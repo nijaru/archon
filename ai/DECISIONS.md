@@ -1,14 +1,14 @@
-# Fleet Decisions
+# Archon Decisions
 
 **Updated:** 2026-08-20
 
 ## Current direction
 
-Fleet is a distributed resource operating system. The product owns resource
+Archon is a distributed resource operating system. The product owns resource
 control, leases, scheduling, node execution, and lifecycle across heterogeneous
 compute. Inference and private accelerator fleets are first workloads, not the
-definition of Fleet. Existing schedulers and runtimes are optional integrations
-or nested workloads; Fleet is not merely a substrate that delegates control to
+definition of Archon. Existing schedulers and runtimes are optional integrations
+or nested workloads; Archon is not merely a substrate that delegates control to
 them.
 
 The complete architecture is [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md).
@@ -33,7 +33,7 @@ The accepted fencing protocol is [`design/lease-fencing.md`](design/lease-fencin
   networking, accelerator drivers, and workload runtimes remain dependencies.
 - **Compatibility without architectural capture.** Kubernetes, Slurm, Flux,
   Ray, MPI, and other systems are optional integrations or nested schedulers;
-  Fleet remains the native scheduler and resource authority for its workload
+  Archon remains the native scheduler and resource authority for its workload
   classes.
 - **Small deployments stay small.** A single VPS or small cell should not need a
   mandatory multi-service stack.
@@ -46,7 +46,7 @@ The accepted fencing protocol is [`design/lease-fencing.md`](design/lease-fencin
 |---|---|---|
 | Product category | Distributed resource operating system | One substrate for services, batch, HPC, AI, VMs, and WASM |
 | Core primitive | Typed resource graph plus enforceable lease | Unifies heterogeneous capacity and ownership |
-| Scheduler shape | Global planner → Cluster allocator → node manager → native Fleet workload scheduler, with optional nested schedulers | Keeps policy and timing domains separate without delegating Fleet's control authority |
+| Scheduler shape | Global planner → Cluster allocator → node manager → native Archon workload scheduler, with optional nested schedulers | Keeps policy and timing domains separate without delegating Archon's control authority |
 | Resource scope | CPU, memory, accelerators, networks, storage, data, health, failure domains | Placement depends on more than node CPU/RAM |
 | Runtime modes | Process, OCI, sandbox, microVM, VM, WASM | Isolation is a workload property |
 | Implementation direction | Rust-first; no Go compatibility shell | Privileged infrastructure, concurrency, provider boundaries, WASM integration; the deleted Go scaffold encoded the wrong product |
@@ -58,7 +58,7 @@ The accepted fencing protocol is [`design/lease-fencing.md`](design/lease-fencin
 
 ## Reused systems
 
-Fleet should not rewrite:
+Archon should not rewrite:
 
 - Linux, KVM, cgroups, namespaces, eBPF, WireGuard;
 - OCI runtimes, containerd, Cloud Hypervisor, Firecracker, Wasmtime;
@@ -69,7 +69,7 @@ Fleet should not rewrite:
 ## Superseded framing
 
 The earlier model-first GPU-serving plan is retained only as a workload and UX
-reference. Fleet is not limited to:
+reference. Archon is not limited to:
 
 - GPU-only scheduling;
 - online inference;
@@ -96,7 +96,7 @@ constrain the resource, lease, or scheduler model.
 | 2026-08-21 | Control plane: JSONL command log, replay recovery revokes live work | Cluster state must outlive processes. Every applied command (kernel + agent records) is appended to a log; replay is exact because the kernel is deterministic. Live leases at crash are revoked, not re-executed — a fresh agent holds no processes, so re-execution would silently respawn user work; revocation is the honest state. Kernel serde is an opt-in feature so the kernel stays dependency-free. The graph of record enters the log on first boot; restarts replay it rather than rediscovering. |
 | 2026-08-21 | Remote agent protocol: length-prefixed JSON over TCP | The Effect/Record seam was already protocol-shaped, so remoteness only needed a wire format plus an agent core shared by local and daemon paths (one implementation, two transports). serde_json chosen over hand-rolled framing as the first new dependencies. Session+fence ride on every frame; the agent rejects stale generations exactly like kernel endpoints. Multi-node scheduling (routing Effects to per-machine agents) is deliberately deferred to the control plane workstream. Known gap recorded: spawn-before-cgroup-attach leaves a brief escape window; fix via clone3 when the runtime seam is next touched. |
 | 2026-08-21 | cgroups v2 adapter: one cgroup per lease, claims as kernel limits | Resource isolation was the gap between lifecycle enforcement and real enforcement. A lease's CPU/memory claims map directly to `cpu.max`/`memory.max` in a per-lease group under a configurable root; termination uses `cgroup.kill` and removes the group; `ProcessRuntime::drop` kills survivors so a crashed agent cannot leak processes. No new dependencies — plain cgroupfs writes. Tests probe cgroupfs writability and skip where unavailable (CI), run for real on enforcement hosts. |
-| 2026-08-21 | Fire the v1 trigger by declaration; build the walking skeleton | Waiting for an external workload left Fleet a verified design forever. The skeleton — one machine, real processes under leases — is the concrete need. `Request.command` carries the workload payload (execution intent, not resource state); commands live outside the kernel log, keyed by request and lease. The node agent consumes kernel `Effect`s through the simulator's seam, so the decision/enforcement boundary is unchanged. Enforcement is lifecycle-only (spawn/kill) on macOS; cgroups isolation on Linux is the next adapter, then a remote agent protocol. |
+| 2026-08-21 | Fire the v1 trigger by declaration; build the walking skeleton | Waiting for an external workload left Archon a verified design forever. The skeleton — one machine, real processes under leases — is the concrete need. `Request.command` carries the workload payload (execution intent, not resource state); commands live outside the kernel log, keyed by request and lease. The node agent consumes kernel `Effect`s through the simulator's seam, so the decision/enforcement boundary is unchanged. Enforcement is lifecycle-only (spawn/kill) on macOS; cgroups isolation on Linux is the next adapter, then a remote agent protocol. |
 | 2026-08-20 | Second review (gpt-5.6-sol) fixes: expiry validates first, occupancy sums roots, shadows respect fencing and quarantine, promotion revalidates | A rejected `ExpireLease` no longer mutates descendants (validation precedes the cascade). Root occupancy sums independent root trees instead of taking the max — partial memory claims can no longer overcommit — and `subtree_used` counts only direct children, charging each delegation lineage once (grandchild claims are subsets of their parent's). Backfill projections exclude only live leases at expiry (fence acks have no provable time) and treat quarantine-blocked heads as temporarily blocked (shadow unbounded, disjoint-only backfill) instead of dead. `PromoteLease` revalidates committed claims against the current graph and refreshes the revision, so an unrelated `ApplyGraph` cannot strand a reservation. Also: `Admission` carries the owner (fair share cannot be charged to a different owner); same-tuple `ApplyGraph` edges update attrs in place; digests cover capacities and edges; memory fragmentation scoring is bounded below the locality/health tiers; equal-session handshakes are idempotent and re-emit reconcile; `DataObject` is a locality hint and cannot be claimed. |
 | 2026-08-20 | Fair-share ceilings are per owner per node kind (TRES-style) | An aggregate Count budget conflated 1 GPU with 1 CPU and could not express "2 GPUs and 4 CPUs per owner". `KindUsage` keys ceilings and usage by `NodeKind` — the fair-share analogue of Slurm's trackable resources. Kinds without a ceiling are unconstrained; an empty map disables the budget. Charges match selection: count-based needs claim at least one unit of their kind, memory claims bytes. |
 | 2026-08-17 | Fair-share admission is a per-owner budget ceiling, not a reservation | An owner under budget is never blocked by another owner's consumption. An empty ceiling disables the budget and matches plain `admit`. Ceiling dimensionality resolved per kind in 2026-08-20. |
@@ -106,12 +106,12 @@ constrain the resource, lease, or scheduler model.
 | 2026-08-17 | Accept v0 kernel contract | `ai/design/kernel-primitives.md` is the kernel vocabulary and model. `Cluster` is the linearizable authority. `Allocation` is claims against a Graph revision. `Lease` is committed authority. Occupancy is exclusive Node-unit claims; Memory is quantified, devices/cores are discrete Nodes. Graph and indexes rebuild from the command log. `Cell`, `Host`, `Placement`, `Plan`, `FenceToken`, and `NodeIncarnation` are not kernel types. |
 | 2026-08-17 | Working kernel vocabulary | Superseded by the accepted v0 kernel contract. The vocabulary itself did not change. |
 | 2026-08-17 | Delete the Go model-serving scaffold | The stubs encoded models, endpoints, replicas, GPU telemetry, Postgres, and NATS; keeping them would define a second, wrong product |
-| 2026-08-16 | Reframe Fleet as a distributed resource OS | The resource graph, lease, hierarchy, and nested-scheduler model is the actual long-term product idea |
+| 2026-08-16 | Reframe Archon as a distributed resource OS | The resource graph, lease, hierarchy, and nested-scheduler model is the actual long-term product idea |
 | 2026-06-07 | Use a workload-agnostic node core | The agent should receive a workload spec and pass workload-specific metadata to runtimes |
 | 2026-06-07 | Use direct node execution as an initial path | Host-level device and lifecycle control should not depend on a pod abstraction |
 | 2026-06-07 | Use CDI as the initial device attachment boundary | Vendor-neutral device specification for OCI workloads |
 | 2026-06-06 | Keep NATS optional for the first local proof | Event durability and fanout should follow an actual control-plane need |
-| 2026-06-06 | Keep Fleet runtime-neutral | Fleet owns lifecycle and allocation, not inference-engine internals |
+| 2026-06-06 | Keep Archon runtime-neutral | Archon owns lifecycle and allocation, not inference-engine internals |
 | 2026-05-29 | Keep source-available core and Apache SDK/schema boundary | Historical scaffold decision; superseded by the AGPL-first 2026-08-16 release plan |
 
 ## Open decisions

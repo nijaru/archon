@@ -1,10 +1,10 @@
-# Fleet Plan
+# Archon Plan
 
 **Updated:** 2026-08-20
 
 ## Product hypothesis
 
-Fleet is a distributed resource operating system for heterogeneous compute.
+Archon is a distributed resource operating system for heterogeneous compute.
 It represents compute, memory, accelerators, networks, storage, data, health,
 and failure domains as a typed graph; allocates them through hierarchical
 leases; and runs services, batch/HPC, AI, containers, microVMs, VMs, and WASM
@@ -12,7 +12,7 @@ through one control plane.
 
 The first accelerator/inference workload is a proof of the abstraction, not the
 product boundary. vLLM, Slurm, Flux, Ray, MPI, Kubernetes, and other runtimes
-may execute inside or beside Fleet allocations.
+may execute inside or beside Archon allocations.
 
 The first tree is `crates/kernel` plus `crates/sim`. The accepted kernel contract is
 [`design/kernel-primitives.md`](design/kernel-primitives.md). The fencing
@@ -95,7 +95,7 @@ is safe.
 
 ### 5. Native workloads and compatibility
 
-Fleet's own schedulers and node managers are the primary control path for
+Archon's own schedulers and node managers are the primary control path for
 services, batch, HPC, AI, VMs, and other supported workload classes. Add native
 execution and policy for those classes while exposing virtual-cluster leases
 and optional integrations for:
@@ -106,7 +106,7 @@ and optional integrations for:
 - persistent storage providers and artifact stores.
 
 Compatibility integrations support migration and composition. They must not
-replace Fleet's resource graph, lease semantics, or native scheduling authority.
+replace Archon's resource graph, lease semantics, or native scheduling authority.
 
 ### 6. Cells, federation, and disaggregated resources
 
@@ -153,7 +153,7 @@ verification.
 ## Explicit non-goals for the first kernel
 
 - replacing Linux, KVM, drivers, NCCL/RCCL, MPI, Ceph, or vendor stacks;
-- delegating Fleet's resource-control and scheduling authority to an incumbent
+- delegating Archon's resource-control and scheduling authority to an incumbent
   orchestrator;
 - building a general-purpose graph database;
 - putting high-rate telemetry in the authoritative state machine;

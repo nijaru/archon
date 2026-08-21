@@ -1,11 +1,11 @@
-# Fleet Status
+# Archon Status
 
 **Updated:** 2026-08-20
 
 ## Direction
 
-**2026-08-21: the v1 trigger fired by declaration. Fleet now runs real
-processes.** `crates/node` (via `archon demo`/`archon agent`) discovers this machine as a Fleet
+**2026-08-21: the v1 trigger fired by declaration. Archon now runs real
+processes.** `crates/node` (via `archon demo`/`archon agent`) discovers this machine as a Archon
 graph, admits requests through the kernel, and executes lease commands as
 real OS processes — a process spawned on activation dies on lease revoke or
 expiry. Enforcement is lifecycle-only today (spawn/kill); cgroups-based
@@ -13,14 +13,14 @@ resource isolation on Linux is the next adapter. The agent consumes kernel
 `Effect`s through the same seam the simulator uses, so swapping in a remote
 agent protocol later does not touch the kernel.
 
-Fleet is now defined as a **distributed resource operating system**.
+Archon is now defined as a **distributed resource operating system**.
 
 Its core model is:
 
 > A datacenter is a graph of leaseable capabilities. A workload is a set of
 > constraints and objectives over that graph.
 
-Fleet is intended to unify resource discovery, leases, scheduling, identity,
+Archon is intended to unify resource discovery, leases, scheduling, identity,
 isolation, execution, health, and recovery for services, batch/HPC, distributed
 AI, inference, native processes, OCI containers, microVMs, VMs, WASM, and future
 composable resources.

@@ -1,4 +1,4 @@
-# Fleet Distributed Resource OS Specification
+# Archon Distributed Resource OS Specification
 
 **Status:** canonical product and architecture specification
 **Updated:** 2026-08-20
@@ -11,13 +11,13 @@ those types; older cell/host wording below maps to Cluster and
 
 ## 1. Executive summary
 
-Fleet is a Rust-first distributed resource operating system for heterogeneous
+Archon is a Rust-first distributed resource operating system for heterogeneous
 compute infrastructure.
 
 > A datacenter is a graph of leaseable capabilities. A workload is a set of
 > constraints and objectives over that graph.
 
-Fleet unifies resource discovery, topology, leases, allocation, scheduling,
+Archon unifies resource discovery, topology, leases, allocation, scheduling,
 identity, isolation, execution, health, and recovery for:
 
 - services and long-running processes;
@@ -27,7 +27,7 @@ identity, isolation, execution, health, and recovery for:
 - local and distributed storage;
 - CPU, GPU, TPU, NPU, FPGA, NIC, RDMA, CXL, and future resources.
 
-Fleet is not “Kubernetes in Rust.” It is the primary resource-control,
+Archon is not “Kubernetes in Rust.” It is the primary resource-control,
 scheduling, and execution system for its supported workload classes. It reuses
 Linux, KVM, OCI, accelerator drivers, storage systems, network stacks, and
 workload runtimes as lower-level substrate or explicit integrations.
@@ -35,13 +35,13 @@ workload runtimes as lower-level substrate or explicit integrations.
 The target core is Rust-first. There is no implementation in this repository
 yet; the former Go model-serving scaffold was removed. Inference and
 accelerator fleets remain a first workload and operator experience, not
-Fleet's product boundary.
+Archon's product boundary.
 
 Detailed architecture: [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md).
 
 ## 2. Product definition
 
-Fleet owns:
+Archon owns:
 
 - a typed resource graph;
 - allocation and lease ownership, renewal, expiry, revocation, and fencing;
@@ -51,17 +51,17 @@ Fleet owns:
 - cells, federation, virtual clusters, and compatibility boundaries;
 - CLI, APIs, SDKs, simulators, and operational evidence.
 
-Fleet does not replace lower-level substrate:
+Archon does not replace lower-level substrate:
 
 - Linux, KVM, cgroups, namespaces, eBPF, WireGuard, or vendor drivers;
 - containerd, OCI runtimes, Cloud Hypervisor, Firecracker, or Wasmtime;
 - Ceph, NVMe-oF, SPDK, object stores, or cloud storage providers;
 - NCCL/RCCL and other vendor communication libraries.
 
-Fleet does replace the fragmented resource-control and scheduling layer for
+Archon does replace the fragmented resource-control and scheduling layer for
 its supported workload classes. Slurm, Flux, Ray, MPI, JAX, PyTorch, vLLM, and
 Kubernetes are integrations or optional nested workloads. They may run inside a
-Fleet allocation, but Fleet does not delegate its native scheduling authority
+Archon allocation, but Archon does not delegate its native scheduling authority
 to them.
 
 ## 3. Core principles
@@ -226,7 +226,7 @@ Required control-plane properties:
 
 ## 9. Node OS and runtime model
 
-Fleet targets a minimal immutable Linux node:
+Archon targets a minimal immutable Linux node:
 
 ```text
 Linux kernel, node agent, runtimes, KVM, eBPF, drivers,
@@ -239,15 +239,15 @@ Execution modes are workload properties:
 process | OCI container | sandbox | microVM | VM | WASM
 ```
 
-The node agent discovers capabilities, receives Fleet assignments and leases,
+The node agent discovers capabilities, receives Archon assignments and leases,
 prepares execution, attaches devices/storage, supervises workloads, reports
 health, and reconciles state. Providers expose discovery, capabilities,
 topology, allocation, preparation, attachment, detachment, health, and reset
-operations. The node agent is an enforcement and execution component of Fleet,
+operations. The node agent is an enforcement and execution component of Archon,
 not a pass-through agent for another scheduler.
 
 Suggested reused runtimes include OCI-compatible execution, Cloud Hypervisor,
-Firecracker, Wasmtime, and KVM/QEMU. Fleet does not make containerd mandatory
+Firecracker, Wasmtime, and KVM/QEMU. Archon does not make containerd mandatory
 in the core path, but maintains interoperability.
 
 ## 10. Network, storage, and locality
@@ -272,9 +272,9 @@ replication, cache hotness, and checkpoint movement.
 Native support targets OCI, CDI, OpenTelemetry, Linux/KVM, standard storage and
 network protocols, and agent-initiated outbound node connectivity.
 
-Fleet natively schedules and controls its supported workload classes. Optional
+Archon natively schedules and controls its supported workload classes. Optional
 adapters/importers support Kubernetes manifests, Helm, Slurm, Flux, Ray, MPI,
-and other systems. A virtual cluster is a Fleet lease that can host a nested
+and other systems. A virtual cluster is a Archon lease that can host a nested
 scheduler without exposing resources outside its allocation; it is an
 interoperability path, not the core control-plane model.
 
@@ -375,11 +375,11 @@ CXL and disaggregated resources, TPU/NPU/FPGA providers, bare-metal lifecycle,
 multi-region federation, energy optimization, and formal controller verification.
 
 vLLM is a first runtime adapter. It is a valuable workload for validating
-accelerator placement and node lifecycle, but not Fleet's defining abstraction.
+accelerator placement and node lifecycle, but not Archon's defining abstraction.
 
 ## 15. Operator experience
 
-Fleet must make resource decisions inspectable rather than exposing only a
+Archon must make resource decisions inspectable rather than exposing only a
 successful placement:
 
 ```text
@@ -397,7 +397,7 @@ what will happen if a node fails, and how to recover it.
 
 ## 16. Licensing and commercial direction
 
-Fleet is planned as an open-source project. The core resource, lease, scheduler,
+Archon is planned as an open-source project. The core resource, lease, scheduler,
 node, and compatibility layers are the product. Commercial value may come from
 enterprise governance, certified providers, signed/offline releases, support,
 managed control planes, and advanced optimization.
@@ -409,11 +409,11 @@ required before public release.
 
 ## 17. Success criteria
 
-Fleet succeeds when:
+Archon succeeds when:
 
 - a single VPS can run a useful profile without a mandatory service stack;
 - a small bare-metal cluster does not require Kubernetes-like overhead;
-- Fleet directly controls services, batch/HPC, and AI workloads through one
+- Archon directly controls services, batch/HPC, and AI workloads through one
   resource model, while nested schedulers compose inside explicit leases;
 - topology, locality, health, and failure domains influence placement;
 - lease ownership remains correct across failures;

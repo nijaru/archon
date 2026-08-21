@@ -1,4 +1,4 @@
-# Fleet Design
+# Archon Design
 
 **Updated:** 2026-08-17
 
@@ -7,11 +7,11 @@ The accepted v0 kernel contract is
 protocol is [`design/lease-fencing.md`](design/lease-fencing.md). Kernel types
 are Cluster, Graph, Node, Edge, Request, Allocation, Lease, Binding, and Agent.
 
-Fleet is a distributed resource operating system, not an inference-only control
+Archon is a distributed resource operating system, not an inference-only control
 plane or a thin wrapper around existing schedulers. Its core question is:
 
 > Which leaseable capabilities should satisfy this workload's constraints and
-> objectives, and how can Fleet control, enforce, and recover that decision?
+> objectives, and how can Archon control, enforce, and recover that decision?
 
 The full architecture is in [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md).
 The former model-first GPU-serving design remains useful as a first workload
@@ -37,13 +37,13 @@ Process | OCI | microVM | VM | WASM
 Linux and hardware
 ```
 
-Fleet is the scheduler and resource authority for native workload classes. A
+Archon is the scheduler and resource authority for native workload classes. A
 nested workload runtime may schedule tasks inside an explicitly delegated lease,
-but it cannot allocate outside that lease or replace Fleet's native control path.
+but it cannot allocate outside that lease or replace Archon's native control path.
 
 ## Core ownership
 
-Fleet owns:
+Archon owns:
 
 - typed resource discovery and graph state;
 - allocation, lease renewal, expiry, revocation, fencing, and reclamation;
@@ -53,7 +53,7 @@ Fleet owns:
 - cell and virtual-cluster boundaries;
 - compatibility adapters and the simulator.
 
-Fleet reuses Linux, KVM, cgroups, namespaces, eBPF, WireGuard, OCI, CDI,
+Archon reuses Linux, KVM, cgroups, namespaces, eBPF, WireGuard, OCI, CDI,
 container runtimes, Cloud Hypervisor, Firecracker, Wasmtime, Ceph, NVMe-oF,
 RDMA, vendor drivers, NCCL/RCCL, MPI, Slurm, Flux, Ray, vLLM, SGLang, and other
 mature components.
@@ -168,7 +168,7 @@ classes without making the core NVIDIA-specific.
 
 ## Networking and storage
 
-Fleet provides a native policy surface over Linux networking and eBPF/XDP for
+Archon provides a native policy surface over Linux networking and eBPF/XDP for
 routing, load balancing, identity, policy, observability, bandwidth, WireGuard,
 BGP, SR-IOV, and RDMA awareness. Sidecars are not mandatory.
 
@@ -180,7 +180,7 @@ providers may include Ceph, NVMe-oF, NFS, cloud block storage, and object stores
 
 OCI, CDI, OpenTelemetry, Linux/KVM, and standard storage/network protocols are
 native interoperability boundaries. Kubernetes, Helm, Slurm, Flux, Ray, MPI,
-and other systems are optional integrations or nested workloads. Fleet remains
+and other systems are optional integrations or nested workloads. Archon remains
 the first-party scheduler and resource authority rather than delegating its
 control plane to them.
 
