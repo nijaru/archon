@@ -4,8 +4,7 @@
 //! walk paths against accidental unbounded growth.
 
 use fleet_kernel::{
-    Dimension, KindUsage, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId,
-    qty,
+    Dimension, KindUsage, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
 use fleet_sim::{World, tiny_graph};
 
@@ -120,7 +119,12 @@ fn fair_share_and_backfill_terminate_at_scale() {
             world.expire_due().unwrap();
             world.deliver_all().unwrap();
         }
-        if next_lease > 1 && world.cluster.leases.contains_key(&LeaseId::from_u64(next_lease - 1)) {
+        if next_lease > 1
+            && world
+                .cluster
+                .leases
+                .contains_key(&LeaseId::from_u64(next_lease - 1))
+        {
             let lease = LeaseId::from_u64(next_lease - 1);
             world.deliver_all().unwrap();
             let _ = world.activate_lease(lease);
