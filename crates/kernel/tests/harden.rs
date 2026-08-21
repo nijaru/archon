@@ -659,6 +659,7 @@ fn backfill_honors_the_fair_share_ceiling() {
             topology: vec![],
             preferences: vec![],
             data: vec![],
+            command: vec![],
             lifetime: 10,
             priority: 1,
         },

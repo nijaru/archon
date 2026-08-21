@@ -208,6 +208,7 @@ Request
   topology      required Edge relationships among selected Nodes
   preferences   Pack | Spread | PreferAttr; scoring only, never a hard filter
   data          data objects the workload reads; locality is scoring only
+  command       process to execute on activation; empty = pure resource claim
   lifetime
   priority
 ```

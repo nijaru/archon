@@ -33,6 +33,7 @@ fn main() {
         topology: vec![],
         preferences: vec![],
         data: vec![],
+        command: vec![],
         lifetime: 100,
         priority: 10,
     };

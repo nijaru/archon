@@ -1,0 +1,24 @@
+{
+  "project": "tk",
+  "ref": "g6co",
+  "title": "Define v0-to-v1 transition trigger and reconcile v0 exit gates",
+  "description": null,
+  "status": "done",
+  "priority": 1,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [
+    {
+      "ts": "2026-08-20T23:43:05.74712Z",
+      "msg": "Defined v1 trigger (named real workload / needed provider adapter / real-node-only policy) in ai/brief.md; moved execution gates from kernel-exit to v1 entry in PLAN.md and spec.md; refreshed stale fair-share notes in STATUS.md and DECISIONS.md. Committed 1328568 and pushed."
+    }
+  ],
+  "created_at": "2026-08-20T23:42:05.328392Z",
+  "updated_at": "2026-08-20T23:43:05.74712Z",
+  "completed_at": "2026-08-20T23:42:59.442061Z",
+  "external": {}
+}

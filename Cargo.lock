@@ -7,6 +7,13 @@ name = "fleet-kernel"
 version = "0.0.0"
 
 [[package]]
+name = "fleet-node"
+version = "0.0.0"
+dependencies = [
+ "fleet-kernel",
+]
+
+[[package]]
 name = "fleet-sim"
 version = "0.0.0"
 dependencies = [

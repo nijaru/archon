@@ -1,0 +1,15 @@
+[package]
+name = "fleet-node"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+fleet-kernel = { path = "../kernel" }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "fleet-node"
+path = "src/main.rs"

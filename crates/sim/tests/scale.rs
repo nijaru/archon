@@ -36,6 +36,7 @@ fn gpu_request(id: u64, count: u64) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
+        command: vec![],
         lifetime: 1_000,
         priority: 1,
     }

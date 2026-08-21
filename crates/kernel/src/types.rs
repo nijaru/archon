@@ -156,6 +156,11 @@ pub struct Request {
     /// candidates whose ancestry caches these objects rank higher, but the
     /// request is never refused for missing locality.
     pub data: Vec<NodeId>,
+    /// Process to execute when the lease activates, e.g. ["sleep", "30"].
+    /// Empty means a pure resource claim with no executable payload. The
+    /// node's execution adapter consumes this; it is workload intent, not
+    /// resource state.
+    pub command: Vec<String>,
     pub lifetime: u64,
     pub priority: u32,
 }

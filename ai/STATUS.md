@@ -4,6 +4,15 @@
 
 ## Direction
 
+**2026-08-21: the v1 trigger fired by declaration. Fleet now runs real
+processes.** `crates/node` (`fleet-node`) discovers this machine as a Fleet
+graph, admits requests through the kernel, and executes lease commands as
+real OS processes — a process spawned on activation dies on lease revoke or
+expiry. Enforcement is lifecycle-only today (spawn/kill); cgroups-based
+resource isolation on Linux is the next adapter. The agent consumes kernel
+`Effect`s through the same seam the simulator uses, so swapping in a remote
+agent protocol later does not touch the kernel.
+
 Fleet is now defined as a **distributed resource operating system**.
 
 Its core model is:
@@ -93,7 +102,9 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
   shadows, quarantine-blocked heads, promotion revalidation against the
   current graph, owner-carrying Admission, edge attr updates, digest
   capacity/edge coverage, bounded scoring tiers, idempotent equal-session
-  handshakes, and unclaimable DataObjects. 85 tests pass.
+  handshakes, and unclaimable DataObjects.
+- Walking skeleton: `fleet-node` demo + real-process integration tests
+  (lease runs `sleep`, revoke/expiry kill it). 89 tests pass.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.

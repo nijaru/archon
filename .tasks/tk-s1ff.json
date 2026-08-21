@@ -1,0 +1,19 @@
+{
+  "project": "tk",
+  "ref": "s1ff",
+  "title": "Fair-share admission as a per-owner budget ceiling",
+  "description": "admit_fair adds a per-owner budget ceiling on top of the priority queue; an empty ceiling disables it and matches admit. Queued carries owner; owner_usage counts active root leases only.",
+  "status": "done",
+  "priority": 1,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [],
+  "created_at": "2026-08-18T19:35:46.650178Z",
+  "updated_at": "2026-08-18T19:35:48.889268Z",
+  "completed_at": "2026-08-18T19:35:48.889268Z",
+  "external": {}
+}

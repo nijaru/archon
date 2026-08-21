@@ -56,6 +56,7 @@ fn cpu_request(id: u64, count: u64, priority: u32) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
+        command: vec![],
         lifetime: 10,
         priority,
     }

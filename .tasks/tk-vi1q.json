@@ -1,0 +1,19 @@
+{
+  "project": "tk",
+  "ref": "vi1q",
+  "title": "Walking skeleton: real process execution under Fleet leases",
+  "description": null,
+  "status": "active",
+  "priority": 1,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [],
+  "created_at": "2026-08-21T02:36:27.648585Z",
+  "updated_at": "2026-08-21T02:36:27.674306Z",
+  "completed_at": null,
+  "external": {}
+}

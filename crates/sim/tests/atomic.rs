@@ -36,6 +36,7 @@ fn multi_member(id: u64, priority: u32) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
+        command: vec![],
         lifetime: 100,
         priority,
     }
@@ -53,6 +54,7 @@ fn gpu_hold(world: &mut World, lease: u64, expires_at: u64) {
         topology: vec![],
         preferences: vec![],
         data: vec![],
+        command: vec![],
         lifetime: 100,
         priority: 50,
     };
@@ -103,6 +105,7 @@ fn multi_member_request_places_atomically_or_not_at_all() {
         topology: vec![],
         preferences: vec![],
         data: vec![],
+        command: vec![],
         lifetime: 5,
         priority: 1,
     };

@@ -27,6 +27,7 @@ fn request(id: u64, class: RequestClass, kind: NodeKind, count: u64, priority: u
         topology: vec![],
         preferences: vec![],
         data: vec![],
+        command: vec![],
         lifetime: 100,
         priority,
     }

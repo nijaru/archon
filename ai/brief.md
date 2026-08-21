@@ -46,10 +46,13 @@ substrate to reuse.
 - Do not scaffold the full `ai/research/stack.md` crate map.
 - `ai/review/` is superseded history and is not on the session-start path.
 
-## v1 transition trigger
+## v1 transition trigger — FIRED 2026-08-21
 
-v1 (operational substrate) begins when at least one of these is true, not
-before:
+v1 has begun. The trigger fired by declaration: the walking skeleton (a real
+process running on a real machine under a Fleet lease, dying when the lease
+ends) is the concrete need, and building it is the concrete work. The
+original triggers below remain the record of what would otherwise have been
+required:
 
 1. A named real workload must execute on real hardware through Fleet — the
    deliverable is running code, not a scheduling decision the simulator can
@@ -59,10 +62,10 @@ before:
 3. A scheduling policy under consideration depends on node timing, enforcement,
    or failure behavior that only a real node can exercise.
 
-Node execution and provider adapters stay out of the workspace until then.
-Simulator-first remains the default: policies the simulator can validate fairly
-(reservations, backfill, co-scheduling) are v1 work that does not need the
-trigger.
+Skeleton scope: one machine (this one), one execution adapter (real process
+spawn/kill; cgroups come next on Linux), the agent consuming kernel Effects
+through the same seam the simulator uses. Still out of scope until the
+skeleton runs: additional providers, microVMs, volumes, networking.
 
 ## Next action
 

@@ -1,0 +1,24 @@
+{
+  "project": "tk",
+  "ref": "z2pf",
+  "title": "Fix second-review findings (10 defects + contract drift)",
+  "description": null,
+  "status": "done",
+  "priority": 1,
+  "labels": null,
+  "assignees": null,
+  "parent": null,
+  "blocked_by": [],
+  "estimate": null,
+  "due_date": null,
+  "logs": [
+    {
+      "ts": "2026-08-21T01:56:41.27341Z",
+      "msg": "All 10 findings fixed + 4 contract inconsistencies reconciled + 7 pinning tests. 85 tests, clippy clean. Committed and pushed."
+    }
+  ],
+  "created_at": "2026-08-21T01:51:08.088998Z",
+  "updated_at": "2026-08-21T01:56:41.285619Z",
+  "completed_at": "2026-08-21T01:56:41.285619Z",
+  "external": {}
+}
