@@ -14,6 +14,21 @@ use fleet_node::service::NodeService;
 
 const ROOT: &str = "/sys/fs/cgroup/fleet-test";
 
+/// Skip unless this process may create cgroups (root or a delegated
+/// subtree). CI runners and developer laptops skip; enforcement hosts run.
+fn require_cgroup_writable() -> bool {
+    match fs::create_dir(ROOT) {
+        Ok(()) => {
+            let _ = fs::remove_dir(ROOT);
+            true
+        }
+        Err(err) => {
+            eprintln!("skipping: cannot create cgroups at {ROOT}: {err}");
+            false
+        }
+    }
+}
+
 fn cleanup_root() {
     if let Ok(entries) = fs::read_dir(ROOT) {
         for entry in entries.flatten() {
@@ -61,6 +76,9 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 
 #[test]
 fn lease_claims_become_kernel_limits() {
+    if !require_cgroup_writable() {
+        return;
+    }
     cleanup_root();
     let mut service = NodeService::with_cgroups(ROOT.into());
     let (_local, nodes, edges) = fleet_node::discover::discover();
@@ -90,6 +108,9 @@ fn lease_claims_become_kernel_limits() {
 
 #[test]
 fn memory_limit_kills_an_overallocating_process() {
+    if !require_cgroup_writable() {
+        return;
+    }
     cleanup_root();
     let mut service = NodeService::with_cgroups(ROOT.into());
     let (_local, nodes, edges) = fleet_node::discover::discover();
