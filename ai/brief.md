@@ -43,8 +43,16 @@ substrate to reuse.
   on Linux.** Per-lease cgroups under a configurable root; CPU/memory
   claims map to `cpu.max`/`memory.max`; termination kills the group via
   `cgroup.kill`. Proven on the workstation: a runaway process under a
-  16 MiB `memory.max` is OOM-killed. macOS stays lifecycle-only. Next:
-  remote agent protocol, then a second machine.
+  16 MiB `memory.max` is OOM-killed. macOS stays lifecycle-only.
+- **Remote agent protocol (2026-08-21): a second machine joins over TCP.**
+  Length-prefixed JSON frames (`crates/node/src/protocol.rs`, serde_json);
+  `LeaseAgent` is the agent core shared by in-process and daemon paths;
+  `NodeService::connect` boots a cluster over a remote machine's
+  discovered graph; session+fence ride on every frame and stale sessions
+  are rejected by both kernel endpoints and the agent. Proved cross-machine:
+  Mac controller ran and revoked a process on pacabot-ams inside a cgroup.
+  Known gap: spawn happens before cgroup attach (brief escape window);
+  fix with clone3-into-cgroup when the runtime seam is next touched.
 - Launch/commercial tasks `tk-kwzc` and `tk-n8e9` stay deferred.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
@@ -79,8 +87,9 @@ skeleton runs: additional providers, microVMs, volumes, networking.
 
 ## Next action
 
-v1 execution track, in order: a remote agent protocol so a second machine
-can join (the agent already speaks Effects/Record through the seam), then
-the minimal control plane (API server + persistent command log + CLI).
+v1 execution track, in order: the minimal control plane — API server +
+persistent command log + CLI — so clusters outlive one process and more
+than one machine can be scheduled across (the protocol seam is ready;
+multi-node routing of Effects to per-machine agents is the new work).
 Launch/commercial tasks (`tk-kwzc`, `tk-n8e9`) stay deferred until release
 work starts.
