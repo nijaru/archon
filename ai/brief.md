@@ -83,8 +83,12 @@ substrate to reuse.
   the machine's attrs, so identity survives restarts on both sides and is
   recovered via log replay. Same display name + different instance =
   distinct machine (no takeover). Reconcile only respawns Active leases;
-  session numbering resumes above the replayed high-water mark. Remaining
-  limits: no auth/TLS yet.
+  session numbering resumes above the replayed high-water mark. Link auth:
+  every connection opens with a Greeting frame (role + token); `serve
+  --token-file`/`ARCHON_TOKEN` enforces it (constant-time compare), open
+  dev mode warns loudly. Remaining limits: token auth is not TLS (pair
+  with SSH tunnels or add TLS later); single shared token, no per-agent
+  credentials.
   `crates/control` (the `archon` binary): every applied command is appended to a JSONL
   log (kernel serde is an opt-in feature; the kernel stays dep-free);
   restart replays the log exactly and revokes live leases instead of
