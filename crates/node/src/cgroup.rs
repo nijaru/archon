@@ -10,18 +10,7 @@ use std::path::{Path, PathBuf};
 
 use fleet_kernel::LeaseId;
 
-/// Resource limits derived from a lease's claims. Zero means unlimited.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LeaseLimits {
-    pub cpu_count: u64,
-    pub memory_bytes: u64,
-}
-
-impl LeaseLimits {
-    pub fn is_empty(&self) -> bool {
-        self.cpu_count == 0 && self.memory_bytes == 0
-    }
-}
+use crate::protocol::LeaseLimits;
 
 pub struct CgroupGroup {
     path: PathBuf,

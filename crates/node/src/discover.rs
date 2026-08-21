@@ -3,11 +3,16 @@
 
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+
 use fleet_kernel::{Attrs, Dimension, Edge, EdgeKind, Node, NodeKind, Quantity, qty};
 
 pub struct LocalMachine {
+    #[allow(dead_code)]
     pub machine: fleet_kernel::NodeId,
+    #[allow(dead_code)]
     pub cpus: Vec<fleet_kernel::NodeId>,
+    #[allow(dead_code)]
     pub memory: fleet_kernel::NodeId,
 }
 
@@ -19,6 +24,22 @@ impl IdGen {
     fn node(&mut self) -> fleet_kernel::NodeId {
         self.next += 1;
         fleet_kernel::NodeId::from_u64(self.next)
+    }
+}
+
+/// A machine as the agent reports it; the controller builds the graph.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MachineDescription {
+    pub name: String,
+    pub cpus: u64,
+    pub memory_bytes: u64,
+}
+
+pub fn describe() -> MachineDescription {
+    MachineDescription {
+        name: hostname(),
+        cpus: std::thread::available_parallelism().map_or(1, |n| n.get()) as u64,
+        memory_bytes: total_memory_bytes(),
     }
 }
 
@@ -66,18 +87,17 @@ fn hostname() -> String {
     })
 }
 
-/// Discover this machine as a Fleet graph: one Machine node, one Cpu node per
-/// logical CPU, one Memory node with total bytes.
-pub fn discover() -> (LocalMachine, Vec<Node>, Vec<Edge>) {
+/// Build the Fleet graph for a machine description: one Machine node, one
+/// Cpu node per logical CPU, one Memory node with total bytes. Shared by
+/// the local and remote paths so both produce identical graph shapes.
+pub fn build_graph(description: &MachineDescription) -> (LocalMachine, Vec<Node>, Vec<Edge>) {
     let mut ids = IdGen { next: 0 };
     let machine = ids.node();
-    let cpus: Vec<_> = (0..std::thread::available_parallelism().map_or(1, |n| n.get()))
-        .map(|_| ids.node())
-        .collect();
+    let cpus: Vec<_> = (0..description.cpus).map(|_| ids.node()).collect();
     let memory = ids.node();
 
     let mut name = Attrs::new();
-    name.insert("name".into(), hostname());
+    name.insert("name".into(), description.name.clone());
     let mut nodes = vec![
         Node {
             id: machine,
@@ -89,7 +109,7 @@ pub fn discover() -> (LocalMachine, Vec<Node>, Vec<Edge>) {
             id: memory,
             kind: NodeKind::Memory,
             attrs: Attrs::new(),
-            capacity: qty(Dimension::Bytes, total_memory_bytes()),
+            capacity: qty(Dimension::Bytes, description.memory_bytes),
         },
     ];
     for cpu in &cpus {
@@ -123,4 +143,9 @@ pub fn discover() -> (LocalMachine, Vec<Node>, Vec<Edge>) {
         nodes,
         edges,
     )
+}
+
+/// Discover this machine and build its graph.
+pub fn discover() -> (LocalMachine, Vec<Node>, Vec<Edge>) {
+    build_graph(&describe())
 }

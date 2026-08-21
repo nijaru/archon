@@ -1,24 +1,66 @@
-//! Single-node Fleet service: the Cluster transition function plus a real
-//! agent that executes leases as OS processes. The agent consumes the same
-//! kernel `Effect`s the simulator's endpoints consume — the seam between
-//! decision and enforcement is unchanged; only the enforcement is real.
+//! Single-node Fleet controller: the Cluster transition function plus an
+//! agent link that executes leases. The link is either the in-process
+//! [`LeaseAgent`] or a TCP connection to a remote `fleet-node serve` —
+//! both speak the same protocol, so decision and enforcement stay on
+//! opposite sides of the seam whether the machine is local or not.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::net::TcpStream;
 
 use fleet_kernel::{
     BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, NodeKind, OwnerId, ProviderId,
     Queued, Request, RequestId, quantity_get,
 };
 
-#[cfg(target_os = "linux")]
-use crate::cgroup::LeaseLimits;
-#[cfg(not(target_os = "linux"))]
-use crate::runtime::LeaseLimits;
+use crate::agent::LeaseAgent;
+use crate::protocol::{AgentRequest, AgentResponse, LeaseLimits, read_frame, write_frame};
 use crate::runtime::ProcessRuntime;
+
+/// The controller side of the enforcement seam.
+pub trait LeaseExecutor {
+    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String>;
+}
+
+/// In-process execution: the agent runs in this same process.
+pub struct LocalExecutor {
+    agent: LeaseAgent,
+}
+
+impl LocalExecutor {
+    pub fn new(agent: LeaseAgent) -> Self {
+        Self { agent }
+    }
+}
+
+impl LeaseExecutor for LocalExecutor {
+    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+        Ok(self.agent.handle(request))
+    }
+}
+
+/// Remote execution over TCP; one connection per agent.
+pub struct RemoteExecutor {
+    stream: TcpStream,
+}
+
+impl RemoteExecutor {
+    pub fn connect(addr: &str) -> std::io::Result<Self> {
+        Ok(Self {
+            stream: TcpStream::connect(addr)?,
+        })
+    }
+}
+
+impl LeaseExecutor for RemoteExecutor {
+    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+        write_frame(&mut self.stream, &request).map_err(|err| err.to_string())?;
+        read_frame(&mut self.stream).map_err(|err| err.to_string())
+    }
+}
 
 pub struct NodeService {
     pub cluster: Cluster,
-    runtime: ProcessRuntime,
+    executor: Box<dyn LeaseExecutor>,
     queue: Vec<Queued>,
     /// Workload payload per queued request, kept outside the kernel log:
     /// resource decisions never need it, only execution does.
@@ -27,7 +69,6 @@ pub struct NodeService {
     lease_commands: BTreeMap<LeaseId, Vec<String>>,
     pending: VecDeque<Effect>,
     next_session: u64,
-    next_handle: u64,
     next_binding: u64,
 }
 
@@ -38,25 +79,64 @@ impl Default for NodeService {
 }
 
 impl NodeService {
-    /// A service with cgroup v2 enforcement under `root`: lease processes
-    /// run inside per-lease groups with their claims as kernel limits.
-    #[cfg(target_os = "linux")]
-    pub fn with_cgroups(root: String) -> Self {
-        let mut service = Self::new();
-        service.runtime = service.runtime.with_cgroup_root(root);
-        service
+    /// A controller executing on this machine, lifecycle-only (no cgroups).
+    pub fn new() -> Self {
+        let executor = LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()));
+        Self::with_executor(Box::new(executor))
     }
 
-    pub fn new() -> Self {
+    /// A controller executing on this machine with cgroup v2 enforcement.
+    #[cfg(target_os = "linux")]
+    pub fn local_with_cgroups(root: String) -> Self {
+        let runtime = ProcessRuntime::new().with_cgroup_root(root);
+        let executor = LocalExecutor::new(LeaseAgent::new(runtime));
+        Self::with_executor(Box::new(executor))
+    }
+
+    /// Connect to a remote agent, learn its machine, and boot the cluster
+    /// over its discovered graph.
+    pub fn connect(addr: &str) -> Result<Self, Error> {
+        let mut executor = RemoteExecutor::connect(addr).map_err(|err| Error::Refused {
+            explanation: format!("connect {addr}: {err}"),
+        })?;
+        let welcome = executor
+            .execute(AgentRequest::Hello)
+            .map_err(|reason| Error::Refused {
+                explanation: reason,
+            })?;
+        let (name, cpus, memory_bytes) = match welcome {
+            AgentResponse::Welcome {
+                name,
+                cpus,
+                memory_bytes,
+            } => (name, cpus, memory_bytes),
+            other => {
+                return Err(Error::Refused {
+                    explanation: format!("expected Welcome, got {other:?}"),
+                });
+            }
+        };
+        let description = crate::discover::MachineDescription {
+            name,
+            cpus,
+            memory_bytes,
+        };
+        let (_local, nodes, edges) = crate::discover::build_graph(&description);
+        let executor = Box::new(executor);
+        let mut service = Self::with_executor(executor);
+        service.boot(nodes, edges)?;
+        Ok(service)
+    }
+
+    fn with_executor(executor: Box<dyn LeaseExecutor>) -> Self {
         Self {
             cluster: Cluster::new(),
-            runtime: ProcessRuntime::new(),
+            executor,
             queue: Vec::new(),
             commands: BTreeMap::new(),
             lease_commands: BTreeMap::new(),
             pending: VecDeque::new(),
             next_session: 1,
-            next_handle: 1,
             next_binding: 1,
         }
     }
@@ -163,32 +243,16 @@ impl NodeService {
         self.expire_due()
     }
 
+    /// Whether the lease's process is running, per the agent.
     pub fn is_running(&mut self, lease: LeaseId) -> bool {
-        self.runtime.is_running(lease)
-    }
-
-    /// CPU and memory claims of a lease, as enforceable limits.
-    fn lease_limits(&self, lease: LeaseId) -> Result<LeaseLimits, Error> {
-        let mut limits = LeaseLimits::default();
-        let claims = &self
-            .cluster
-            .leases
-            .get(&lease)
-            .ok_or(Error::UnknownLease(lease))?
-            .allocation
-            .claims;
-        for claim in claims {
-            match self.cluster.graph.node(claim.node).map(|node| node.kind) {
-                Some(NodeKind::Cpu) => {
-                    limits.cpu_count += quantity_get(&claim.quantity, Dimension::Count);
-                }
-                Some(NodeKind::Memory) => {
-                    limits.memory_bytes += quantity_get(&claim.quantity, Dimension::Bytes);
-                }
-                _ => {}
-            }
-        }
-        Ok(limits)
+        let session = self.next_session.saturating_sub(1);
+        matches!(
+            self.executor.execute(AgentRequest::Status {
+                lease: lease.as_u64(),
+                session,
+            }),
+            Ok(AgentResponse::Running { running: true, .. })
+        )
     }
 
     fn dequeue(&mut self, request_id: &RequestId) {
@@ -240,8 +304,32 @@ impl NodeService {
         Ok(())
     }
 
-    /// The agent side of the seam: turn one kernel Effect into real process
-    /// operations and the acknowledgement commands the Cluster expects.
+    /// CPU and memory claims of a lease, as enforceable limits.
+    fn lease_limits(&self, lease: LeaseId) -> Result<LeaseLimits, Error> {
+        let mut limits = LeaseLimits::default();
+        let claims = &self
+            .cluster
+            .leases
+            .get(&lease)
+            .ok_or(Error::UnknownLease(lease))?
+            .allocation
+            .claims;
+        for claim in claims {
+            match self.cluster.graph.node(claim.node).map(|node| node.kind) {
+                Some(NodeKind::Cpu) => {
+                    limits.cpu_count += quantity_get(&claim.quantity, Dimension::Count);
+                }
+                Some(NodeKind::Memory) => {
+                    limits.memory_bytes += quantity_get(&claim.quantity, Dimension::Bytes);
+                }
+                _ => {}
+            }
+        }
+        Ok(limits)
+    }
+
+    /// The controller side of the seam: turn one kernel Effect into an
+    /// agent request and the acknowledgement commands the Cluster expects.
     fn execute(&mut self, effect: Effect) -> Result<Vec<Command>, Error> {
         let binding_id = match &effect {
             Effect::Prepare { binding, .. }
@@ -256,56 +344,73 @@ impl NodeService {
             .get(&binding_id)
             .ok_or(Error::UnknownBinding(binding_id))?;
         let (lease, session, fence) = (record.lease, record.agent_session, record.fence);
-        match effect {
-            Effect::Prepare { .. } => {
-                let handle = self.next_handle;
-                self.next_handle += 1;
-                Ok(vec![Command::RecordBindingPrepared {
-                    binding: binding_id,
-                    session,
-                    provider_handle: handle,
-                    fence,
-                }])
-            }
-            Effect::Activate { .. } => {
-                let command = self.lease_commands.get(&lease).cloned().unwrap_or_default();
-                let limits = self.lease_limits(lease)?;
-                self.runtime
-                    .activate(lease, &command, &limits)
-                    .map_err(|reason| Error::Refused {
-                        explanation: reason,
-                    })?;
-                Ok(vec![Command::RecordBindingActive {
-                    binding: binding_id,
-                    session,
-                    fence,
-                }])
-            }
-            Effect::Release { .. } => {
-                self.runtime
-                    .terminate(lease)
-                    .map_err(|reason| Error::Refused {
-                        explanation: reason,
-                    })?;
-                Ok(vec![Command::RecordBindingReleased {
-                    binding: binding_id,
-                    session,
-                    fence,
-                }])
-            }
-            Effect::Fence { .. } => {
-                self.runtime
-                    .terminate(lease)
-                    .map_err(|reason| Error::Refused {
-                        explanation: reason,
-                    })?;
-                Ok(vec![Command::RecordBindingFenced {
-                    binding: binding_id,
-                    session,
-                    fence,
-                }])
-            }
-            Effect::Reconcile { .. } => Ok(Vec::new()),
+
+        let request = match &effect {
+            Effect::Prepare { .. } => AgentRequest::Prepare {
+                binding: binding_id.as_u64(),
+                lease: lease.as_u64(),
+                session,
+                fence,
+            },
+            Effect::Activate { .. } => AgentRequest::Activate {
+                binding: binding_id.as_u64(),
+                lease: lease.as_u64(),
+                session,
+                fence,
+                command: self.lease_commands.get(&lease).cloned().unwrap_or_default(),
+                limits: self.lease_limits(lease)?,
+            },
+            Effect::Release { .. } => AgentRequest::Release {
+                binding: binding_id.as_u64(),
+                lease: lease.as_u64(),
+                session,
+                fence,
+            },
+            Effect::Fence { .. } => AgentRequest::Fence {
+                binding: binding_id.as_u64(),
+                lease: lease.as_u64(),
+                session,
+                fence,
+            },
+            Effect::Reconcile { .. } => return Ok(Vec::new()),
+        };
+
+        match self
+            .executor
+            .execute(request)
+            .map_err(|reason| Error::Refused {
+                explanation: reason,
+            })? {
+            AgentResponse::Prepared { handle, .. } => Ok(vec![Command::RecordBindingPrepared {
+                binding: binding_id,
+                session,
+                provider_handle: handle,
+                fence,
+            }]),
+            AgentResponse::Activated { .. } => Ok(vec![Command::RecordBindingActive {
+                binding: binding_id,
+                session,
+                fence,
+            }]),
+            AgentResponse::Released { .. } => Ok(vec![Command::RecordBindingReleased {
+                binding: binding_id,
+                session,
+                fence,
+            }]),
+            AgentResponse::Fenced { .. } => Ok(vec![Command::RecordBindingFenced {
+                binding: binding_id,
+                session,
+                fence,
+            }]),
+            AgentResponse::Failed { reason, .. } => Ok(vec![Command::RecordBindingFailed {
+                binding: binding_id,
+                session,
+                reason,
+                fence,
+            }]),
+            other => Err(Error::Refused {
+                explanation: format!("unexpected agent response {other:?}"),
+            }),
         }
     }
 }

@@ -80,7 +80,7 @@ fn lease_claims_become_kernel_limits() {
         return;
     }
     cleanup_root();
-    let mut service = NodeService::with_cgroups(ROOT.into());
+    let mut service = NodeService::local_with_cgroups(ROOT.into());
     let (_local, nodes, edges) = fleet_node::discover::discover();
     service.boot(nodes, edges).expect("boot");
     service.submit(
@@ -112,7 +112,7 @@ fn memory_limit_kills_an_overallocating_process() {
         return;
     }
     cleanup_root();
-    let mut service = NodeService::with_cgroups(ROOT.into());
+    let mut service = NodeService::local_with_cgroups(ROOT.into());
     let (_local, nodes, edges) = fleet_node::discover::discover();
     service.boot(nodes, edges).expect("boot");
     // tail /dev/zero allocates without bound; the 16 MiB limit must OOM it.

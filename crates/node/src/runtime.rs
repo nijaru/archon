@@ -8,15 +8,10 @@ use std::process::{Child, Command, Stdio};
 
 use fleet_kernel::LeaseId;
 
-#[cfg(target_os = "linux")]
-use crate::cgroup::{CgroupGroup, LeaseLimits};
+use crate::protocol::LeaseLimits;
 
-#[cfg(not(target_os = "linux"))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LeaseLimits {
-    pub cpu_count: u64,
-    pub memory_bytes: u64,
-}
+#[cfg(target_os = "linux")]
+use crate::cgroup::CgroupGroup;
 
 #[derive(Default)]
 pub struct ProcessRuntime {
