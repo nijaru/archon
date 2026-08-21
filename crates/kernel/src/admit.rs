@@ -3,10 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::error::Error;
 use crate::graph::Graph;
 use crate::ids::{LeaseId, NodeId, OwnerId};
-use crate::occupancy::{Occupancy, claims_by_node, lease_occupies, occupancy_from_leases};
+use crate::occupancy::{
+    Occupancy, claims_by_node, lease_occupies, occupancy_from_leases,
+};
 use crate::select::select;
 use crate::types::{
-    Allocation, Lease, Quantity, Queued, Request, quantity_add_assign, quantity_le,
+    Allocation, Dimension, Lease, NodeKind, Quantity, Queued, Request, quantity_add_assign,
+    quantity_get, quantity_le, qty,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,20 +30,25 @@ pub fn admit(
         graph,
         occupancy,
         quarantine,
-        &Quantity::new(),
+        &KindUsage::new(),
         queue,
         &BTreeMap::new(),
     )
 }
 
-/// Budget-aware admission. `fair_share` is a per-owner ceiling, not a
-/// reservation: an owner under budget is never blocked by another owner's
-/// consumption. Pass an empty `fair_share` to disable the budget.
+/// Per-owner, per-kind consumption: the fair-share analogue of Slurm's
+/// trackable resources (TRES). Each node kind budgets independently.
+pub type KindUsage = BTreeMap<NodeKind, Quantity>;
+
+/// Budget-aware admission. `fair_share` is a per-owner, per-kind ceiling,
+/// not a reservation: an owner under budget is never blocked by another
+/// owner's consumption. Kinds without a ceiling are unconstrained; an empty
+/// map disables the budget.
 pub fn admit_fair(
     graph: &Graph,
     occupancy: &Occupancy,
     quarantine: &std::collections::BTreeSet<crate::ids::NodeId>,
-    fair_share: &Quantity,
+    fair_share: &KindUsage,
     queue: &[Queued],
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
 ) -> Option<Admission> {
@@ -52,11 +60,11 @@ pub fn admit_fair(
             submitted_at: queued.submitted_at,
         })
         .collect();
-    let usage = owner_usage(leases);
+    let usage = owner_usage(graph, leases);
     for index in order_queue(&queue, &usage) {
         let queued = &queue[index];
         if !within_budget(
-            &usage.get(&queued.owner).cloned().unwrap_or_default(),
+            usage.get(&queued.owner).cloned().unwrap_or_default(),
             &queued.request,
             fair_share,
         ) {
@@ -72,12 +80,13 @@ pub fn admit_fair(
     None
 }
 
-/// Per-owner consumption from active root leases. Only roots are counted so
-/// nested children are not double-charged against their owner.
+/// Per-owner, per-kind consumption from active root leases. Only roots are
+/// counted so nested children are not double-charged against their owner.
 pub fn owner_usage(
+    graph: &Graph,
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
-) -> BTreeMap<crate::ids::OwnerId, Quantity> {
-    let mut usage = BTreeMap::new();
+) -> BTreeMap<crate::ids::OwnerId, KindUsage> {
+    let mut usage: BTreeMap<crate::ids::OwnerId, KindUsage> = BTreeMap::new();
     for lease in leases.values() {
         if lease.parent.is_some() {
             continue;
@@ -91,18 +100,23 @@ pub fn owner_usage(
             continue;
         }
         let entry = usage.entry(lease.owner).or_default();
-        for (_node, quantity) in claims_by_node(&lease.allocation.claims) {
-            quantity_add_assign(entry, &quantity);
+        for (node, quantity) in claims_by_node(&lease.allocation.claims) {
+            let kind = graph
+                .node(node)
+                .map(|node| node.kind)
+                .unwrap_or(NodeKind::Machine);
+            quantity_add_assign(entry.entry(kind).or_default(), &quantity);
         }
     }
     usage
 }
 
-fn usage_total(quantity: &Quantity) -> u64 {
-    quantity.values().sum()
+/// Deterministic tiebreak only: total charge across kinds.
+fn usage_total(usage: &KindUsage) -> u64 {
+    usage.values().map(|quantity| quantity.values().sum::<u64>()).sum()
 }
 
-fn order_queue(queue: &[Queued], usage: &BTreeMap<OwnerId, Quantity>) -> Vec<usize> {
+fn order_queue(queue: &[Queued], usage: &BTreeMap<OwnerId, KindUsage>) -> Vec<usize> {
     let mut order: Vec<usize> = (0..queue.len()).collect();
     order.sort_by(|&left, &right| {
         let left_request = &queue[left].request;
@@ -150,7 +164,7 @@ pub fn admit_backfill(
     graph: &Graph,
     occupancy: &Occupancy,
     quarantine: &std::collections::BTreeSet<NodeId>,
-    fair_share: &Quantity,
+    fair_share: &KindUsage,
     queue: &[Queued],
     ctx: &BackfillCtx<'_>,
 ) -> Option<Admission> {
@@ -167,12 +181,12 @@ pub fn admit_backfill(
             submitted_at: queued.submitted_at,
         })
         .collect();
-    let usage = owner_usage(leases);
+    let usage = owner_usage(graph, leases);
     let mut blocked: Vec<BlockedHead> = Vec::new();
     for index in order_queue(&queue, &usage) {
         let queued = &queue[index];
         if !within_budget(
-            &usage.get(&queued.owner).cloned().unwrap_or_default(),
+            usage.get(&queued.owner).cloned().unwrap_or_default(),
             &queued.request,
             fair_share,
         ) {
@@ -265,24 +279,36 @@ fn shadow_head(
     })
 }
 
-/// Whether `request` fits under `fair_share` for `owner` given current usage.
-/// An empty ceiling disables the budget entirely. Charges match what select
-/// grants: count-based needs claim at least one unit, memory claims bytes.
-pub fn within_budget(usage: &Quantity, request: &Request, fair_share: &Quantity) -> bool {
+/// Whether `request` fits under `fair_share` given per-kind usage. Kinds
+/// without a ceiling are unconstrained; an empty map disables the budget.
+/// Charges match what select grants: count-based needs claim at least one
+/// unit of their kind, memory claims bytes.
+pub fn within_budget(
+    usage: KindUsage,
+    request: &Request,
+    fair_share: &KindUsage,
+) -> bool {
     if fair_share.is_empty() {
         return true;
     }
-    let mut projected = usage.clone();
+    let mut projected = usage;
     for need in &request.needs {
-        if need.kind == crate::types::NodeKind::Memory {
-            quantity_add_assign(&mut projected, &need.quantity);
+        let charge = if need.kind == NodeKind::Memory {
+            qty(
+                Dimension::Bytes,
+                quantity_get(&need.quantity, Dimension::Bytes),
+            )
         } else {
-            let count = crate::types::quantity_get(&need.quantity, crate::types::Dimension::Count)
-                .max(1);
-            quantity_add_assign(&mut projected, &crate::types::qty(crate::types::Dimension::Count, count));
-        }
+            qty(
+                Dimension::Count,
+                quantity_get(&need.quantity, Dimension::Count).max(1),
+            )
+        };
+        quantity_add_assign(projected.entry(need.kind).or_default(), &charge);
     }
-    quantity_le(&projected, fair_share)
+    fair_share.iter().all(|(kind, ceiling)| {
+        quantity_le(projected.get(kind).unwrap_or(&Quantity::new()), ceiling)
+    })
 }
 
 pub fn refuse_reason(

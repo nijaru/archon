@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use fleet_kernel::{
     Allocation, BindingId, Cluster, Command, Digest, Effect, Endpoint, EndpointOp, Error, LeaseId,
-    NodeId, OwnerId, ProviderId, Quantity, Queued, Request, RequestId,
+    NodeId, OwnerId, ProviderId, Queued, Request, RequestId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,7 +210,10 @@ impl World {
         lease: LeaseId,
         owner: OwnerId,
     ) -> Result<Option<RequestId>, Error> {
-        let Some(admission) = self.cluster.admit_backfill(&self.queue, &fleet_kernel::Quantity::new()) else {
+        let Some(admission) =
+            self.cluster
+                .admit_backfill(&self.queue, &fleet_kernel::KindUsage::new())
+        else {
             return Ok(None);
         };
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
@@ -231,12 +234,12 @@ impl World {
         Ok(Some(admission.request.id))
     }
 
-    /// Admit with a per-owner fair-share ceiling.
+    /// Admit with per-owner, per-kind fair-share ceilings.
     pub fn admit_next_fair(
         &mut self,
         lease: LeaseId,
         owner: OwnerId,
-        fair_share: &Quantity,
+        fair_share: &fleet_kernel::KindUsage,
     ) -> Result<Option<RequestId>, Error> {
         let Some(admission) = self.cluster.admit_fair(&self.queue, fair_share) else {
             return Ok(None);

@@ -652,9 +652,9 @@ fn backfill_honors_the_fair_share_ceiling() {
     }];
     // Owner 1 already holds one CPU; a 1-CPU ceiling blocks its request even
     // though capacity is free.
-    let fair = qty(Dimension::Count, 1);
+    let fair = fleet_kernel::KindUsage::from([(NodeKind::Cpu, qty(Dimension::Count, 1))]);
     assert!(cluster.admit_backfill(&queue, &fair).is_none());
-    assert!(cluster.admit_backfill(&queue, &fleet_kernel::Quantity::new()).is_some());
+    assert!(cluster.admit_backfill(&queue, &fleet_kernel::KindUsage::new()).is_some());
 }
 
 #[test]

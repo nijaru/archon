@@ -1,4 +1,4 @@
-use fleet_kernel::{Dimension, OwnerId, Quantity, qty};
+use fleet_kernel::{Dimension, KindUsage, NodeKind, OwnerId, qty};
 use fleet_sim::{World, tiny_graph};
 
 fn boot() -> World {
@@ -87,7 +87,7 @@ fn fair_share_ceiling_lets_small_owners_through() {
     world.enqueue(cpu_request(4, 1, 10), OwnerId::from_u64(3));
     // Fair-share ceiling of 2 CPUs per owner: owner 1 is over budget and is
     // skipped, so both small owners are served.
-    let fair_share = qty(Dimension::Count, 2);
+    let fair_share = KindUsage::from([(NodeKind::Cpu, qty(Dimension::Count, 2))]);
     assert_eq!(
         world
             .admit_next_fair(
@@ -149,7 +149,7 @@ fn empty_ceiling_matches_plain_admission() {
     let mut world = boot();
     world.enqueue(cpu_request(1, 1, 10), OwnerId::from_u64(1));
     world.enqueue(cpu_request(2, 1, 10), OwnerId::from_u64(2));
-    let empty = Quantity::new();
+    let empty = KindUsage::new();
     assert_eq!(
         world
             .admit_next_fair(

@@ -66,8 +66,9 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 - Accepted v0 fencing protocol: `design/lease-fencing.md`.
 - First Rust workspace: `crates/kernel` and `crates/sim`.
 - All nine required v0 scenarios pass (`cargo test --workspace`: 40 tests).
-- Fair-share admission (`admit_fair`) is a per-owner budget ceiling on top of
-  the priority queue; an empty ceiling disables it and matches `admit`.
+- Fair-share admission (`admit_fair`) is a per-owner, per-kind budget
+  ceiling (TRES-style `KindUsage`) on top of the priority queue; kinds
+  without a ceiling are unconstrained, and an empty map matches `admit`.
 - Reservations are a Lease in `Reserved` state (`ReserveLease`/`PromoteLease`):
   committed capacity with no Bindings; promotion re-enters the ordinary
   prepare/bind/activate path. Six reservation scenarios pass.
@@ -105,8 +106,8 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
    open scheduling decisions.
 5. Data locality and health-influenced placement shipped. Health moves via
    `SetNodeHealth` (non-revision); topology is validated as a forest;
-   bindings are root-only. Open design question: fair-share budget treats
-   1 GPU == 1 CPU (per-kind weighting undecided).
+   bindings are root-only. Fair-share ceilings resolved per node kind
+   (TRES-style); no open scheduling-policy questions remain.
 6. Remaining v1 items (providers, microVMs, volumes, network foundations,
    virtual clusters) wait on the v1 trigger or larger design decisions.
 ## Open questions

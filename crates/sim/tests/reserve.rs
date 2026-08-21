@@ -187,7 +187,7 @@ fn higher_priority_request_preempts_a_reservation() {
 }
 
 #[test]
-fn reservation_counts_toward_fair_share_usage() {
+fn reservation_consumes_its_own_kind_budget() {
     let mut world = boot();
     world
         .reserve(
@@ -197,29 +197,59 @@ fn reservation_counts_toward_fair_share_usage() {
             1_000,
         )
         .unwrap();
-    let usage = fleet_kernel::owner_usage(&world.cluster.leases);
-    assert_eq!(
-        usage.get(&OwnerId::from_u64(1)).map(|q| q.len()).unwrap_or(0),
-        1,
-        "reserved leases must charge their owner"
-    );
+    let usage = fleet_kernel::owner_usage(&world.cluster.graph, &world.cluster.leases);
+    let charged = usage
+        .get(&OwnerId::from_u64(1))
+        .and_then(|per_kind| per_kind.get(&NodeKind::Cpu))
+        .map(|q| q.len())
+        .unwrap_or(0);
+    assert_eq!(charged, 1, "reserved leases must charge their owner by kind");
 
-    // An owner at its ceiling cannot queue more; another owner is unaffected.
-    let fair = fleet_kernel::Quantity::from([(fleet_kernel::Dimension::Count, 1)]);
+    let cpu_ceiling = fleet_kernel::KindUsage::from([(
+        fleet_kernel::NodeKind::Cpu,
+        fleet_kernel::qty(fleet_kernel::Dimension::Count, 1),
+    )]);
     world.enqueue(cpu_request(2, 1), OwnerId::from_u64(1));
     assert!(
         world
-            .admit_next_fair(LeaseId::from_u64(2), OwnerId::from_u64(1), &fair)
+            .admit_next_fair(LeaseId::from_u64(2), OwnerId::from_u64(1), &cpu_ceiling)
             .unwrap()
             .is_none(),
-        "reservation must consume the owner's budget"
+        "reservation must consume its kind's budget"
     );
     world.enqueue(cpu_request(3, 1), OwnerId::from_u64(2));
     assert_eq!(
         world
-            .admit_next_fair(LeaseId::from_u64(3), OwnerId::from_u64(2), &fair)
+            .admit_next_fair(LeaseId::from_u64(3), OwnerId::from_u64(2), &cpu_ceiling)
             .unwrap(),
         Some(RequestId::from_u64(3))
+    );
+}
+
+#[test]
+fn reservation_leaves_other_kind_budgets_untouched() {
+    let mut world = boot();
+    world
+        .reserve(
+            &cpu_request(1, 1),
+            LeaseId::from_u64(1),
+            OwnerId::from_u64(1),
+            1_000,
+        )
+        .unwrap();
+    // The owner is at its CPU reservation, but only CPU budgets constrain
+    // CPU requests: its GPU request admits under a GPU-only ceiling.
+    let gpu_ceiling = fleet_kernel::KindUsage::from([(
+        fleet_kernel::NodeKind::Gpu,
+        fleet_kernel::qty(fleet_kernel::Dimension::Count, 1),
+    )]);
+    world.enqueue(gpu_request(2, 1, 1), OwnerId::from_u64(1));
+    assert_eq!(
+        world
+            .admit_next_fair(LeaseId::from_u64(2), OwnerId::from_u64(1), &gpu_ceiling)
+            .unwrap(),
+        Some(RequestId::from_u64(2)),
+        "other kinds' budgets are unaffected"
     );
 }
 

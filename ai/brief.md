@@ -26,8 +26,9 @@ substrate to reuse.
   and faults. Placement is deterministic scored selection plus `admit()`:
   priority, then submit time; first feasible request wins. Lower-priority
   occupying roots can be preempted; equal or higher priority cannot. Fair-share
-  admission (`admit_fair`) adds a per-owner budget ceiling on top of the same
-  queue; an empty ceiling disables it and matches `admit`.
+  admission (`admit_fair`) adds per-owner, per-kind budget ceilings
+  (TRES-style `KindUsage`) on top of the same queue; kinds without a
+  ceiling are unconstrained, and an empty map matches `admit`.
 - `tk-byam`, `tk-l8xd`, `tk-0lvx`, `tk-2vsh`, `tk-kmcj`, `tk-1idx`, `tk-e0n5`,
   `tk-s1ff`, `tk-vbsh`, and `tk-b9xb` are done. All nine required v0 scenarios
   pass. Reservations (`tk-vbsh`) are a Lease in `Reserved` state: committed
