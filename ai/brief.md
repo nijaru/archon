@@ -39,7 +39,7 @@ substrate to reuse.
 - Two gpt-5.6-sol reviews ran (2026-08-20); all 20 findings fixed and
   pinned. 89 tests, clippy clean, CI green.
 - **Walking skeleton (2026-08-21): Fleet runs real processes.**
-  `fleet-node` discovers the local machine as a Fleet graph, admits
+  `fleet demo` discovers the local machine as a Fleet graph, admits
   requests through the kernel, and executes lease commands as real OS
   processes — revoke or expiry kills the process.
 - **cgroups v2 adapter (2026-08-21): lease claims are real kernel limits

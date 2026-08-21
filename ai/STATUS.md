@@ -5,7 +5,7 @@
 ## Direction
 
 **2026-08-21: the v1 trigger fired by declaration. Fleet now runs real
-processes.** `crates/node` (`fleet-node`) discovers this machine as a Fleet
+processes.** `crates/node` (via `fleet demo`/`fleet agent`) discovers this machine as a Fleet
 graph, admits requests through the kernel, and executes lease commands as
 real OS processes — a process spawned on activation dies on lease revoke or
 expiry. Enforcement is lifecycle-only today (spawn/kill); cgroups-based
@@ -103,7 +103,7 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
   current graph, owner-carrying Admission, edge attr updates, digest
   capacity/edge coverage, bounded scoring tiers, idempotent equal-session
   handshakes, and unclaimable DataObjects.
-- Walking skeleton: `fleet-node` demo + real-process integration tests
+- Walking skeleton: `fleet demo` + real-process integration tests
   (lease runs `sleep`, revoke/expiry kill it).
 - cgroups v2 adapter: per-lease groups on Linux; claims become
   `cpu.max`/`memory.max`; `cgroup.kill` on terminate; OOM-kill proven on
@@ -111,7 +111,7 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 - Remote agent protocol: controller and agent are separable processes over
   TCP (length-prefixed JSON); cross-machine lease execution proven
   (Mac controller → pacabot-ams agent, cgroup-enforced).
-- Control plane: `fleet-ctl` — persistent JSONL command log, replay-based
+- Control plane: `fleet serve` — persistent JSONL command log, replay-based
   recovery (revokes live work, never re-executes), TCP API server, CLI.
   Crash-restart proven on loopback. 95 tests; clippy clean.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
