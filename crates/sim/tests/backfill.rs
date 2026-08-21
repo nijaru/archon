@@ -44,6 +44,7 @@ fn spread_request(
         priority,
         image: None,
         machine_local,
+        keep_alive: false,
     }
 }
 

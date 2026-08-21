@@ -77,6 +77,13 @@ pub struct NodeService {
     lease_commands: BTreeMap<LeaseId, Vec<String>>,
     /// Container image per active lease; None runs a bare process.
     lease_images: BTreeMap<LeaseId, Option<String>>,
+    /// Original request per admitted lease, for keep-alive restarts.
+    requests: BTreeMap<LeaseId, (Request, OwnerId)>,
+    /// Dead leases whose failure has been processed for restarts.
+    restart_handled: std::collections::BTreeSet<LeaseId>,
+    /// Restart attempts per original request id.
+    restart_counts: BTreeMap<RequestId, u32>,
+    next_request_id: u64,
     pending: VecDeque<Effect>,
     next_session: u64,
     next_binding: u64,
@@ -217,6 +224,16 @@ impl NodeService {
         self.agents.insert(machine, executor);
         let session = self.next_session;
         self.next_session += 1;
+        if !new_machine {
+            // A known machine came back: clear any quarantine and health
+            // marks before reconciliation re-drives its live work.
+            self.commit(Command::UnquarantineNode { node: machine })
+                .ok();
+            self.commit(Command::SetNodeHealth {
+                node: machine,
+                health: "healthy".into(),
+            })?;
+        }
         self.commit(Command::SetAgentSession { machine, session })?;
         self.deliver_all()?;
         let _ = new_machine;
@@ -231,6 +248,10 @@ impl NodeService {
             commands: BTreeMap::new(),
             lease_commands: BTreeMap::new(),
             lease_images: BTreeMap::new(),
+            requests: BTreeMap::new(),
+            restart_handled: std::collections::BTreeSet::new(),
+            restart_counts: BTreeMap::new(),
+            next_request_id: 1,
             pending: VecDeque::new(),
             next_session: 1,
             next_binding: 1,
@@ -271,6 +292,7 @@ impl NodeService {
     /// lease activates.
     pub fn submit(&mut self, request: Request, owner: OwnerId, command: Vec<String>) {
         self.commands.insert(request.id, command);
+        self.next_request_id = self.next_request_id.max(request.id.as_u64() + 1);
         self.queue.push(Queued {
             request,
             owner,
@@ -293,6 +315,8 @@ impl NodeService {
         self.lease_commands.insert(lease, command.clone());
         self.lease_images
             .insert(lease, admission.request.image.clone());
+        self.requests
+            .insert(lease, (admission.request.clone(), admission.owner));
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
         self.commit(Command::OpenLease {
             lease,
@@ -349,6 +373,102 @@ impl NodeService {
         }
         self.deliver_all()?;
         Ok(count)
+    }
+
+    /// Probe every registered agent's liveness. Returns the machines whose
+    /// agent could not be reached; the caller decides policy.
+    pub fn probe_agents(&mut self) -> Vec<NodeId> {
+        let mut unreachable = Vec::new();
+        for (machine, executor) in self.agents.iter_mut() {
+            if executor.execute(AgentRequest::Status { lease: 0 }).is_err() {
+                unreachable.push(*machine);
+            }
+        }
+        unreachable
+    }
+
+    /// Declare a machine unhealthy: stop placements there (quarantine) and
+    /// fail its live leases. Effects toward the dead agent are dropped by
+    /// the routing rules; surviving machines can pick up keep-alive work.
+    pub fn mark_machine_unhealthy(&mut self, machine: NodeId) -> Result<(), Error> {
+        eprintln!("archon: machine {machine} unhealthy; quarantining");
+        self.commit(Command::SetNodeHealth {
+            node: machine,
+            health: "unhealthy".into(),
+        })?;
+        self.commit(Command::QuarantineNode { node: machine })?;
+        let live: Vec<LeaseId> = self
+            .cluster
+            .leases
+            .values()
+            .filter(|lease| {
+                !matches!(
+                    lease.state,
+                    archon_kernel::LeaseState::Failed
+                        | archon_kernel::LeaseState::Released
+                        | archon_kernel::LeaseState::Revoked
+                        | archon_kernel::LeaseState::Expired
+                ) && lease
+                    .allocation
+                    .claims
+                    .iter()
+                    .any(|claim| self.cluster.graph.machine_of(claim.node) == Some(machine))
+            })
+            .map(|lease| lease.id)
+            .collect();
+        for lease in live {
+            self.commit(Command::FailLease {
+                lease,
+                reason: "machine unhealthy".into(),
+            })?;
+        }
+        self.deliver_all()
+    }
+
+    /// Clear a machine's quarantine and mark it healthy again; called when
+    /// its agent re-registers.
+    pub fn mark_machine_healthy(&mut self, machine: NodeId) -> Result<(), Error> {
+        self.commit(Command::UnquarantineNode { node: machine })
+            .ok();
+        self.commit(Command::SetNodeHealth {
+            node: machine,
+            health: "healthy".into(),
+        })?;
+        self.deliver_all()
+    }
+
+    /// Collect failed/expired keep-alive leases as fresh re-submissions,
+    /// capped per original request so a permanently-broken workload cannot
+    /// spin. Run-once workloads are never restarted.
+    pub fn take_restarts(&mut self) -> Vec<(Request, OwnerId)> {
+        const MAX_RESTARTS: u32 = 5;
+        let mut out = Vec::new();
+        for (id, lease) in self.cluster.leases.iter() {
+            let dead = matches!(
+                lease.state,
+                archon_kernel::LeaseState::Failed | archon_kernel::LeaseState::Expired
+            );
+            if !dead || !self.restart_handled.insert(*id) {
+                continue;
+            }
+            let Some((request, owner)) = self.requests.get(id) else {
+                continue;
+            };
+            if !request.keep_alive {
+                continue;
+            }
+            let count = self.restart_counts.entry(request.id).or_insert(0);
+            if *count >= MAX_RESTARTS {
+                eprintln!("archon: request {} exceeded restart cap", request.id);
+                continue;
+            }
+            *count += 1;
+            let mut fresh = request.clone();
+            fresh.id = RequestId::from_u64(self.next_request_id);
+            self.next_request_id += 1;
+            out.push((fresh, *owner));
+        }
+        out
     }
 
     pub fn revoke(&mut self, lease: LeaseId) -> Result<(), Error> {
@@ -580,10 +700,6 @@ impl NodeService {
             Effect::Reconcile { .. } => unreachable!(),
         };
 
-        if std::env::var("ARCHON_DEBUG_ROUTE").is_ok() {
-            let m = self.cluster.graph.machine_of(record.node);
-            eprintln!("debug: {effect:?} -> machine {m:?}");
-        }
         let Some(executor) = self.agents.get_mut(&machine) else {
             // No agent for this machine (restart before re-registration, or
             // the agent died). Kernel state proceeds; Reconcile re-drives
@@ -616,17 +732,12 @@ impl NodeService {
                 session,
                 fence,
             }]),
-            AgentResponse::Failed { reason, .. } => {
-                if std::env::var("ARCHON_DEBUG_ROUTE").is_ok() {
-                    eprintln!("debug: agent FAILED binding {binding_id}: {reason}");
-                }
-                Ok(vec![Command::RecordBindingFailed {
-                    binding: binding_id,
-                    session,
-                    reason,
-                    fence,
-                }])
-            }
+            AgentResponse::Failed { reason, .. } => Ok(vec![Command::RecordBindingFailed {
+                binding: binding_id,
+                session,
+                reason,
+                fence,
+            }]),
             other => Err(Error::Refused {
                 explanation: format!("unexpected agent response {other:?}"),
             }),

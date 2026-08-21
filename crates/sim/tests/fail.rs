@@ -31,6 +31,7 @@ fn gpu_request(id: u64, priority: u32) -> Request {
         machine_local: true,
         image: None,
         lifetime: 100,
+        keep_alive: false,
         priority,
     }
 }

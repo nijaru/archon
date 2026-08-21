@@ -81,6 +81,7 @@ fn submit_sleep(service: &mut NodeService, id: u64) -> RequestId {
         machine_local: true,
         image: None,
         lifetime: 3_600,
+        keep_alive: false,
         priority: 1,
     };
     service.submit(

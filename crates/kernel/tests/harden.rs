@@ -663,6 +663,7 @@ fn backfill_honors_the_fair_share_ceiling() {
             machine_local: true,
             image: None,
             lifetime: 10,
+            keep_alive: false,
             priority: 1,
         },
         owner: OwnerId::from_u64(1),

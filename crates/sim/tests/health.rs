@@ -34,6 +34,7 @@ fn cpu_request(id: u64) -> Request {
         machine_local: true,
         image: None,
         lifetime: 100,
+        keep_alive: false,
         priority: 10,
     }
 }

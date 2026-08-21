@@ -29,6 +29,7 @@ fn request(id: u64, command: Vec<String>) -> Request {
         data: vec![],
         command: command.clone(),
         lifetime: 3_600,
+        keep_alive: false,
         priority: 1,
         machine_local: true,
         image: None,

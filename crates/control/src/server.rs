@@ -102,6 +102,28 @@ impl ControlPlane {
         self.token = Some(token);
     }
 
+    /// Periodic maintenance: expire due leases, probe agents, quarantine
+    /// unreachable machines, and restart keep-alive workloads.
+    pub fn maintain(&mut self) {
+        self.service.tick().ok();
+        let unreachable = self.service.probe_agents();
+        for machine in unreachable {
+            if self.service.mark_machine_unhealthy(machine).is_err() {
+                eprintln!("archon: failed to mark machine {machine} unhealthy");
+            }
+        }
+        for (request, owner) in self.service.take_restarts() {
+            eprintln!("archon: restarting keep-alive request {}", request.id);
+            let command = request.command.clone();
+            self.service.submit(request, owner, command);
+            match self.service.admit_one() {
+                Ok(Some(id)) => eprintln!("archon: restarted as request {id}"),
+                Ok(None) => {} // queued until capacity returns
+                Err(err) => eprintln!("archon: restart admission failed: {err}"),
+            }
+        }
+    }
+
     /// Accept clients and dial-in agents. The first frame on a connection
     /// decides its role: `Hello` registers an agent (its machine joins the
     /// graph, and re-registration with the same machine name reconciles);
@@ -224,7 +246,8 @@ impl ControlPlane {
                 memory_mib,
                 lifetime_secs,
                 command,
-            } => self.submit(owner, cpus, memory_mib, lifetime_secs, command),
+                keep_alive,
+            } => self.submit(owner, cpus, memory_mib, lifetime_secs, command, keep_alive),
             ClientRequest::Status => self.status(),
             ClientRequest::Revoke { lease } => self.revoke(lease),
         }
@@ -237,6 +260,7 @@ impl ControlPlane {
         memory_mib: u64,
         lifetime_secs: u64,
         command: Vec<String>,
+        keep_alive: bool,
     ) -> ServerResponse {
         if command.is_empty() {
             return ServerResponse::Error {
@@ -266,6 +290,7 @@ impl ControlPlane {
             data: vec![],
             command: command.clone(),
             lifetime: lifetime_secs.max(1),
+            keep_alive,
             priority: 1,
             machine_local: true,
             image: None,

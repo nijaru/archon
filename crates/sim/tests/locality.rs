@@ -33,6 +33,7 @@ fn cpu_request(id: u64, data: Vec<NodeId>) -> Request {
         machine_local: true,
         image: None,
         lifetime: 100,
+        keep_alive: false,
         priority: 10,
     }
 }
@@ -57,6 +58,7 @@ fn hold_cpu_at(world: &mut World, lease: u64, binding: u64) {
         machine_local: true,
         image: None,
         lifetime: 100,
+        keep_alive: false,
         priority: 10,
     };
     world

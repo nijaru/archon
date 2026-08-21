@@ -37,6 +37,7 @@ fn main() {
         machine_local: true,
         image: None,
         lifetime: 100,
+        keep_alive: false,
         priority: 10,
     };
     world.set_now(1);

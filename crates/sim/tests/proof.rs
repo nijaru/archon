@@ -31,6 +31,7 @@ fn service_request() -> Request {
         machine_local: true,
         image: None,
         lifetime: 100,
+        keep_alive: false,
         priority: 10,
     }
 }

@@ -178,6 +178,9 @@ pub struct Request {
     pub image: Option<String>,
     pub lifetime: u64,
     pub priority: u32,
+    /// Keep-alive workloads are re-queued and re-placed automatically when
+    /// their lease fails or expires (services). False: run-once.
+    pub keep_alive: bool,
     /// Whether one need's claims must share a single machine. True (the
     /// default) fits process/container workloads that cannot span hosts;
     /// false allows a need's claims to spread across machines for explicit

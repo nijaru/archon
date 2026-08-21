@@ -46,6 +46,8 @@ pub enum ClientRequest {
         memory_mib: u64,
         lifetime_secs: u64,
         command: Vec<String>,
+        #[serde(default)]
+        keep_alive: bool,
     },
     Status,
     Revoke {

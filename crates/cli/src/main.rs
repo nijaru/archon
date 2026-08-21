@@ -72,6 +72,7 @@ fn serve(args: &[String]) {
     let mut remote = None;
     let mut no_local = false;
     let mut token_file = None;
+    let mut probe_secs: u64 = 5;
     let mut cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
     let mut index = 0;
     while index < args.len() {
@@ -89,6 +90,7 @@ fn serve(args: &[String]) {
             "--log" => log = Some(PathBuf::from(value)),
             "--remote" => remote = Some(value.clone()),
             "--token-file" => token_file = Some(value.clone()),
+            "--probe-secs" => probe_secs = value.parse().expect("probe-secs"),
             "--cgroup-root" => cgroup_root = Some(value.clone()),
             _ => usage(),
         }
@@ -111,6 +113,15 @@ fn serve(args: &[String]) {
         None => eprintln!("archon: warning: no auth token configured; links are open"),
     }
     let plane = std::sync::Arc::new(std::sync::Mutex::new(plane));
+    {
+        let plane = plane.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(probe_secs));
+                plane.lock().expect("plane lock").maintain();
+            }
+        });
+    }
     let listener = TcpListener::bind(&listen).expect("bind");
     eprintln!("archon: control plane serving on {listen}");
     archon_control::server::ControlPlane::serve(&plane, listener);
@@ -308,6 +319,7 @@ fn demo(remote: Option<String>) {
         machine_local: true,
         image: None,
         lifetime: 30,
+        keep_alive: false,
         priority: 1,
     };
     service.submit(
@@ -406,6 +418,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
     let mut cpus = 1;
     let mut mem_mib = 0;
     let mut lifetime = 60;
+    let mut keep_alive = false;
     let mut rest = args;
     while !rest.is_empty() && rest[0].starts_with("--") && rest[0] != "--" {
         let (flag, value) = (rest[0].as_str(), rest.get(1).expect("flag value"));
@@ -414,6 +427,11 @@ fn submit_request(args: &[String]) -> ClientRequest {
             "--cpus" => cpus = value.parse().expect("cpus"),
             "--mem-mib" => mem_mib = value.parse().expect("mem-mib"),
             "--lifetime" => lifetime = value.parse().expect("lifetime"),
+            "--keep-alive" => {
+                keep_alive = true;
+                rest = &rest[1..];
+                continue;
+            }
             other => {
                 eprintln!("unknown flag {other}");
                 exit(2);
@@ -434,6 +452,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
         memory_mib: mem_mib,
         lifetime_secs: lifetime,
         command,
+        keep_alive,
     }
 }
 

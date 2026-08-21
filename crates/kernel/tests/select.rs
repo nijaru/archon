@@ -57,6 +57,7 @@ fn request(class: RequestClass, needs: Vec<Need>) -> Request {
         machine_local: true,
         image: None,
         lifetime: 10,
+        keep_alive: false,
         priority: 1,
     }
 }

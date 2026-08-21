@@ -31,6 +31,7 @@ fn request(id: u64, class: RequestClass, kind: NodeKind, count: u64, priority: u
         machine_local: true,
         image: None,
         lifetime: 100,
+        keep_alive: false,
         priority,
     }
 }

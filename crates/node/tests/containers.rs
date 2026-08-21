@@ -70,6 +70,7 @@ fn container_request(id: u64, image: &str) -> Request {
         command: vec!["sleep".into(), "30".into()],
         image: Some(image.into()),
         lifetime: 3_600,
+        keep_alive: false,
         priority: 1,
         machine_local: true,
     }

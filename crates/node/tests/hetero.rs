@@ -76,6 +76,7 @@ fn submit(service: &mut NodeService, id: u64, cpus: u64) -> Option<RequestId> {
         machine_local: true,
         image: None,
         lifetime: 3_600,
+        keep_alive: false,
         priority: 1,
     };
     service.submit(

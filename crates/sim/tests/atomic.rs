@@ -40,6 +40,7 @@ fn multi_member(id: u64, priority: u32) -> Request {
         machine_local: false,
         image: None,
         lifetime: 100,
+        keep_alive: false,
         priority,
     }
 }
@@ -60,6 +61,7 @@ fn gpu_hold(world: &mut World, lease: u64, expires_at: u64) {
         machine_local: true,
         image: None,
         lifetime: 100,
+        keep_alive: false,
         priority: 50,
     };
     world
@@ -113,6 +115,7 @@ fn multi_member_request_places_atomically_or_not_at_all() {
         machine_local: true,
         image: None,
         lifetime: 5,
+        keep_alive: false,
         priority: 1,
     };
     world.enqueue(short, OwnerId::from_u64(3));
