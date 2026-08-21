@@ -38,9 +38,13 @@ substrate to reuse.
 - **Walking skeleton (2026-08-21): Fleet runs real processes.**
   `fleet-node` discovers the local machine as a Fleet graph, admits
   requests through the kernel, and executes lease commands as real OS
-  processes — revoke or expiry kills the process. Enforcement is
-  lifecycle-only (spawn/kill); cgroups v2 isolation on Linux is the next
-  adapter, then a remote agent protocol and a second machine.
+  processes — revoke or expiry kills the process.
+- **cgroups v2 adapter (2026-08-21): lease claims are real kernel limits
+  on Linux.** Per-lease cgroups under a configurable root; CPU/memory
+  claims map to `cpu.max`/`memory.max`; termination kills the group via
+  `cgroup.kill`. Proven on the workstation: a runaway process under a
+  16 MiB `memory.max` is OOM-killed. macOS stays lifecycle-only. Next:
+  remote agent protocol, then a second machine.
 - Launch/commercial tasks `tk-kwzc` and `tk-n8e9` stay deferred.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
@@ -75,8 +79,8 @@ skeleton runs: additional providers, microVMs, volumes, networking.
 
 ## Next action
 
-v1 execution track, in order: cgroups v2 adapter on the Linux workstation
-(real resource isolation behind the ProcessRuntime seam), then a remote
-agent protocol so a second machine can join, then the minimal control plane
-(API server + persistent command log + CLI). Launch/commercial tasks
-(`tk-kwzc`, `tk-n8e9`) stay deferred until release work starts.
+v1 execution track, in order: a remote agent protocol so a second machine
+can join (the agent already speaks Effects/Record through the seam), then
+the minimal control plane (API server + persistent command log + CLI).
+Launch/commercial tasks (`tk-kwzc`, `tk-n8e9`) stay deferred until release
+work starts.

@@ -104,7 +104,10 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
   capacity/edge coverage, bounded scoring tiers, idempotent equal-session
   handshakes, and unclaimable DataObjects.
 - Walking skeleton: `fleet-node` demo + real-process integration tests
-  (lease runs `sleep`, revoke/expiry kill it). 89 tests pass.
+  (lease runs `sleep`, revoke/expiry kill it).
+- cgroups v2 adapter: per-lease groups on Linux; claims become
+  `cpu.max`/`memory.max`; `cgroup.kill` on terminate; OOM-kill proven on
+  the workstation. 91 tests on Linux, 89 on macOS; clippy clean on both.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.
