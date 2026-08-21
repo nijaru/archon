@@ -1,7 +1,7 @@
 ---
 type: brief
 description: Active Fleet Compute OS context
-updated: 2026-08-20
+updated: 2026-08-21
 ---
 
 ## Scope
@@ -18,24 +18,30 @@ substrate to reuse.
 
 ## Current truth
 
-- Repository: `omendb/fleet`, private; `main` has the v0 kernel and simulator.
+- Repository: `omendb/fleet`, private; `main` has the v0 kernel, simulator,
+  and the walking skeleton. CI (`.github/workflows/ci.yml`) enforces fmt,
+  clippy `-D warnings`, tests, and the sim run on every push.
 - Accepted kernel contract: `ai/design/kernel-primitives.md`.
 - Accepted fencing protocol: `ai/design/lease-fencing.md`.
-- First workspace: `crates/kernel` (`fleet-kernel`) and `crates/sim`
-  (`fleet-sim`). Shared transition function; simulator owns delivery, clock,
-  and faults. Placement is deterministic scored selection plus `admit()`:
+- Workspace: `crates/kernel` (`fleet-kernel`), `crates/sim` (`fleet-sim`),
+  and `crates/node` (`fleet-node`, real execution). Shared transition
+  function; simulator owns delivery, clock, and faults; node executes real
+  processes. Placement is deterministic scored selection plus `admit()`:
   priority, then submit time; first feasible request wins. Lower-priority
-  occupying roots can be preempted; equal or higher priority cannot. Fair-share
-  admission (`admit_fair`) adds per-owner, per-kind budget ceilings
-  (TRES-style `KindUsage`) on top of the same queue; kinds without a
-  ceiling are unconstrained, and an empty map matches `admit`.
-- `tk-byam`, `tk-l8xd`, `tk-0lvx`, `tk-2vsh`, `tk-kmcj`, `tk-1idx`, `tk-e0n5`,
-  `tk-s1ff`, `tk-vbsh`, and `tk-b9xb` are done. All nine required v0 scenarios
-  pass. Reservations (`tk-vbsh`) are a Lease in `Reserved` state: committed
-  capacity, no Bindings, `PromoteLease` re-enters the ordinary prepare path.
-  Backfill (`tk-b9xb`) is EASY-style over the priority queue with shadow times
-  from lease expiry. Launch/commercial tasks `tk-kwzc` and `tk-n8e9` stay
-  later.
+  occupying roots can be preempted; equal or higher priority cannot.
+  Fair-share admission (`admit_fair`) adds per-owner, per-kind budget
+  ceilings (TRES-style `KindUsage`) on top of the same queue; kinds without
+  a ceiling are unconstrained, and an empty map matches `admit`. Backfill
+  (`admit_backfill`) is the full admission discipline with EASY shadows.
+- Two gpt-5.6-sol reviews ran (2026-08-20); all 20 findings fixed and
+  pinned. 89 tests, clippy clean, CI green.
+- **Walking skeleton (2026-08-21): Fleet runs real processes.**
+  `fleet-node` discovers the local machine as a Fleet graph, admits
+  requests through the kernel, and executes lease commands as real OS
+  processes — revoke or expiry kills the process. Enforcement is
+  lifecycle-only (spawn/kill); cgroups v2 isolation on Linux is the next
+  adapter, then a remote agent protocol and a second machine.
+- Launch/commercial tasks `tk-kwzc` and `tk-n8e9` stay deferred.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
 
@@ -69,5 +75,8 @@ skeleton runs: additional providers, microVMs, volumes, networking.
 
 ## Next action
 
-No engineering task is queued. Leave `tk-kwzc` and `tk-n8e9` until launch work
-starts. Start v1 only through the trigger above.
+v1 execution track, in order: cgroups v2 adapter on the Linux workstation
+(real resource isolation behind the ProcessRuntime seam), then a remote
+agent protocol so a second machine can join, then the minimal control plane
+(API server + persistent command log + CLI). Launch/commercial tasks
+(`tk-kwzc`, `tk-n8e9`) stay deferred until release work starts.
