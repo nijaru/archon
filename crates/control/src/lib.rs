@@ -1,4 +1,4 @@
-//! Fleet control plane: persistent command log, API server, CLI.
+//! Archon control plane: persistent command log, API server, CLI.
 //!
 //! The server owns a [`NodeService`] and appends every applied kernel
 //! command to a JSONL log. On boot it replays the log to rebuild cluster

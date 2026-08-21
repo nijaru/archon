@@ -1,4 +1,4 @@
-//! Fleet kernel types and the Cluster transition function.
+//! Archon kernel types and the Cluster transition function.
 //!
 //! Production and the simulator share this crate. Delivery, clocks, and faults
 //! stay outside `Cluster::apply`.

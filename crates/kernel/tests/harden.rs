@@ -1,10 +1,10 @@
-use fleet_kernel::{
+use archon_kernel::{
     BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, LeaseState, Need, NodeId,
     NodeKind, OwnerId, ProviderId, Quantity, Request, RequestClass, RequestId, qty,
 };
 
-fn node(id: u64, kind: NodeKind, capacity: Quantity) -> fleet_kernel::Node {
-    fleet_kernel::Node {
+fn node(id: u64, kind: NodeKind, capacity: Quantity) -> archon_kernel::Node {
+    archon_kernel::Node {
         id: NodeId::from_u64(id),
         kind,
         attrs: Default::default(),
@@ -22,16 +22,16 @@ fn graph() -> Cluster {
                 node(3, NodeKind::Cpu, qty(Dimension::Count, 1)),
             ],
             edges: vec![
-                fleet_kernel::Edge {
+                archon_kernel::Edge {
                     from: NodeId::from_u64(1),
                     to: NodeId::from_u64(2),
-                    kind: fleet_kernel::EdgeKind::Contains,
+                    kind: archon_kernel::EdgeKind::Contains,
                     attrs: Default::default(),
                 },
-                fleet_kernel::Edge {
+                archon_kernel::Edge {
                     from: NodeId::from_u64(1),
                     to: NodeId::from_u64(3),
-                    kind: fleet_kernel::EdgeKind::Contains,
+                    kind: archon_kernel::EdgeKind::Contains,
                     attrs: Default::default(),
                 },
             ],
@@ -40,9 +40,9 @@ fn graph() -> Cluster {
     cluster
 }
 
-fn cpu_claim(cluster: &Cluster, node: u64) -> fleet_kernel::Allocation {
-    fleet_kernel::Allocation {
-        claims: vec![fleet_kernel::Claim {
+fn cpu_claim(cluster: &Cluster, node: u64) -> archon_kernel::Allocation {
+    archon_kernel::Allocation {
+        claims: vec![archon_kernel::Claim {
             node: NodeId::from_u64(node),
             quantity: qty(Dimension::Count, 1),
         }],
@@ -370,7 +370,7 @@ fn duplicate_open_binding_after_active_is_a_noop() {
     assert!(effects.is_empty());
     assert!(matches!(
         cluster.bindings[&BindingId::from_u64(1)].state,
-        fleet_kernel::BindingState::Active
+        archon_kernel::BindingState::Active
     ));
 }
 
@@ -470,10 +470,10 @@ fn failed_apply_graph_is_atomic_and_replay_consistent() {
     let err = cluster
         .apply(Command::ApplyGraph {
             nodes: vec![node(9, NodeKind::Nvme, qty(Dimension::Count, 1))],
-            edges: vec![fleet_kernel::Edge {
+            edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(9),
                 to: NodeId::from_u64(99),
-                kind: fleet_kernel::EdgeKind::Contains,
+                kind: archon_kernel::EdgeKind::Contains,
                 attrs: Default::default(),
             }],
         })
@@ -493,16 +493,16 @@ fn contains_cycles_and_multi_parent_are_rejected_atomically() {
         .apply(Command::ApplyGraph {
             nodes: vec![],
             edges: vec![
-                fleet_kernel::Edge {
+                archon_kernel::Edge {
                     from: NodeId::from_u64(1),
                     to: NodeId::from_u64(2),
-                    kind: fleet_kernel::EdgeKind::Contains,
+                    kind: archon_kernel::EdgeKind::Contains,
                     attrs: Default::default(),
                 },
-                fleet_kernel::Edge {
+                archon_kernel::Edge {
                     from: NodeId::from_u64(2),
                     to: NodeId::from_u64(1),
-                    kind: fleet_kernel::EdgeKind::Contains,
+                    kind: archon_kernel::EdgeKind::Contains,
                     attrs: Default::default(),
                 },
             ],
@@ -512,10 +512,10 @@ fn contains_cycles_and_multi_parent_are_rejected_atomically() {
     let err = cluster
         .apply(Command::ApplyGraph {
             nodes: vec![],
-            edges: vec![fleet_kernel::Edge {
+            edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(3),
                 to: NodeId::from_u64(2),
-                kind: fleet_kernel::EdgeKind::Contains,
+                kind: archon_kernel::EdgeKind::Contains,
                 attrs: Default::default(),
             }],
         })
@@ -647,7 +647,7 @@ fn preparing_lease_expires_when_due() {
 fn backfill_honors_the_fair_share_ceiling() {
     let mut cluster = graph();
     active_root(&mut cluster, 1, 2, 1);
-    let queue = vec![fleet_kernel::Queued {
+    let queue = vec![archon_kernel::Queued {
         request: Request {
             id: RequestId::from_u64(2),
             class: RequestClass::Batch,
@@ -668,11 +668,11 @@ fn backfill_honors_the_fair_share_ceiling() {
     }];
     // Owner 1 already holds one CPU; a 1-CPU ceiling blocks its request even
     // though capacity is free.
-    let fair = fleet_kernel::KindUsage::from([(NodeKind::Cpu, qty(Dimension::Count, 1))]);
+    let fair = archon_kernel::KindUsage::from([(NodeKind::Cpu, qty(Dimension::Count, 1))]);
     assert!(cluster.admit_backfill(&queue, &fair).is_none());
     assert!(
         cluster
-            .admit_backfill(&queue, &fleet_kernel::KindUsage::new())
+            .admit_backfill(&queue, &archon_kernel::KindUsage::new())
             .is_some()
     );
 }
@@ -686,13 +686,13 @@ fn duplicate_node_claims_are_rejected() {
             session: 1,
         })
         .unwrap();
-    let allocation = fleet_kernel::Allocation {
+    let allocation = archon_kernel::Allocation {
         claims: vec![
-            fleet_kernel::Claim {
+            archon_kernel::Claim {
                 node: NodeId::from_u64(2),
                 quantity: qty(Dimension::Count, 1),
             },
-            fleet_kernel::Claim {
+            archon_kernel::Claim {
                 node: NodeId::from_u64(2),
                 quantity: qty(Dimension::Count, 1),
             },
@@ -748,10 +748,10 @@ fn partial_memory_roots_sum_instead_of_taking_the_max() {
                 node(1, NodeKind::Machine, Quantity::new()),
                 node(2, NodeKind::Memory, qty(Dimension::Bytes, 100)),
             ],
-            edges: vec![fleet_kernel::Edge {
+            edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(1),
                 to: NodeId::from_u64(2),
-                kind: fleet_kernel::EdgeKind::Contains,
+                kind: archon_kernel::EdgeKind::Contains,
                 attrs: Default::default(),
             }],
         })
@@ -767,8 +767,8 @@ fn partial_memory_roots_sum_instead_of_taking_the_max() {
             .apply(Command::OpenLease {
                 lease: LeaseId::from_u64(lease),
                 owner: OwnerId::from_u64(lease),
-                allocation: fleet_kernel::Allocation {
-                    claims: vec![fleet_kernel::Claim {
+                allocation: archon_kernel::Allocation {
+                    claims: vec![archon_kernel::Claim {
                         node: NodeId::from_u64(2),
                         quantity: qty(Dimension::Bytes, 40),
                     }],
@@ -787,8 +787,8 @@ fn partial_memory_roots_sum_instead_of_taking_the_max() {
         .apply(Command::OpenLease {
             lease: LeaseId::from_u64(3),
             owner: OwnerId::from_u64(3),
-            allocation: fleet_kernel::Allocation {
-                claims: vec![fleet_kernel::Claim {
+            allocation: archon_kernel::Allocation {
+                claims: vec![archon_kernel::Claim {
                     node: NodeId::from_u64(2),
                     quantity: qty(Dimension::Bytes, 40),
                 }],
@@ -867,8 +867,8 @@ fn data_objects_cannot_be_claimed() {
         .apply(Command::OpenLease {
             lease: LeaseId::from_u64(1),
             owner: OwnerId::from_u64(1),
-            allocation: fleet_kernel::Allocation {
-                claims: vec![fleet_kernel::Claim {
+            allocation: archon_kernel::Allocation {
+                claims: vec![archon_kernel::Claim {
                     node: NodeId::from_u64(7),
                     quantity: qty(Dimension::Bytes, 1 << 30),
                 }],
@@ -899,10 +899,10 @@ fn digest_distinguishes_capacity_and_edge_changes() {
     cluster
         .apply(Command::ApplyGraph {
             nodes: vec![],
-            edges: vec![fleet_kernel::Edge {
+            edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(2),
                 to: NodeId::from_u64(3),
-                kind: fleet_kernel::EdgeKind::SameNuma,
+                kind: archon_kernel::EdgeKind::SameNuma,
                 attrs: Default::default(),
             }],
         })

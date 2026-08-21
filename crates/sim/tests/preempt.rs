@@ -1,7 +1,7 @@
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_sim::{World, tiny_graph};
+use archon_sim::{World, tiny_graph};
 
 fn boot() -> World {
     let mut world = World::new();
@@ -55,7 +55,7 @@ fn occupy(world: &mut World, lease: u64, count: u64, priority: u32) {
 #[test]
 fn already_fits_has_no_victims() {
     let world = boot();
-    let victims = fleet_kernel::preempt_victims(&world.cluster, &gpu_request(9, 1, 10)).unwrap();
+    let victims = archon_kernel::preempt_victims(&world.cluster, &gpu_request(9, 1, 10)).unwrap();
     assert!(victims.is_empty());
 }
 
@@ -63,7 +63,7 @@ fn already_fits_has_no_victims() {
 fn equal_priority_is_not_preempted() {
     let mut world = boot();
     occupy(&mut world, 1, 2, 5);
-    assert!(fleet_kernel::preempt_victims(&world.cluster, &gpu_request(9, 2, 5)).is_none());
+    assert!(archon_kernel::preempt_victims(&world.cluster, &gpu_request(9, 2, 5)).is_none());
 }
 
 #[test]
@@ -104,5 +104,5 @@ fn higher_priority_evicts_then_places() {
 fn cannot_preempt_higher_priority() {
     let mut world = boot();
     occupy(&mut world, 1, 2, 20);
-    assert!(fleet_kernel::preempt_victims(&world.cluster, &gpu_request(9, 2, 10)).is_none());
+    assert!(archon_kernel::preempt_victims(&world.cluster, &gpu_request(9, 2, 10)).is_none());
 }

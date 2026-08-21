@@ -5,16 +5,16 @@
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_node::agent::LeaseAgent;
-use fleet_node::protocol::{read_request, write_response};
-use fleet_node::runtime::ProcessRuntime;
-use fleet_node::service::NodeService;
+use archon_node::agent::LeaseAgent;
+use archon_node::protocol::{read_request, write_response};
+use archon_node::runtime::ProcessRuntime;
+use archon_node::service::NodeService;
 
-/// Serve one controller connection with a fresh agent, like `fleet-node
-/// serve` does.
+/// Serve one controller connection with a fresh agent, like `archon
+/// agent` does.
 fn spawn_agent() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
@@ -88,7 +88,7 @@ fn controller_runs_and_kills_a_process_on_a_remote_agent() {
 
 #[test]
 fn stale_sessions_are_rejected_by_the_agent() {
-    use fleet_node::protocol::{AgentRequest, AgentResponse};
+    use archon_node::protocol::{AgentRequest, AgentResponse};
 
     let mut agent = LeaseAgent::new(ProcessRuntime::new());
     // Session 2 is accepted and becomes the current generation.

@@ -17,4 +17,4 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - run: cargo run -p fleet-sim
+      - run: cargo run -p archon-sim

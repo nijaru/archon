@@ -1,7 +1,7 @@
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_sim::{World, tiny_graph};
+use archon_sim::{World, tiny_graph};
 
 fn boot() -> World {
     let mut world = World::new();
@@ -214,7 +214,7 @@ fn reservation_consumes_its_own_kind_budget() {
             1_000,
         )
         .unwrap();
-    let usage = fleet_kernel::owner_usage(&world.cluster.graph, &world.cluster.leases);
+    let usage = archon_kernel::owner_usage(&world.cluster.graph, &world.cluster.leases);
     let charged = usage
         .get(&OwnerId::from_u64(1))
         .and_then(|per_kind| per_kind.get(&NodeKind::Cpu))
@@ -225,9 +225,9 @@ fn reservation_consumes_its_own_kind_budget() {
         "reserved leases must charge their owner by kind"
     );
 
-    let cpu_ceiling = fleet_kernel::KindUsage::from([(
-        fleet_kernel::NodeKind::Cpu,
-        fleet_kernel::qty(fleet_kernel::Dimension::Count, 1),
+    let cpu_ceiling = archon_kernel::KindUsage::from([(
+        archon_kernel::NodeKind::Cpu,
+        archon_kernel::qty(archon_kernel::Dimension::Count, 1),
     )]);
     world.enqueue(cpu_request(2, 1), OwnerId::from_u64(1));
     assert!(
@@ -259,9 +259,9 @@ fn reservation_leaves_other_kind_budgets_untouched() {
         .unwrap();
     // The owner is at its CPU reservation, but only CPU budgets constrain
     // CPU requests: its GPU request admits under a GPU-only ceiling.
-    let gpu_ceiling = fleet_kernel::KindUsage::from([(
-        fleet_kernel::NodeKind::Gpu,
-        fleet_kernel::qty(fleet_kernel::Dimension::Count, 1),
+    let gpu_ceiling = archon_kernel::KindUsage::from([(
+        archon_kernel::NodeKind::Gpu,
+        archon_kernel::qty(archon_kernel::Dimension::Count, 1),
     )]);
     world.enqueue(gpu_request(2, 1, 1), OwnerId::from_u64(1));
     assert_eq!(

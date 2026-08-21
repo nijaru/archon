@@ -1,4 +1,4 @@
-use fleet_kernel::{
+use archon_kernel::{
     Cluster, Command, Dimension, Need, Node, NodeId, NodeKind, OwnerId, Quantity, Queued, Request,
     RequestClass, RequestId, admit, qty,
 };
@@ -22,10 +22,10 @@ fn cluster() -> Cluster {
                 node(2, NodeKind::Cpu, qty(Dimension::Count, 1)),
                 node(3, NodeKind::Cpu, qty(Dimension::Count, 1)),
             ],
-            edges: vec![fleet_kernel::Edge {
+            edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(1),
                 to: NodeId::from_u64(2),
-                kind: fleet_kernel::EdgeKind::Contains,
+                kind: archon_kernel::EdgeKind::Contains,
                 attrs: Default::default(),
             }],
         })
@@ -33,10 +33,10 @@ fn cluster() -> Cluster {
     cluster
         .apply(Command::ApplyGraph {
             nodes: vec![],
-            edges: vec![fleet_kernel::Edge {
+            edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(1),
                 to: NodeId::from_u64(3),
-                kind: fleet_kernel::EdgeKind::Contains,
+                kind: archon_kernel::EdgeKind::Contains,
                 attrs: Default::default(),
             }],
         })

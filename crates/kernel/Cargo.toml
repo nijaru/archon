@@ -1,9 +1,9 @@
 [package]
-name = "fleet-kernel"
+name = "archon-kernel"
 version = "0.0.0"
 edition.workspace = true
 publish.workspace = true
-description = "Fleet resource graph, lease, and binding transition function"
+description = "Archon resource graph, lease, and binding transition function"
 
 [dependencies]
 serde = { version = "1", optional = true, features = ["derive"] }

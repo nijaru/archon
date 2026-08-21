@@ -1,9 +1,9 @@
 [package]
-name = "fleet-sim"
+name = "archon-sim"
 version = "0.0.0"
 edition.workspace = true
 publish.workspace = true
-description = "Deterministic Fleet kernel simulator"
+description = "Deterministic Archon kernel simulator"
 
 [dependencies]
-fleet-kernel = { path = "../kernel" }
+archon-kernel = { path = "../kernel" }

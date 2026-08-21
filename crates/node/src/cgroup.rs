@@ -1,5 +1,5 @@
 //! Linux cgroup v2 enforcement: a lease's claims become real kernel limits.
-//! One cgroup per lease under a Fleet root; the lease's CPU and memory
+//! One cgroup per lease under an Archon root; the lease's CPU and memory
 //! claims map to `cpu.max` and `memory.max`, the spawned process joins the
 //! group, and termination kills the whole group via `cgroup.kill`.
 //! Requires root or a delegated cgroup v2 subtree.
@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use fleet_kernel::LeaseId;
+use archon_kernel::LeaseId;
 
 use crate::protocol::LeaseLimits;
 
@@ -17,8 +17,8 @@ pub struct CgroupGroup {
 }
 
 impl CgroupGroup {
-    /// Create `fleet/lease-<id>` under the cgroup v2 root and enable the cpu
-    /// and memory controllers on the Fleet subtree.
+    /// Create `archon/lease-<id>` under the cgroup v2 root and enable the cpu
+    /// and memory controllers on the Archon subtree.
     pub fn create(root: &str, lease: LeaseId, limits: &LeaseLimits) -> Result<Self, String> {
         let root = PathBuf::from(root);
         fs::create_dir_all(&root).map_err(|err| format!("create {}: {err}", root.display()))?;

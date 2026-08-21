@@ -1,7 +1,7 @@
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, Error, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_sim::{World, tiny_graph};
+use archon_sim::{World, tiny_graph};
 
 fn boot() -> World {
     let mut world = World::new();
@@ -52,7 +52,7 @@ fn occupy(world: &mut World, lease: u64, priority: u32) {
     world.deliver_all().unwrap();
 }
 
-fn machine_of(world: &World, lease: u64) -> fleet_kernel::NodeId {
+fn machine_of(world: &World, lease: u64) -> archon_kernel::NodeId {
     let claim = world.cluster.leases[&LeaseId::from_u64(lease)]
         .allocation
         .claims[0]
@@ -138,7 +138,7 @@ fn recovery_unquarantines_and_replaces() {
     world.deliver_all().unwrap();
     assert_eq!(
         world.cluster.leases[&LeaseId::from_u64(9)].state,
-        fleet_kernel::LeaseState::Active
+        archon_kernel::LeaseState::Active
     );
 }
 
@@ -174,7 +174,7 @@ fn other_machine_keeps_running() {
     world.deliver_all().unwrap();
     assert_eq!(
         world.cluster.leases[&LeaseId::from_u64(9)].state,
-        fleet_kernel::LeaseState::Active
+        archon_kernel::LeaseState::Active
     );
     let claim = world.cluster.leases[&LeaseId::from_u64(9)]
         .allocation

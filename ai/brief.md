@@ -4,9 +4,18 @@ description: Active Fleet Compute OS context
 updated: 2026-08-21
 ---
 
+## Name
+
+The project is **Archon** — the Athenian magistrate who assigned duties and
+resources; in StarCraft lore, two beings merge into one greater Archon.
+Chosen 2026-08-21 from a naming pass (Westworld's Rehoboam was the seed;
+too long as-is). The GitHub repo stays `omendb/fleet` until release
+governance (`tk-kwzc`) decides repo/domain questions.
+
 ## Scope
 
-Fleet is an open-source, Rust-first distributed resource operating system for
+Archon (formerly fleet) is an open-source, Rust-first distributed resource
+operating system for
 individual VPSs, multiple VPSs, bare metal, datacenters, AI/HPC, services, batch
 jobs, virtual machines, containers, networking, storage, and heterogeneous
 accelerators.
@@ -18,14 +27,14 @@ substrate to reuse.
 
 ## Current truth
 
-- Repository: `omendb/fleet`, private; `main` has the v0 kernel, simulator,
+- Repository: `omendb/fleet` (repo name unchanged), private; `main` has the v0 kernel, simulator,
   and the walking skeleton. CI (`.github/workflows/ci.yml`) enforces fmt,
   clippy `-D warnings`, tests, and the sim run on every push.
 - Accepted kernel contract: `ai/design/kernel-primitives.md`.
 - Accepted fencing protocol: `ai/design/lease-fencing.md`.
 - Workspace: `crates/kernel` (`fleet-kernel`), `crates/sim` (`fleet-sim`),
   `crates/node` (execution runtime library), `crates/control` (control
-  plane library), and `crates/cli` — one `fleet` binary with role
+  plane library), and `crates/cli` — one `archon` binary with role
   subcommands: `serve` (control plane), `agent` (node daemon), `demo`,
   and `submit`/`status`/`revoke` client. Shared transition
   function; simulator owns delivery, clock, and faults; node executes real
@@ -39,7 +48,7 @@ substrate to reuse.
 - Two gpt-5.6-sol reviews ran (2026-08-20); all 20 findings fixed and
   pinned. 89 tests, clippy clean, CI green.
 - **Walking skeleton (2026-08-21): Fleet runs real processes.**
-  `fleet demo` discovers the local machine as a Fleet graph, admits
+  `archon demo` discovers the local machine as a Fleet graph, admits
   requests through the kernel, and executes lease commands as real OS
   processes — revoke or expiry kills the process.
 - **cgroups v2 adapter (2026-08-21): lease claims are real kernel limits

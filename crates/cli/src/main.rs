@@ -1,20 +1,20 @@
-//! `fleet` — one binary, three roles.
+//! `archon` — one binary, three roles.
 //!
-//! - `fleet serve --listen ADDR --log FILE [--remote ADDR]` — control plane:
+//! - `archon serve --listen ADDR --log FILE [--remote ADDR]` — control plane:
 //!   persistent command log, admission, the Cluster.
-//! - `fleet agent --listen ADDR [--cgroup-root PATH]` — node agent: execute
+//! - `archon agent --listen ADDR [--cgroup-root PATH]` — node agent: execute
 //!   leases as real processes on this machine.
-//! - `fleet demo [--remote ADDR]` — walking-skeleton demo.
-//! - `fleet -c ADDR submit|status|revoke` — client.
+//! - `archon demo [--remote ADDR]` — walking-skeleton demo.
+//! - `archon -c ADDR submit|status|revoke` — client.
 
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::exit;
 use std::time::Duration;
 
-use fleet_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
-use fleet_node::protocol::{read_request, write_response};
-use fleet_node::service::NodeService;
+use archon_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
+use archon_node::protocol::{read_request, write_response};
+use archon_node::service::NodeService;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -46,7 +46,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  fleet serve --listen ADDR --log FILE [--remote ADDR] [--cgroup-root PATH]\n  fleet agent --listen ADDR [--cgroup-root PATH]\n  fleet demo [--remote ADDR]\n  fleet -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  fleet -c ADDR status\n  fleet -c ADDR revoke LEASE"
+        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR] [--cgroup-root PATH]\n  archon agent --listen ADDR [--cgroup-root PATH]\n  archon demo [--remote ADDR]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR status\n  archon -c ADDR revoke LEASE"
     );
     exit(2);
 }
@@ -57,7 +57,7 @@ fn serve(args: &[String]) {
     let mut listen = None;
     let mut log = None;
     let mut remote = None;
-    let mut cgroup_root = std::env::var("FLEET_CGROUP_ROOT").ok();
+    let mut cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
     let mut index = 0;
     while index < args.len() {
         let flag = args[index].as_str();
@@ -77,12 +77,12 @@ fn serve(args: &[String]) {
         usage();
     };
     let link = match &remote {
-        Some(addr) => fleet_control::server::AgentLink::Remote { addr: addr.clone() },
-        None => fleet_control::server::AgentLink::Local { cgroup_root },
+        Some(addr) => archon_control::server::AgentLink::Remote { addr: addr.clone() },
+        None => archon_control::server::AgentLink::Local { cgroup_root },
     };
-    let mut plane = fleet_control::server::ControlPlane::boot(link, log).expect("boot");
+    let mut plane = archon_control::server::ControlPlane::boot(link, log).expect("boot");
     let listener = TcpListener::bind(&listen).expect("bind");
-    eprintln!("fleet: control plane serving on {listen}");
+    eprintln!("archon: control plane serving on {listen}");
     plane.serve(listener).expect("serve");
 }
 
@@ -90,7 +90,7 @@ fn serve(args: &[String]) {
 
 fn agent(args: &[String]) {
     let mut listen = None;
-    let mut cgroup_root = std::env::var("FLEET_CGROUP_ROOT").ok();
+    let mut cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
     let mut index = 0;
     while index < args.len() {
         let flag = args[index].as_str();
@@ -108,7 +108,7 @@ fn agent(args: &[String]) {
         usage();
     };
     let listener = TcpListener::bind(&listen).expect("bind");
-    eprintln!("fleet: agent listening on {listen}");
+    eprintln!("archon: agent listening on {listen}");
     for stream in listener.incoming() {
         let mut stream = match stream {
             Ok(stream) => stream,
@@ -118,28 +118,28 @@ fn agent(args: &[String]) {
             .peer_addr()
             .map(|addr| addr.to_string())
             .unwrap_or_default();
-        eprintln!("fleet: controller connected from {peer}");
+        eprintln!("archon: controller connected from {peer}");
         let runtime = build_runtime(&cgroup_root);
-        let mut agent = fleet_node::agent::LeaseAgent::new(runtime);
+        let mut agent = archon_node::agent::LeaseAgent::new(runtime);
         while let Ok(request) = read_request(&mut stream) {
             let response = agent.handle(request);
             if write_response(&mut stream, &response).is_err() {
                 break;
             }
         }
-        eprintln!("fleet: controller {peer} disconnected");
+        eprintln!("archon: controller {peer} disconnected");
     }
 }
 
-fn build_runtime(cgroup_root: &Option<String>) -> fleet_node::runtime::ProcessRuntime {
+fn build_runtime(cgroup_root: &Option<String>) -> archon_node::runtime::ProcessRuntime {
     #[cfg(target_os = "linux")]
     if let Some(root) = cgroup_root {
-        eprintln!("fleet: cgroup v2 enforcement enabled at {root}");
-        return fleet_node::runtime::ProcessRuntime::new().with_cgroup_root(root.clone());
+        eprintln!("archon: cgroup v2 enforcement enabled at {root}");
+        return archon_node::runtime::ProcessRuntime::new().with_cgroup_root(root.clone());
     }
     #[cfg(not(target_os = "linux"))]
     let _ = cgroup_root;
-    fleet_node::runtime::ProcessRuntime::new()
+    archon_node::runtime::ProcessRuntime::new()
 }
 
 // --- demo ----------------------------------------------------------------
@@ -148,17 +148,17 @@ fn demo(remote: Option<String>) {
     let mut service = match &remote {
         Some(addr) => {
             let service = NodeService::connect(addr).expect("connect to agent");
-            eprintln!("fleet: connected to remote agent at {addr}");
+            eprintln!("archon: connected to remote agent at {addr}");
             service
         }
         None => {
             let mut service = NodeService::new();
             #[cfg(target_os = "linux")]
-            if let Ok(root) = std::env::var("FLEET_CGROUP_ROOT") {
+            if let Ok(root) = std::env::var("ARCHON_CGROUP_ROOT") {
                 service = NodeService::local_with_cgroups(root);
-                eprintln!("fleet: cgroup v2 enforcement enabled");
+                eprintln!("archon: cgroup v2 enforcement enabled");
             }
-            let (local, nodes, edges) = fleet_node::discover::discover();
+            let (local, nodes, edges) = archon_node::discover::discover();
             service.boot(nodes, edges).expect("boot cluster");
             let _ = local;
             service
@@ -167,12 +167,12 @@ fn demo(remote: Option<String>) {
     print_machine(&service);
 
     // Submit a real workload: sleep 5 under a 30-second lease.
-    let request = fleet_kernel::Request {
-        id: fleet_kernel::RequestId::from_u64(1),
-        class: fleet_kernel::RequestClass::Batch,
-        needs: vec![fleet_kernel::Need {
-            kind: fleet_kernel::NodeKind::Cpu,
-            quantity: fleet_kernel::qty(fleet_kernel::Dimension::Count, 1),
+    let request = archon_kernel::Request {
+        id: archon_kernel::RequestId::from_u64(1),
+        class: archon_kernel::RequestClass::Batch,
+        needs: vec![archon_kernel::Need {
+            kind: archon_kernel::NodeKind::Cpu,
+            quantity: archon_kernel::qty(archon_kernel::Dimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -184,19 +184,19 @@ fn demo(remote: Option<String>) {
     };
     service.submit(
         request,
-        fleet_kernel::OwnerId::from_u64(1),
+        archon_kernel::OwnerId::from_u64(1),
         vec!["sleep".into(), "5".into()],
     );
     service.tick().expect("tick");
     let admitted = service.admit_one().expect("admit");
-    assert_eq!(admitted, Some(fleet_kernel::RequestId::from_u64(1)));
-    let lease = fleet_kernel::LeaseId::from_u64(1);
+    assert_eq!(admitted, Some(archon_kernel::RequestId::from_u64(1)));
+    let lease = archon_kernel::LeaseId::from_u64(1);
     assert!(
         service.is_running(lease),
         "sleep must be running under the lease"
     );
     let where_ = remote.as_ref().map_or("locally", |addr| addr.as_str());
-    println!("fleet: lease 1 active — `sleep 5` is running as a real process on {where_}");
+    println!("archon: lease 1 active — `sleep 5` is running as a real process on {where_}");
 
     // Revoke: the lease fences and the process dies immediately.
     std::thread::sleep(Duration::from_millis(500));
@@ -205,15 +205,15 @@ fn demo(remote: Option<String>) {
         !service.is_running(lease),
         "process must die with the lease"
     );
-    println!("fleet: lease 1 revoked — process terminated");
-    println!("fleet: walking skeleton complete");
+    println!("archon: lease 1 revoked — process terminated");
+    println!("archon: walking skeleton complete");
 }
 
 fn print_machine(service: &NodeService) {
     let machine = service
         .cluster
         .graph
-        .nodes_of_kind(fleet_kernel::NodeKind::Machine)
+        .nodes_of_kind(archon_kernel::NodeKind::Machine)
         .first()
         .copied();
     if let Some(machine) = machine {
@@ -227,22 +227,22 @@ fn print_machine(service: &NodeService) {
         let memory = service
             .cluster
             .graph
-            .nodes_of_kind(fleet_kernel::NodeKind::Memory)
+            .nodes_of_kind(archon_kernel::NodeKind::Memory)
             .first()
             .and_then(|node| service.cluster.graph.node(*node))
             .and_then(|node| {
                 node.capacity
                     .iter()
-                    .find(|(dimension, _)| **dimension == fleet_kernel::Dimension::Bytes)
+                    .find(|(dimension, _)| **dimension == archon_kernel::Dimension::Bytes)
                     .map(|(_, amount)| amount / (1 << 30))
             })
             .unwrap_or(0);
         let cpus = service
             .cluster
             .graph
-            .nodes_of_kind(fleet_kernel::NodeKind::Cpu)
+            .nodes_of_kind(archon_kernel::NodeKind::Cpu)
             .len();
-        println!("fleet: discovered {name} ({cpus} cpus, {memory} GiB)");
+        println!("archon: discovered {name} ({cpus} cpus, {memory} GiB)");
     }
 }
 

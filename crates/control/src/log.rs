@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
-use fleet_kernel::Command;
+use archon_kernel::Command;
 
 pub struct CommandLog {
     file: File,

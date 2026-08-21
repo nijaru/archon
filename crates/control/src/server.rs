@@ -5,17 +5,17 @@
 use std::net::TcpListener;
 use std::path::PathBuf;
 
-use fleet_kernel::{
+use archon_kernel::{
     Command, Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_node::discover;
-use fleet_node::service::NodeService;
+use archon_node::discover;
+use archon_node::service::NodeService;
 
 /// How the control plane reaches its execution agent.
 pub enum AgentLink {
     /// Execute on this machine; cgroup root enables kernel enforcement.
     Local { cgroup_root: Option<String> },
-    /// Execute on a remote `fleet-node serve` agent.
+    /// Execute on a remote `archon agent` agent.
     Remote { addr: String },
 }
 
@@ -68,7 +68,7 @@ impl ControlPlane {
             .map(|id| id.as_u64() + 1)
             .unwrap_or(1);
         eprintln!(
-            "fleet: {}boot, recovered {replayed} commands, revoked {recovered} live leases",
+            "archon: {}boot, recovered {replayed} commands, revoked {recovered} live leases",
             if first_boot { "first " } else { "" }
         );
         Ok(Self {
@@ -89,7 +89,7 @@ impl ControlPlane {
                 .peer_addr()
                 .map(|addr| addr.to_string())
                 .unwrap_or_default();
-            eprintln!("fleet: client connected from {peer}");
+            eprintln!("archon: client connected from {peer}");
             while let Ok(request) = crate::api::read_request(&mut stream) {
                 self.service.tick().ok();
                 let response = self.handle(request);
@@ -97,7 +97,7 @@ impl ControlPlane {
                     break;
                 }
             }
-            eprintln!("fleet: client {peer} disconnected");
+            eprintln!("archon: client {peer} disconnected");
         }
         Ok(())
     }

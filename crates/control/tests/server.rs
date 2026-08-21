@@ -5,15 +5,12 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use fleet_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
-use fleet_control::server::ControlPlane;
+use archon_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
+use archon_control::server::ControlPlane;
 
 fn temp_log(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
-    path.push(format!(
-        "fleet-ctl-server-{name}-{}.jsonl",
-        std::process::id()
-    ));
+    path.push(format!("archon-server-{name}-{}.jsonl", std::process::id()));
     let _ = std::fs::remove_file(&path);
     path
 }
@@ -23,7 +20,7 @@ fn spawn_server(name: &str) -> String {
     let addr = listener.local_addr().unwrap().to_string();
     let log = temp_log(name);
     std::thread::spawn(move || {
-        let link = fleet_control::server::AgentLink::Local { cgroup_root: None };
+        let link = archon_control::server::AgentLink::Local { cgroup_root: None };
         let mut plane = ControlPlane::boot(link, log).expect("boot");
         plane.serve(listener).ok();
     });

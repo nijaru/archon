@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::process::{Child, Command, Stdio};
 
-use fleet_kernel::LeaseId;
+use archon_kernel::LeaseId;
 
 use crate::protocol::LeaseLimits;
 
@@ -30,7 +30,7 @@ impl ProcessRuntime {
     }
 
     /// Enable cgroup v2 enforcement under `root` (e.g.
-    /// `/sys/fs/cgroup/fleet`). Requires root or a delegated subtree.
+    /// `/sys/fs/cgroup/archon`). Requires root or a delegated subtree.
     #[cfg(target_os = "linux")]
     pub fn with_cgroup_root(mut self, root: String) -> Self {
         self.cgroup_root = Some(root);

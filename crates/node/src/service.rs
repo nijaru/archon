@@ -1,13 +1,13 @@
-//! Single-node Fleet controller: the Cluster transition function plus an
+//! Single-node Archon controller: the Cluster transition function plus an
 //! agent link that executes leases. The link is either the in-process
-//! [`LeaseAgent`] or a TCP connection to a remote `fleet-node serve` —
+//! [`LeaseAgent`] or a TCP connection to a remote `archon agent` —
 //! both speak the same protocol, so decision and enforcement stay on
 //! opposite sides of the seam whether the machine is local or not.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::net::TcpStream;
 
-use fleet_kernel::{
+use archon_kernel::{
     BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, NodeKind, OwnerId, ProviderId,
     Queued, Request, RequestId, quantity_get,
 };
@@ -184,8 +184,8 @@ impl NodeService {
 
     pub fn boot(
         &mut self,
-        nodes: Vec<fleet_kernel::Node>,
-        edges: Vec<fleet_kernel::Edge>,
+        nodes: Vec<archon_kernel::Node>,
+        edges: Vec<archon_kernel::Edge>,
     ) -> Result<(), Error> {
         self.commit(Command::ApplyGraph { nodes, edges })?;
         let machine = self
@@ -263,9 +263,9 @@ impl NodeService {
             .filter(|lease| {
                 matches!(
                     lease.state,
-                    fleet_kernel::LeaseState::Preparing
-                        | fleet_kernel::LeaseState::Active
-                        | fleet_kernel::LeaseState::Reserved
+                    archon_kernel::LeaseState::Preparing
+                        | archon_kernel::LeaseState::Active
+                        | archon_kernel::LeaseState::Reserved
                 )
             })
             .map(|lease| lease.id)
@@ -291,9 +291,9 @@ impl NodeService {
             .filter(|lease| {
                 matches!(
                     lease.state,
-                    fleet_kernel::LeaseState::Preparing
-                        | fleet_kernel::LeaseState::Active
-                        | fleet_kernel::LeaseState::Reserved
+                    archon_kernel::LeaseState::Preparing
+                        | archon_kernel::LeaseState::Active
+                        | archon_kernel::LeaseState::Reserved
                 ) && self.cluster.now >= lease.expires_at
             })
             .map(|lease| lease.id)

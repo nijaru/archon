@@ -1,7 +1,7 @@
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_sim::{World, tiny_graph};
+use archon_sim::{World, tiny_graph};
 
 fn boot() -> World {
     let mut world = World::new();
@@ -222,7 +222,7 @@ fn quarantine_blocked_head_still_protects_capacity() {
         .to_vec();
     // Quarantine one machine: its GPU and CPUs are hard-filtered.
     world
-        .apply(fleet_kernel::Command::QuarantineNode {
+        .apply(archon_kernel::Command::QuarantineNode {
             node: graph_machines[0],
         })
         .unwrap();
@@ -240,7 +240,7 @@ fn quarantine_blocked_head_still_protects_capacity() {
     );
     // Unquarantine: the head places immediately, unobstructed.
     world
-        .apply(fleet_kernel::Command::UnquarantineNode {
+        .apply(archon_kernel::Command::UnquarantineNode {
             node: graph_machines[0],
         })
         .unwrap();
@@ -248,6 +248,6 @@ fn quarantine_blocked_head_still_protects_capacity() {
         world
             .admit_next_backfill(LeaseId::from_u64(1), OwnerId::from_u64(1))
             .unwrap(),
-        Some(fleet_kernel::RequestId::from_u64(1))
+        Some(archon_kernel::RequestId::from_u64(1))
     );
 }

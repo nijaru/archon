@@ -1,5 +1,5 @@
-use fleet_kernel::{Dimension, KindUsage, NodeKind, OwnerId, qty};
-use fleet_sim::{World, tiny_graph};
+use archon_kernel::{Dimension, KindUsage, NodeKind, OwnerId, qty};
+use archon_sim::{World, tiny_graph};
 
 fn boot() -> World {
     let mut world = World::new();
@@ -13,12 +13,12 @@ fn boot() -> World {
     world
 }
 
-fn cpu_request(id: u64, count: u64, priority: u32) -> fleet_kernel::Request {
-    fleet_kernel::Request {
-        id: fleet_kernel::RequestId::from_u64(id),
-        class: fleet_kernel::RequestClass::Service,
-        needs: vec![fleet_kernel::Need {
-            kind: fleet_kernel::NodeKind::Cpu,
+fn cpu_request(id: u64, count: u64, priority: u32) -> archon_kernel::Request {
+    archon_kernel::Request {
+        id: archon_kernel::RequestId::from_u64(id),
+        class: archon_kernel::RequestClass::Service,
+        needs: vec![archon_kernel::Need {
+            kind: archon_kernel::NodeKind::Cpu,
             quantity: qty(Dimension::Count, count),
             filters: vec![],
         }],
@@ -40,21 +40,21 @@ fn fair_share_serves_small_owners_first() {
     // Plain admission lets the big owner take 3 of 4 CPUs.
     assert_eq!(
         world
-            .admit_next(fleet_kernel::LeaseId::from_u64(1), OwnerId::from_u64(1))
+            .admit_next(archon_kernel::LeaseId::from_u64(1), OwnerId::from_u64(1))
             .unwrap()
             .unwrap(),
-        fleet_kernel::RequestId::from_u64(1)
+        archon_kernel::RequestId::from_u64(1)
     );
     assert_eq!(
         world
-            .admit_next(fleet_kernel::LeaseId::from_u64(2), OwnerId::from_u64(2))
+            .admit_next(archon_kernel::LeaseId::from_u64(2), OwnerId::from_u64(2))
             .unwrap()
             .unwrap(),
-        fleet_kernel::RequestId::from_u64(2)
+        archon_kernel::RequestId::from_u64(2)
     );
     assert!(
         world
-            .admit_next(fleet_kernel::LeaseId::from_u64(3), OwnerId::from_u64(3))
+            .admit_next(archon_kernel::LeaseId::from_u64(3), OwnerId::from_u64(3))
             .unwrap()
             .is_none()
     );
@@ -68,7 +68,7 @@ fn fair_share_ceiling_lets_small_owners_through() {
     world
         .place(
             &cpu_request(1, 1, 1),
-            fleet_kernel::LeaseId::from_u64(1),
+            archon_kernel::LeaseId::from_u64(1),
             OwnerId::from_u64(1),
             None,
             100,
@@ -76,11 +76,11 @@ fn fair_share_ceiling_lets_small_owners_through() {
         )
         .unwrap();
     world
-        .bind_enforced(fleet_kernel::LeaseId::from_u64(1), 100)
+        .bind_enforced(archon_kernel::LeaseId::from_u64(1), 100)
         .unwrap();
     world.deliver_all().unwrap();
     world
-        .activate_lease(fleet_kernel::LeaseId::from_u64(1))
+        .activate_lease(archon_kernel::LeaseId::from_u64(1))
         .unwrap();
     world.deliver_all().unwrap();
     world.enqueue(cpu_request(2, 2, 10), OwnerId::from_u64(1));
@@ -92,56 +92,56 @@ fn fair_share_ceiling_lets_small_owners_through() {
     assert_eq!(
         world
             .admit_next_fair(
-                fleet_kernel::LeaseId::from_u64(2),
+                archon_kernel::LeaseId::from_u64(2),
                 OwnerId::from_u64(2),
                 &fair_share,
             )
             .unwrap()
             .unwrap(),
-        fleet_kernel::RequestId::from_u64(3)
+        archon_kernel::RequestId::from_u64(3)
     );
     assert_eq!(
         world
             .admit_next_fair(
-                fleet_kernel::LeaseId::from_u64(3),
+                archon_kernel::LeaseId::from_u64(3),
                 OwnerId::from_u64(3),
                 &fair_share,
             )
             .unwrap()
             .unwrap(),
-        fleet_kernel::RequestId::from_u64(4)
+        archon_kernel::RequestId::from_u64(4)
     );
     // The big owner is still queued; it is not admitted yet.
     assert_eq!(world.queue.len(), 1);
     assert_eq!(
         world.queue[0].request.id,
-        fleet_kernel::RequestId::from_u64(2)
+        archon_kernel::RequestId::from_u64(2)
     );
     world.deliver_all().unwrap();
     world
-        .activate_lease(fleet_kernel::LeaseId::from_u64(2))
+        .activate_lease(archon_kernel::LeaseId::from_u64(2))
         .unwrap();
     world
-        .activate_lease(fleet_kernel::LeaseId::from_u64(3))
+        .activate_lease(archon_kernel::LeaseId::from_u64(3))
         .unwrap();
     world.deliver_all().unwrap();
     // The requesting owner's own 1-CPU lease still counts against its
     // budget, so its 2-CPU request stays blocked until that lease is
     // released.
     world
-        .release_lease(fleet_kernel::LeaseId::from_u64(1))
+        .release_lease(archon_kernel::LeaseId::from_u64(1))
         .unwrap();
     world.deliver_all().unwrap();
     assert_eq!(
         world
             .admit_next_fair(
-                fleet_kernel::LeaseId::from_u64(4),
+                archon_kernel::LeaseId::from_u64(4),
                 OwnerId::from_u64(1),
                 &fair_share,
             )
             .unwrap()
             .unwrap(),
-        fleet_kernel::RequestId::from_u64(2)
+        archon_kernel::RequestId::from_u64(2)
     );
 }
 
@@ -154,23 +154,23 @@ fn empty_ceiling_matches_plain_admission() {
     assert_eq!(
         world
             .admit_next_fair(
-                fleet_kernel::LeaseId::from_u64(1),
+                archon_kernel::LeaseId::from_u64(1),
                 OwnerId::from_u64(1),
                 &empty,
             )
             .unwrap()
             .unwrap(),
-        fleet_kernel::RequestId::from_u64(1)
+        archon_kernel::RequestId::from_u64(1)
     );
     assert_eq!(
         world
             .admit_next_fair(
-                fleet_kernel::LeaseId::from_u64(2),
+                archon_kernel::LeaseId::from_u64(2),
                 OwnerId::from_u64(2),
                 &empty,
             )
             .unwrap()
             .unwrap(),
-        fleet_kernel::RequestId::from_u64(2)
+        archon_kernel::RequestId::from_u64(2)
     );
 }

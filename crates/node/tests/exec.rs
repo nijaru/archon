@@ -2,14 +2,14 @@
 //! lease termination kills it. These exercise the same seam production
 //! enforcement will use.
 
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_node::service::NodeService;
+use archon_node::service::NodeService;
 
 fn boot() -> NodeService {
     let mut service = NodeService::new();
-    let (local, nodes, edges) = fleet_node::discover::discover();
+    let (local, nodes, edges) = archon_node::discover::discover();
     service.boot(nodes, edges).expect("boot");
     let _ = local;
     service

@@ -1,10 +1,10 @@
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, Filter, LeaseId, Need, NodeKind, OwnerId, Preference, Request, RequestClass,
     RequestId, qty,
 };
-use fleet_sim::{World, tiny_graph};
+use archon_sim::{World, tiny_graph};
 
-fn boot(machines: usize) -> (World, fleet_sim::TinyGraph) {
+fn boot(machines: usize) -> (World, archon_sim::TinyGraph) {
     let mut world = World::new();
     let graph = tiny_graph(machines);
     world
@@ -73,7 +73,7 @@ fn place_cpu(world: &mut World, lease: u64, preferences: Vec<Preference>) {
     world.deliver_all().unwrap();
 }
 
-fn claim_machine(world: &World, lease: u64) -> fleet_kernel::NodeId {
+fn claim_machine(world: &World, lease: u64) -> archon_kernel::NodeId {
     let node = world.cluster.leases[&LeaseId::from_u64(lease)]
         .allocation
         .claims[0]
@@ -173,5 +173,5 @@ fn hard_filter_still_refuses() {
             }],
         ))
         .unwrap_err();
-    assert!(matches!(err, fleet_kernel::Error::Refused { .. }));
+    assert!(matches!(err, archon_kernel::Error::Refused { .. }));
 }

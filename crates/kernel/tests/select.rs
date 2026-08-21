@@ -1,4 +1,4 @@
-use fleet_kernel::{
+use archon_kernel::{
     Allocation, Claim, Cluster, Command, Dimension, Edge, EdgeKind, LeaseId, Need, Node, NodeId,
     NodeKind, OwnerId, Quantity, Request, RequestClass, RequestId, qty,
 };
@@ -132,7 +132,7 @@ fn exclusive_claims_do_not_overlap() {
             priority: 1,
         })
         .unwrap_err();
-    assert!(matches!(err, fleet_kernel::Error::Overlap { .. }));
+    assert!(matches!(err, archon_kernel::Error::Overlap { .. }));
 }
 
 #[test]
@@ -166,15 +166,15 @@ fn child_cannot_escape_parent() {
     // can activate.
     cluster
         .apply(Command::OpenBinding {
-            binding: fleet_kernel::BindingId::from_u64(1),
+            binding: archon_kernel::BindingId::from_u64(1),
             lease: LeaseId::from_u64(1),
             node: NodeId::from_u64(3),
-            provider: fleet_kernel::ProviderId::ENFORCE,
+            provider: archon_kernel::ProviderId::ENFORCE,
         })
         .unwrap();
     cluster
         .apply(Command::RecordBindingPrepared {
-            binding: fleet_kernel::BindingId::from_u64(1),
+            binding: archon_kernel::BindingId::from_u64(1),
             session: 1,
             provider_handle: 1,
             fence: 1,
@@ -205,6 +205,6 @@ fn child_cannot_escape_parent() {
         .unwrap_err();
     assert!(matches!(
         err,
-        fleet_kernel::Error::ChildEscapesParent { .. }
+        archon_kernel::Error::ChildEscapesParent { .. }
     ));
 }

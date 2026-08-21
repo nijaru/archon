@@ -7,12 +7,12 @@
 use std::fs;
 use std::time::{Duration, Instant};
 
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_node::service::NodeService;
+use archon_node::service::NodeService;
 
-const ROOT: &str = "/sys/fs/cgroup/fleet-test";
+const ROOT: &str = "/sys/fs/cgroup/archon-test";
 
 /// Skip unless this process may create cgroups (root or a delegated
 /// subtree). CI runners and developer laptops skip; enforcement hosts run.
@@ -81,7 +81,7 @@ fn lease_claims_become_kernel_limits() {
     }
     cleanup_root();
     let mut service = NodeService::local_with_cgroups(ROOT.into());
-    let (_local, nodes, edges) = fleet_node::discover::discover();
+    let (_local, nodes, edges) = archon_node::discover::discover();
     service.boot(nodes, edges).expect("boot");
     service.submit(
         request(1, vec!["sleep".into(), "30".into()], 64),
@@ -113,7 +113,7 @@ fn memory_limit_kills_an_overallocating_process() {
     }
     cleanup_root();
     let mut service = NodeService::local_with_cgroups(ROOT.into());
-    let (_local, nodes, edges) = fleet_node::discover::discover();
+    let (_local, nodes, edges) = archon_node::discover::discover();
     service.boot(nodes, edges).expect("boot");
     // tail /dev/zero allocates without bound; the 16 MiB limit must OOM it.
     service.submit(

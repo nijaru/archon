@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use fleet_kernel::{
+use archon_kernel::{
     Allocation, BindingId, Cluster, Command, Digest, Effect, Endpoint, EndpointOp, Error, LeaseId,
     NodeId, OwnerId, ProviderId, Queued, Request, RequestId,
 };
@@ -57,8 +57,8 @@ impl World {
 
     pub fn apply_graph(
         &mut self,
-        nodes: Vec<fleet_kernel::Node>,
-        edges: Vec<fleet_kernel::Edge>,
+        nodes: Vec<archon_kernel::Node>,
+        edges: Vec<archon_kernel::Edge>,
     ) -> Result<(), Error> {
         self.apply(Command::ApplyGraph { nodes, edges })?;
         Ok(())
@@ -212,7 +212,7 @@ impl World {
     ) -> Result<Option<RequestId>, Error> {
         let Some(admission) = self
             .cluster
-            .admit_backfill(&self.queue, &fleet_kernel::KindUsage::new())
+            .admit_backfill(&self.queue, &archon_kernel::KindUsage::new())
         else {
             return Ok(None);
         };
@@ -239,7 +239,7 @@ impl World {
         &mut self,
         lease: LeaseId,
         owner: OwnerId,
-        fair_share: &fleet_kernel::KindUsage,
+        fair_share: &archon_kernel::KindUsage,
     ) -> Result<Option<RequestId>, Error> {
         let Some(admission) = self.cluster.admit_fair(&self.queue, fair_share) else {
             return Ok(None);
@@ -380,7 +380,7 @@ impl World {
     }
 
     pub fn preempt_for(&mut self, request: &Request) -> Result<Option<Vec<LeaseId>>, Error> {
-        let Some(victims) = fleet_kernel::preempt_victims(&self.cluster, request) else {
+        let Some(victims) = archon_kernel::preempt_victims(&self.cluster, request) else {
             return Ok(None);
         };
         for victim in &victims {
@@ -399,7 +399,7 @@ impl World {
             .graph
             .node(machine)
             .ok_or(Error::UnknownNode(machine))?;
-        if node.kind != fleet_kernel::NodeKind::Machine {
+        if node.kind != archon_kernel::NodeKind::Machine {
             return Err(Error::Invalid("fail_machine requires a machine node"));
         }
         self.apply(Command::QuarantineNode { node: machine })?;
@@ -438,9 +438,9 @@ impl World {
             .filter(|lease| {
                 matches!(
                     lease.state,
-                    fleet_kernel::LeaseState::Preparing
-                        | fleet_kernel::LeaseState::Active
-                        | fleet_kernel::LeaseState::Reserved
+                    archon_kernel::LeaseState::Preparing
+                        | archon_kernel::LeaseState::Active
+                        | archon_kernel::LeaseState::Reserved
                 ) && self.cluster.now >= lease.expires_at
             })
             .map(|lease| lease.id)
@@ -457,7 +457,7 @@ impl World {
             .leases
             .values()
             .filter(|lease| {
-                lease.state == fleet_kernel::LeaseState::Preparing
+                lease.state == archon_kernel::LeaseState::Preparing
                     && self.cluster.now >= lease.prepare_deadline
             })
             .map(|lease| lease.id)
@@ -545,9 +545,9 @@ impl World {
                 .is_some_and(|lease| {
                     matches!(
                         lease.state,
-                        fleet_kernel::LeaseState::Reserved
-                            | fleet_kernel::LeaseState::Preparing
-                            | fleet_kernel::LeaseState::Active
+                        archon_kernel::LeaseState::Reserved
+                            | archon_kernel::LeaseState::Preparing
+                            | archon_kernel::LeaseState::Active
                     )
                 });
             let same = lease_live
@@ -561,7 +561,7 @@ impl World {
                     binding: binding_id,
                     session,
                 })?;
-                if binding.state == fleet_kernel::BindingState::Preparing {
+                if binding.state == archon_kernel::BindingState::Preparing {
                     self.pending.push_back(Effect::Prepare {
                         binding: binding_id,
                         node: binding.node,
@@ -571,7 +571,7 @@ impl World {
                         epoch,
                     });
                 }
-                if binding.state == fleet_kernel::BindingState::Active {
+                if binding.state == archon_kernel::BindingState::Active {
                     self.pending.push_back(Effect::Activate {
                         binding: binding_id,
                         node: binding.node,
@@ -583,7 +583,7 @@ impl World {
                 }
             } else if matches!(
                 binding.state,
-                fleet_kernel::BindingState::Preparing | fleet_kernel::BindingState::Active
+                archon_kernel::BindingState::Preparing | archon_kernel::BindingState::Active
             ) {
                 self.pending.push_back(Effect::Fence {
                     binding: binding_id,
@@ -605,7 +605,7 @@ impl World {
             if expected.is_none_or(|binding| {
                 !matches!(
                     binding.state,
-                    fleet_kernel::BindingState::Preparing | fleet_kernel::BindingState::Active
+                    archon_kernel::BindingState::Preparing | archon_kernel::BindingState::Active
                 )
             }) && let Some(binding) = endpoint.binding
             {

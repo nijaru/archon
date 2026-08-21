@@ -3,15 +3,15 @@
 //! resource graph and placement queries to remain bounded; this guards the
 //! walk paths against accidental unbounded growth.
 
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, KindUsage, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_sim::{World, tiny_graph};
+use archon_sim::{World, tiny_graph};
 
 const MACHINES: usize = 40;
 const REQUESTS: u64 = 120;
 
-fn boot() -> (World, Vec<fleet_sim::MachineIds>) {
+fn boot() -> (World, Vec<archon_sim::MachineIds>) {
     let mut world = World::new();
     let graph = tiny_graph(MACHINES);
     let machines = graph.machines.clone();

@@ -1,4 +1,4 @@
-# Fleet Compute OS
+# Archon Compute OS
 
 Rust-first distributed resource OS. Fleet is the resource and scheduling
 authority. Linux, KVM, OCI, and drivers are substrate. Kubernetes, Slurm, Ray,
@@ -25,7 +25,7 @@ Prove these before runtime integrations:
 2. Deterministic graph/lease/scheduler simulation
 3. Binding fences, stale-agent sessions, partial preparation, and
    authority-partition correctness
-4. Native Fleet scheduling and node enforcement
+4. Native Archon scheduling and node enforcement
 5. Runtime, device, network, storage, and compatibility providers
 
 Do not start with vLLM, a GUI, Kubernetes, Slurm, Ceph, or cloud APIs.

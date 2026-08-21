@@ -3,46 +3,46 @@
 version = 4
 
 [[package]]
-name = "fleet-cli"
+name = "archon-cli"
 version = "0.0.0"
 dependencies = [
- "fleet-control",
- "fleet-kernel",
- "fleet-node",
+ "archon-control",
+ "archon-kernel",
+ "archon-node",
  "serde_json",
 ]
 
 [[package]]
-name = "fleet-control"
+name = "archon-control"
 version = "0.0.0"
 dependencies = [
- "fleet-kernel",
- "fleet-node",
+ "archon-kernel",
+ "archon-node",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "fleet-kernel"
+name = "archon-kernel"
 version = "0.0.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
-name = "fleet-node"
+name = "archon-node"
 version = "0.0.0"
 dependencies = [
- "fleet-kernel",
+ "archon-kernel",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "fleet-sim"
+name = "archon-sim"
 version = "0.0.0"
 dependencies = [
- "fleet-kernel",
+ "archon-kernel",
 ]
 
 [[package]]

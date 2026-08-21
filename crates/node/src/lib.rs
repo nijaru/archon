@@ -1,4 +1,4 @@
-//! Fleet node: real execution under leases, local or remote.
+//! Archon node: real execution under leases, local or remote.
 pub mod agent;
 pub mod cgroup;
 pub mod discover;

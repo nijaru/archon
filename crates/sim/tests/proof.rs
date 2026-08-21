@@ -1,8 +1,8 @@
-use fleet_kernel::{
+use archon_kernel::{
     BindingId, Dimension, Effect, EndpointOp, Error, LeaseId, LeaseState, Need, NodeId, NodeKind,
     OwnerId, ProviderId, Request, RequestClass, RequestId, TopologyConstraint, qty,
 };
-use fleet_sim::{GIB, World, tiny_graph};
+use archon_sim::{GIB, World, tiny_graph};
 
 fn service_request() -> Request {
     Request {
@@ -23,7 +23,7 @@ fn service_request() -> Request {
         topology: vec![TopologyConstraint {
             left: 0,
             right: 1,
-            kind: fleet_kernel::EdgeKind::SameNuma,
+            kind: archon_kernel::EdgeKind::SameNuma,
         }],
         preferences: vec![],
         data: vec![],
@@ -95,7 +95,7 @@ fn renew_moves_deadline_only() {
     place_ready(&mut world, 1);
     let before = world.digest();
     world
-        .apply(fleet_kernel::Command::RenewLease {
+        .apply(archon_kernel::Command::RenewLease {
             lease: LeaseId::from_u64(1),
             new_expires_at: 200,
         })
@@ -145,7 +145,7 @@ fn old_fence_is_rejected() {
         .unwrap_err();
     assert!(matches!(
         err,
-        fleet_kernel::EndpointError::StaleFence { .. }
+        archon_kernel::EndpointError::StaleFence { .. }
     ));
 }
 
@@ -157,7 +157,7 @@ fn old_session_is_rejected() {
     let machine = world.cluster.graph.machine_of(binding.node).unwrap();
     world.restart_agent(machine).unwrap();
     let err = world
-        .apply(fleet_kernel::Command::RecordBindingActive {
+        .apply(archon_kernel::Command::RecordBindingActive {
             binding: binding.id,
             session: binding.agent_session,
             fence: binding.fence,
@@ -185,7 +185,7 @@ fn lost_prepare_ack_fails_without_subset() {
     let err = world.activate_lease(LeaseId::from_u64(1)).unwrap_err();
     assert!(matches!(err, Error::BindingsNotPrepared { .. }));
     world
-        .apply(fleet_kernel::Command::FailLease {
+        .apply(archon_kernel::Command::FailLease {
             lease: LeaseId::from_u64(1),
             reason: "lost prepare".into(),
         })
@@ -302,7 +302,7 @@ fn parent_revoke_fences_child_first() {
         .allocation
         .clone();
     world
-        .apply(fleet_kernel::Command::OpenLease {
+        .apply(archon_kernel::Command::OpenLease {
             lease: LeaseId::from_u64(2),
             owner: OwnerId::from_u64(2),
             allocation: parent,
@@ -313,7 +313,7 @@ fn parent_revoke_fences_child_first() {
         })
         .unwrap();
     world
-        .apply(fleet_kernel::Command::ActivateLease {
+        .apply(archon_kernel::Command::ActivateLease {
             lease: LeaseId::from_u64(2),
         })
         .unwrap();
@@ -357,7 +357,7 @@ fn quarantine_blocks_new_exclusive_lease() {
         .to_vec();
     for node in &machines {
         world
-            .apply(fleet_kernel::Command::QuarantineNode { node: *node })
+            .apply(archon_kernel::Command::QuarantineNode { node: *node })
             .unwrap();
     }
     world.revoke_lease(LeaseId::from_u64(1)).unwrap();
@@ -375,11 +375,11 @@ fn quarantine_blocks_new_exclusive_lease() {
     assert!(matches!(err, Error::Quarantined(_) | Error::Refused { .. }));
     for node in &machines {
         world
-            .apply(fleet_kernel::Command::UnquarantineNode { node: *node })
+            .apply(archon_kernel::Command::UnquarantineNode { node: *node })
             .unwrap();
     }
     world
-        .apply(fleet_kernel::Command::UnquarantineNode { node: machine })
+        .apply(archon_kernel::Command::UnquarantineNode { node: machine })
         .unwrap();
     place_ready(&mut world, 3);
     assert_eq!(
@@ -393,7 +393,7 @@ fn replay_matches_digest() {
     let mut world = boot();
     place_ready(&mut world, 1);
     world
-        .apply(fleet_kernel::Command::RenewLease {
+        .apply(archon_kernel::Command::RenewLease {
             lease: LeaseId::from_u64(1),
             new_expires_at: 150,
         })
@@ -436,7 +436,7 @@ fn activate_requires_prepared_bindings() {
         )
         .unwrap();
     world
-        .apply(fleet_kernel::Command::OpenBinding {
+        .apply(archon_kernel::Command::OpenBinding {
             binding: BindingId::from_u64(1),
             lease: LeaseId::from_u64(1),
             node: world.cluster.leases[&LeaseId::from_u64(1)]
@@ -447,7 +447,7 @@ fn activate_requires_prepared_bindings() {
         })
         .unwrap();
     let err = world
-        .apply(fleet_kernel::Command::ActivateLease {
+        .apply(archon_kernel::Command::ActivateLease {
             lease: LeaseId::from_u64(1),
         })
         .unwrap_err();
@@ -462,7 +462,7 @@ fn child_stays_within_parent() {
         .allocation
         .clone();
     world
-        .apply(fleet_kernel::Command::OpenLease {
+        .apply(archon_kernel::Command::OpenLease {
             lease: LeaseId::from_u64(2),
             owner: OwnerId::from_u64(2),
             allocation: parent,
@@ -473,7 +473,7 @@ fn child_stays_within_parent() {
         })
         .unwrap();
     world
-        .apply(fleet_kernel::Command::ActivateLease {
+        .apply(archon_kernel::Command::ActivateLease {
             lease: LeaseId::from_u64(2),
         })
         .unwrap();

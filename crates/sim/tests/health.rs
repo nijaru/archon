@@ -1,7 +1,7 @@
-use fleet_kernel::{
+use archon_kernel::{
     Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use fleet_sim::{World, tiny_graph};
+use archon_sim::{World, tiny_graph};
 
 fn boot(degraded_machine: Option<usize>) -> World {
     let mut world = World::new();
@@ -36,7 +36,7 @@ fn cpu_request(id: u64) -> Request {
     }
 }
 
-fn machine_of(world: &World, lease: u64) -> fleet_kernel::NodeId {
+fn machine_of(world: &World, lease: u64) -> archon_kernel::NodeId {
     let claim = world.cluster.leases[&LeaseId::from_u64(lease)]
         .allocation
         .claims[0]
@@ -64,7 +64,7 @@ fn healthy_machine_is_preferred() {
     let machines: Vec<_> = world
         .cluster
         .graph
-        .nodes_of_kind(fleet_kernel::NodeKind::Machine)
+        .nodes_of_kind(archon_kernel::NodeKind::Machine)
         .to_vec();
     let degraded = machines[0];
     assert_eq!(
@@ -107,7 +107,7 @@ fn runtime_degrade_avoids_machine_without_touching_running_leases() {
     let machines: Vec<_> = world
         .cluster
         .graph
-        .nodes_of_kind(fleet_kernel::NodeKind::Machine)
+        .nodes_of_kind(archon_kernel::NodeKind::Machine)
         .to_vec();
     let other = *machines.iter().find(|id| **id != first).unwrap();
 
@@ -122,7 +122,7 @@ fn runtime_degrade_avoids_machine_without_touching_running_leases() {
     );
     assert_eq!(
         world.cluster.leases[&LeaseId::from_u64(1)].state,
-        fleet_kernel::LeaseState::Active,
+        archon_kernel::LeaseState::Active,
         "running leases are untouched by health"
     );
 

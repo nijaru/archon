@@ -2,7 +2,7 @@
 //! requests. Shared by the in-process path and the TCP daemon, so local and
 //! remote enforcement are literally the same code.
 
-use fleet_kernel::LeaseId;
+use archon_kernel::LeaseId;
 
 use crate::protocol::{AgentRequest, AgentResponse};
 use crate::runtime::ProcessRuntime;

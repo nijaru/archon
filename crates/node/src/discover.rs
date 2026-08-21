@@ -5,15 +5,15 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use fleet_kernel::{Attrs, Dimension, Edge, EdgeKind, Node, NodeKind, Quantity, qty};
+use archon_kernel::{Attrs, Dimension, Edge, EdgeKind, Node, NodeKind, Quantity, qty};
 
 pub struct LocalMachine {
     #[allow(dead_code)]
-    pub machine: fleet_kernel::NodeId,
+    pub machine: archon_kernel::NodeId,
     #[allow(dead_code)]
-    pub cpus: Vec<fleet_kernel::NodeId>,
+    pub cpus: Vec<archon_kernel::NodeId>,
     #[allow(dead_code)]
-    pub memory: fleet_kernel::NodeId,
+    pub memory: archon_kernel::NodeId,
 }
 
 struct IdGen {
@@ -21,9 +21,9 @@ struct IdGen {
 }
 
 impl IdGen {
-    fn node(&mut self) -> fleet_kernel::NodeId {
+    fn node(&mut self) -> archon_kernel::NodeId {
         self.next += 1;
-        fleet_kernel::NodeId::from_u64(self.next)
+        archon_kernel::NodeId::from_u64(self.next)
     }
 }
 
@@ -87,7 +87,7 @@ fn hostname() -> String {
     })
 }
 
-/// Build the Fleet graph for a machine description: one Machine node, one
+/// Build the Archon graph for a machine description: one Machine node, one
 /// Cpu node per logical CPU, one Memory node with total bytes. Shared by
 /// the local and remote paths so both produce identical graph shapes.
 pub fn build_graph(description: &MachineDescription) -> (LocalMachine, Vec<Node>, Vec<Edge>) {
