@@ -64,6 +64,12 @@ pub enum Error {
         expected: u64,
         got: u64,
     },
+    InvalidTopology {
+        reason: String,
+    },
+    ChildBindingRefused {
+        lease: LeaseId,
+    },
     UnquarantineBlocked {
         node: NodeId,
     },
@@ -122,6 +128,13 @@ impl fmt::Display for Error {
                 got,
             } => {
                 write!(f, "binding {binding} fence {got} does not match {expected}")
+            }
+            Self::InvalidTopology { reason } => write!(f, "invalid topology: {reason}"),
+            Self::ChildBindingRefused { lease } => {
+                write!(
+                    f,
+                    "lease {lease} is a child; only root leases hold Bindings"
+                )
             }
             Self::UnquarantineBlocked { node } => {
                 write!(f, "cannot unquarantine {node} before fence ack")

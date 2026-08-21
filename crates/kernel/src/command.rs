@@ -97,6 +97,10 @@ pub enum Command {
         machine: NodeId,
         session: u64,
     },
+    SetNodeHealth {
+        node: NodeId,
+        health: String,
+    },
     RebindSession {
         binding: BindingId,
         session: u64,

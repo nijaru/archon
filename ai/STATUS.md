@@ -99,11 +99,12 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 4. Fair share, reservations, and backfill shipped. Co-scheduling resolved:
    atomic multi-member commit is structural; no distinct request class. No
    open scheduling decisions.
-5. Data locality and health-influenced placement shipped: `DataObject` kind
-   + `CachedOn` edge, `Request.data` locality scoring; `health=degraded`
-   node attr penalizes placement but never refuses. Next sim-validatable
-   areas are thin: network foundations and virtual-cluster semantics need
-   larger design decisions; execution/providers wait on the v1 trigger.
+5. Data locality and health-influenced placement shipped. Health moves via
+   `SetNodeHealth` (non-revision); topology is validated as a forest;
+   bindings are root-only. Open design question: fair-share budget treats
+   1 GPU == 1 CPU (per-kind weighting undecided).
+6. Remaining v1 items (providers, microVMs, volumes, network foundations,
+   virtual clusters) wait on the v1 trigger or larger design decisions.
 ## Open questions
 
 - dynamic topology, contention, and health representation;

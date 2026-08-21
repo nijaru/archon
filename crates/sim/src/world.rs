@@ -161,6 +161,12 @@ impl World {
         Ok(session)
     }
 
+    /// Remove an admitted request from the queue only after its lease opens
+    /// successfully, so a failed open never loses the request.
+    fn dequeue(&mut self, request_id: &RequestId) {
+        self.queue.retain(|queued| queued.request.id != *request_id);
+    }
+
     pub fn enqueue(&mut self, request: Request, owner: OwnerId) {
         self.queue.push(Queued {
             request,
@@ -179,8 +185,6 @@ impl World {
         let Some(admission) = self.cluster.admit(&self.queue) else {
             return Ok(None);
         };
-        self.queue
-            .retain(|queued| queued.request.id != admission.request.id);
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
         let prepare_deadline = self.cluster.now.saturating_add(20);
         self.apply(Command::OpenLease {
@@ -192,6 +196,8 @@ impl World {
             prepare_deadline,
             priority: admission.request.priority,
         })?;
+        self.dequeue(&admission.request.id);
+
         self.bind_enforced(lease, self.next_binding)?;
         self.next_binding = self.next_binding.saturating_add(32);
         Ok(Some(admission.request.id))
@@ -207,8 +213,6 @@ impl World {
         let Some(admission) = self.cluster.admit_backfill(&self.queue) else {
             return Ok(None);
         };
-        self.queue
-            .retain(|queued| queued.request.id != admission.request.id);
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
         let prepare_deadline = self.cluster.now.saturating_add(20);
         self.apply(Command::OpenLease {
@@ -220,6 +224,8 @@ impl World {
             prepare_deadline,
             priority: admission.request.priority,
         })?;
+        self.dequeue(&admission.request.id);
+
         self.bind_enforced(lease, self.next_binding)?;
         self.next_binding = self.next_binding.saturating_add(32);
         Ok(Some(admission.request.id))
@@ -251,6 +257,16 @@ impl World {
         self.bind_enforced(lease, self.next_binding)?;
         self.next_binding = self.next_binding.saturating_add(32);
         Ok(Some(admission.request.id))
+    }
+
+    /// Update a node's health without advancing Graph.revision: scoring
+    /// input only, never authority, never stranding in-flight allocations.
+    pub fn set_health(&mut self, node: NodeId, health: &str) -> Result<(), Error> {
+        self.apply(Command::SetNodeHealth {
+            node,
+            health: health.into(),
+        })?;
+        Ok(())
     }
 
     /// Commit capacity for a future request as a Reserved lease. Reserved

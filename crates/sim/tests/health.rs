@@ -87,3 +87,35 @@ fn degraded_stays_usable_when_healthy_is_full() {
             .contains("health-degraded")
     );
 }
+
+#[test]
+fn runtime_degrade_avoids_machine_without_touching_running_leases() {
+    let mut world = boot(None);
+    admit_on(&mut world, 1, 1);
+    let first = machine_of(&world, 1);
+    let machines: Vec<_> = world
+        .cluster
+        .graph
+        .nodes_of_kind(fleet_kernel::NodeKind::Machine)
+        .to_vec();
+    let other = *machines.iter().find(|id| **id != first).unwrap();
+
+    // Degrade the machine holding lease 1 at runtime.
+    world.set_health(first, "degraded").unwrap();
+    assert_eq!(
+        world.cluster.graph.revision,
+        world.cluster.leases[&LeaseId::from_u64(1)]
+            .allocation
+            .graph_revision,
+        "health updates must not advance the graph revision"
+    );
+    assert_eq!(
+        world.cluster.leases[&LeaseId::from_u64(1)].state,
+        fleet_kernel::LeaseState::Active,
+        "running leases are untouched by health"
+    );
+
+    // New placement avoids the degraded machine.
+    admit_on(&mut world, 2, 2);
+    assert_eq!(machine_of(&world, 2), other);
+}

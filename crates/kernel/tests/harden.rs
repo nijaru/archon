@@ -477,3 +477,105 @@ fn failed_apply_graph_is_atomic_and_replay_consistent() {
     let replayed = Cluster::replay(&cluster.log).unwrap();
     assert_eq!(replayed.digest(), cluster.digest());
 }
+
+#[test]
+fn contains_cycles_and_multi_parent_are_rejected_atomically() {
+    let mut cluster = graph();
+    let before = cluster.digest();
+    let err = cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![],
+            edges: vec![fleet_kernel::Edge {
+                from: NodeId::from_u64(1),
+                to: NodeId::from_u64(2),
+                kind: fleet_kernel::EdgeKind::Contains,
+                attrs: Default::default(),
+            }, fleet_kernel::Edge {
+                from: NodeId::from_u64(2),
+                to: NodeId::from_u64(1),
+                kind: fleet_kernel::EdgeKind::Contains,
+                attrs: Default::default(),
+            }],
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidTopology { .. }));
+    let err = cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![],
+            edges: vec![fleet_kernel::Edge {
+                from: NodeId::from_u64(3),
+                to: NodeId::from_u64(2),
+                kind: fleet_kernel::EdgeKind::Contains,
+                attrs: Default::default(),
+            }],
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidTopology { .. }));
+    assert_eq!(cluster.digest(), before);
+    let replayed = Cluster::replay(&cluster.log).unwrap();
+    assert_eq!(replayed.digest(), cluster.digest());
+}
+
+#[test]
+fn child_leases_cannot_open_bindings() {
+    let mut cluster = graph();
+    active_root(&mut cluster, 1, 2, 1);
+    open(&mut cluster, 2, 2, Some(1), 1_000);
+    let err = cluster
+        .apply(Command::OpenBinding {
+            binding: BindingId::from_u64(9),
+            lease: LeaseId::from_u64(2),
+            node: NodeId::from_u64(2),
+            provider: ProviderId::ENFORCE,
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::ChildBindingRefused { .. }));
+}
+
+#[test]
+fn health_updates_do_not_strand_in_flight_allocations() {
+    let mut cluster = graph();
+    cluster
+        .apply(Command::SetAgentSession {
+            machine: NodeId::from_u64(1),
+            session: 1,
+        })
+        .unwrap();
+    let revision_before = cluster.graph.revision;
+    open(&mut cluster, 1, 2, None, 1_000);
+    // Health changes while the lease prepares.
+    cluster
+        .apply(Command::SetNodeHealth {
+            node: NodeId::from_u64(1),
+            health: "degraded".into(),
+        })
+        .unwrap();
+    assert_eq!(cluster.graph.revision, revision_before);
+    bind_and_activate(&mut cluster, 1, 2, 1);
+    assert!(matches!(
+        cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Active
+    ));
+    assert!(cluster.graph.degraded_ancestor(NodeId::from_u64(2)).is_some());
+    let replayed = Cluster::replay(&cluster.log).unwrap();
+    assert_eq!(replayed.digest(), cluster.digest());
+}
+
+#[test]
+fn reserve_lease_retries_are_idempotent() {
+    let mut cluster = graph();
+    let allocation = cpu_claim(&cluster, 2);
+    let command = Command::ReserveLease {
+        lease: LeaseId::from_u64(1),
+        owner: OwnerId::from_u64(1),
+        allocation: allocation.clone(),
+        expires_at: 1_000,
+        priority: 1,
+    };
+    cluster.apply(command.clone()).unwrap();
+    cluster.apply(command).unwrap();
+    assert!(matches!(
+        cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Reserved
+    ));
+}

@@ -35,7 +35,7 @@ pub struct Digest {
     pub now: u64,
     pub agreed: bool,
     pub graph_revision: u64,
-    pub graph_nodes: BTreeMap<NodeId, crate::types::NodeKind>,
+    pub graph_nodes: BTreeMap<NodeId, (crate::types::NodeKind, crate::types::Attrs)>,
     pub leases: BTreeMap<LeaseId, LeaseDigest>,
     pub bindings: BTreeMap<BindingId, BindingDigest>,
     pub sessions: BTreeMap<NodeId, u64>,
@@ -114,7 +114,7 @@ impl Cluster {
             graph_nodes: self
                 .graph
                 .nodes()
-                .map(|node| (node.id, node.kind))
+                .map(|node| (node.id, (node.kind, node.attrs.clone())))
                 .collect(),
             leases: self
                 .leases
@@ -344,6 +344,9 @@ impl Cluster {
             Command::SetAgentSession { machine, session } => {
                 self.set_agent_session(*machine, *session)
             }
+            Command::SetNodeHealth { node, health } => {
+                self.set_node_health(*node, health.clone())
+            }
             Command::RebindSession { binding, session } => self.rebind_session(*binding, *session),
             Command::QuarantineNode { node } => self.quarantine_node(*node),
             Command::UnquarantineNode { node } => self.unquarantine_node(*node),
@@ -381,7 +384,14 @@ impl Cluster {
         if !self.agreed {
             return Err(Error::NotAgreed);
         }
-        if self.leases.contains_key(&id) {
+        if let Some(existing) = self.leases.get(&id) {
+            if existing.state == LeaseState::Reserved
+                && existing.owner == owner
+                && existing.allocation.claims == allocation.claims
+                && existing.expires_at == expires_at
+            {
+                return Ok(Vec::new());
+            }
             return Err(Error::DuplicateLease(id));
         }
         if allocation.graph_revision != self.graph.revision {
@@ -852,6 +862,12 @@ impl Cluster {
                 state: lease.state,
             });
         }
+        // Children are accounting records enforced through their parent's
+        // Bindings; a second Binding on the same node would take over the
+        // shared endpoint and orphan the parent's enforcement.
+        if lease.parent.is_some() {
+            return Err(Error::ChildBindingRefused { lease: lease_id });
+        }
         if !lease
             .allocation
             .claims
@@ -1133,6 +1149,16 @@ impl Cluster {
             });
         }
         Ok(())
+    }
+
+    /// Health is scoring input, not authoritative ownership state: it changes
+    /// node attrs without advancing Graph.revision, so in-flight Allocations
+    /// are never stranded by a health update.
+    fn set_node_health(&mut self, node: NodeId, health: String) -> Result<Vec<Effect>, Error> {
+        self.graph
+            .set_attr(node, "health", health)
+            .then_some(Vec::new())
+            .ok_or(Error::UnknownNode(node))
     }
 
     fn set_agent_session(&mut self, machine: NodeId, session: u64) -> Result<Vec<Effect>, Error> {

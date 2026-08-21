@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Error;
 use crate::ids::NodeId;
@@ -41,11 +41,25 @@ impl Graph {
                 staged_edges.push(edge);
             }
         }
+        validate_contains(&staged_edges)?;
         self.nodes = staged_nodes;
         self.edges = staged_edges;
         self.rebuild();
         self.revision = self.revision.saturating_add(1);
         Ok(())
+    }
+
+    /// Set one node attribute without advancing `Graph.revision`. Returns
+    /// false when the node is unknown. Used for non-authoritative state such
+    /// as health that must never strand in-flight Allocations.
+    pub fn set_attr(&mut self, id: NodeId, key: &str, value: String) -> bool {
+        match self.nodes.get_mut(&id) {
+            Some(node) => {
+                node.attrs.insert(key.to_string(), value);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn node(&self, id: NodeId) -> Option<&Node> {
@@ -175,6 +189,40 @@ impl Graph {
             children.sort();
         }
     }
+}
+
+fn validate_contains(edges: &[Edge]) -> Result<(), Error> {
+    let mut parent: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+    for edge in edges {
+        if edge.kind != EdgeKind::Contains {
+            continue;
+        }
+        if edge.from == edge.to {
+            return Err(Error::InvalidTopology {
+                reason: format!("node {} contains itself", edge.from),
+            });
+        }
+        let existing = parent.insert(edge.to, edge.from);
+        if existing.is_some_and(|previous| previous != edge.from) {
+            return Err(Error::InvalidTopology {
+                reason: format!("node {} has more than one container", edge.to),
+            });
+        }
+    }
+    // A Contains cycle would hang ancestor and descendant walks.
+    for start in parent.keys() {
+        let mut visited = BTreeSet::new();
+        let mut current = Some(*start);
+        while let Some(node) = current {
+            if !visited.insert(node) {
+                return Err(Error::InvalidTopology {
+                    reason: format!("Contains cycle through node {start}"),
+                });
+            }
+            current = parent.get(&node).copied();
+        }
+    }
+    Ok(())
 }
 
 fn same_ancestor(graph: &Graph, left: NodeId, right: NodeId, kind: NodeKind) -> bool {

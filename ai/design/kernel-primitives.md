@@ -295,7 +295,10 @@ exclusive occupancy and Binding closure.
 
 ## Binding
 
-A **Binding** is one Lease enforced on one Node through one Provider:
+A **Binding** is one Lease enforced on one Node through one Provider. Only
+root Leases hold Bindings: children are accounting records enforced through
+their parent's Bindings, because one endpoint per `(provider, node)` cannot
+hold two Leases' enforcement at once.
 
 ```text
 Binding
@@ -414,6 +417,7 @@ FenceBinding
 FailBinding
 ReleaseBinding
 SetAgentSession
+SetNodeHealth
 QuarantineNode
 UnquarantineNode
 ```
@@ -423,9 +427,14 @@ faults. Production and the simulator use the same state-transition function.
 The same input must produce the same Graph revision, Allocations, Leases,
 Binding states, and digest.
 
-`ApplyGraph` advances `Graph.revision`. Lease and Binding commands change
-occupancy and Binding state; they do not by themselves advance
-`Graph.revision`.
+`ApplyGraph` advances `Graph.revision`. It validates the complete update in
+staged state first: a rejected ApplyGraph mutates nothing. `Contains` edges
+must form a forest — one container per Node, no cycles — or ancestor and
+descendant walks would hang. `SetNodeHealth` changes node attrs without
+advancing `Graph.revision`: health is scoring input, not authority, and a
+health update never strands in-flight Allocations. Lease and Binding
+commands change occupancy and Binding state; they do not by themselves
+advance `Graph.revision`.
 
 ## v0 proof
 
