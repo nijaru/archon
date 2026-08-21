@@ -40,3 +40,4 @@ tmp/
 # Agent scratch and local task artifacts
 ai/tmp/
 .tasks/tmp/
+.tasks/
