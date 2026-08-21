@@ -8,6 +8,16 @@ updated: 2026-08-21
 
 The project is **Archon**.
 
+Crates.io plan (checked 2026-08-21): bare `archon` is taken by a dormant
+alpha crate (Optimism batch submitter, last touched 2023); `archon-cli` is
+taken by a small package manager. `archon-kernel`, `archon-sim`,
+`archon-node`, `archon-control`, `archon-os` are all available. Our crates
+are private (`publish = false`) so nothing blocks today. At release:
+distribute the CLI as binaries (GitHub releases, brew) which needs no
+crates.io name; if we ever publish libraries, use the available
+`archon-*` names; optionally ask the dormant `archon` owner about a
+handoff — no guarantee.
+
 ## Scope
 
 Archon is an open-source, Rust-first distributed resource operating system for
