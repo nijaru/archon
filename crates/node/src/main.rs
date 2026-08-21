@@ -6,6 +6,8 @@
 //! request, admission, lease, binding, execution, fencing — is the product
 //! this repository exists to build.
 
+#[cfg(target_os = "linux")]
+mod cgroup;
 mod discover;
 mod runtime;
 mod service;
@@ -20,6 +22,11 @@ use crate::service::NodeService;
 
 fn main() {
     let mut service = NodeService::new();
+    #[cfg(target_os = "linux")]
+    if let Ok(root) = std::env::var("FLEET_CGROUP_ROOT") {
+        service = NodeService::with_cgroups(root);
+        println!("fleet: cgroup v2 enforcement enabled");
+    }
     let (local, nodes, edges) = discover::discover();
     service.boot(nodes, edges).expect("boot cluster");
     let cpus = local.cpus.len();

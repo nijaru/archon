@@ -6,10 +6,14 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use fleet_kernel::{
-    BindingId, Cluster, Command, Effect, Error, LeaseId, NodeKind, OwnerId, ProviderId, Queued,
-    Request, RequestId,
+    BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, NodeKind, OwnerId, ProviderId,
+    Queued, Request, RequestId, quantity_get,
 };
 
+#[cfg(target_os = "linux")]
+use crate::cgroup::LeaseLimits;
+#[cfg(not(target_os = "linux"))]
+use crate::runtime::LeaseLimits;
 use crate::runtime::ProcessRuntime;
 
 pub struct NodeService {
@@ -34,6 +38,15 @@ impl Default for NodeService {
 }
 
 impl NodeService {
+    /// A service with cgroup v2 enforcement under `root`: lease processes
+    /// run inside per-lease groups with their claims as kernel limits.
+    #[cfg(target_os = "linux")]
+    pub fn with_cgroups(root: String) -> Self {
+        let mut service = Self::new();
+        service.runtime = service.runtime.with_cgroup_root(root);
+        service
+    }
+
     pub fn new() -> Self {
         Self {
             cluster: Cluster::new(),
@@ -154,6 +167,30 @@ impl NodeService {
         self.runtime.is_running(lease)
     }
 
+    /// CPU and memory claims of a lease, as enforceable limits.
+    fn lease_limits(&self, lease: LeaseId) -> Result<LeaseLimits, Error> {
+        let mut limits = LeaseLimits::default();
+        let claims = &self
+            .cluster
+            .leases
+            .get(&lease)
+            .ok_or(Error::UnknownLease(lease))?
+            .allocation
+            .claims;
+        for claim in claims {
+            match self.cluster.graph.node(claim.node).map(|node| node.kind) {
+                Some(NodeKind::Cpu) => {
+                    limits.cpu_count += quantity_get(&claim.quantity, Dimension::Count);
+                }
+                Some(NodeKind::Memory) => {
+                    limits.memory_bytes += quantity_get(&claim.quantity, Dimension::Bytes);
+                }
+                _ => {}
+            }
+        }
+        Ok(limits)
+    }
+
     fn dequeue(&mut self, request_id: &RequestId) {
         self.queue.retain(|queued| queued.request.id != *request_id);
     }
@@ -232,8 +269,9 @@ impl NodeService {
             }
             Effect::Activate { .. } => {
                 let command = self.lease_commands.get(&lease).cloned().unwrap_or_default();
+                let limits = self.lease_limits(lease)?;
                 self.runtime
-                    .activate(lease, &command)
+                    .activate(lease, &command, &limits)
                     .map_err(|reason| Error::Refused {
                         explanation: reason,
                     })?;
