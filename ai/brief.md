@@ -78,9 +78,13 @@ substrate to reuse.
   effect lists live bindings, the controller rebinds + re-drives
   ActivateBinding, respawning work on the fresh agent. Unroutable effects
   are dropped honestly (dead agent holds no processes). `--no-local` gives
-  a pure control plane. Known limits: machine identity is the reported
-  hostname (`--name` overrides; same-name agents flap by design — stable
-  agent identity is future work); no auth/TLS yet.
+  a pure control plane. Stable identity:
+  agents persist an instance id (XDG state, `--id` overrides) stamped into
+  the machine's attrs, so identity survives restarts on both sides and is
+  recovered via log replay. Same display name + different instance =
+  distinct machine (no takeover). Reconcile only respawns Active leases;
+  session numbering resumes above the replayed high-water mark. Remaining
+  limits: no auth/TLS yet.
   `crates/control` (the `archon` binary): every applied command is appended to a JSONL
   log (kernel serde is an opt-in feature; the kernel stays dep-free);
   restart replays the log exactly and revokes live leases instead of
