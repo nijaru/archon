@@ -6,16 +6,11 @@ updated: 2026-08-21
 
 ## Name
 
-The project is **Archon** — the Athenian magistrate who assigned duties and
-resources; in StarCraft lore, two beings merge into one greater Archon.
-Chosen 2026-08-21 from a naming pass (Westworld's Rehoboam was the seed;
-too long as-is). The GitHub repo stays `omendb/fleet` until release
-governance (`tk-kwzc`) decides repo/domain questions.
+The project is **Archon**.
 
 ## Scope
 
-Archon (formerly fleet) is an open-source, Rust-first distributed resource
-operating system for
+Archon is an open-source, Rust-first distributed resource operating system for
 individual VPSs, multiple VPSs, bare metal, datacenters, AI/HPC, services, batch
 jobs, virtual machines, containers, networking, storage, and heterogeneous
 accelerators.
