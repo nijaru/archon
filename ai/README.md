@@ -1,47 +1,36 @@
-# Fleet — Private Context
+# Archon — Private Context
 
-Private planning context for Fleet, a distributed resource operating system.
+Private context for Archon, a distributed resource operating system: a typed
+resource graph, enforceable leases, one scheduling authority, and node agents
+that enforce leases with real kernel mechanisms.
 
-Fleet's canonical architecture is the typed resource graph, enforceable lease,
-hierarchical scheduler, node resource manager, and compatibility boundary
-around mature runtimes and hardware systems.
+## Goal
+
+**Complete the system.** No product/release work — packaging, install, docs,
+and commercial questions are deferred until the designed scope exists and
+works.
 
 ## Structure
 
 | Path | Purpose |
 |---|---|
+| `brief.md` | Start here: current state, constraints, next action |
+| `STATUS.md` | What shipped, in order |
+| `PLAN.md` | The completion roadmap: what remains, in dependency order |
 | `spec.md` | Product and system specification |
-| `STATUS.md` | Current direction and open design work |
 | `DESIGN.md` | Architecture and ownership boundaries |
-| `PLAN.md` | Staged implementation plan |
-| `DECISIONS.md` | Principles, decisions, and open questions |
-| `design/DISTRIBUTED_RESOURCE_OS.md` | Detailed resource OS architecture |
-| `design/kernel-primitives.md` | Accepted v0 kernel contract |
-| `design/lease-fencing.md` | Accepted v0 lease and Binding fencing protocol |
+| `DECISIONS.md` | Decisions with rationale (newest first) |
+| `design/kernel-primitives.md` | Accepted kernel contract |
+| `design/lease-fencing.md` | Accepted lease/binding fencing protocol |
+| `design/DISTRIBUTED_RESOURCE_OS.md` | Full resource-OS architecture |
+| `design/mvp-scope.md` | Original kernel scope (v0, done) |
 | `design/architecture-notes.md` | Architecture rationale and invariants |
-| `design/mvp-scope.md` | Initial resource/lease kernel scope |
-| `research/` | Competitive, stack, UX, and commercial research |
-| `review/` | Historical reviews and evaluations |
-| `.tasks/` | Fleet task tracking |
+| `archive/` | Superseded research and reviews; not on any load path |
 
-## Current model
+## Session start
 
-- **Resource graph:** CPU, memory, accelerators, fabrics, storage, data,
-  locality, health, and failure domains.
-- **Lease:** universal ownership, fencing, renewal, release, and nested
-  allocation boundary.
-- **Scheduler hierarchy:** global planner, Cluster allocator, node manager, and
-  workload-local scheduler.
-- **Execution:** process, OCI, sandbox, microVM, VM, and WASM.
-- **Compatibility:** OCI, CDI, OpenTelemetry, Linux/KVM, and adapters for
-  Kubernetes, Slurm, Flux, Ray, MPI, and existing AI runtimes.
+1. Read `brief.md`.
+2. Run `tk ready`.
+3. Check `git status` before editing.
 
-There is no implementation yet. The Go model-serving scaffold was deleted so it
-cannot shadow the Rust-first kernel. Inference and accelerator fleets are first
-workloads, not the product boundary.
-
-## Working order
-
-1. Kernel and fencing contracts are accepted.
-2. `crates/kernel` and `crates/sim` prove the v0 commit and fencing cases.
-3. Add node execution and runtime/provider adapters when a v1 need is concrete.
+Load design docs only when changing architecture or kernel contracts.

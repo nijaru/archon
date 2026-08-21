@@ -1,15 +1,19 @@
 # Archon Status
 
-**Updated:** 2026-08-20
+**Updated:** 2026-08-21
 
 ## Direction
 
-**2026-08-21: the v1 trigger fired by declaration. Archon now runs real
-processes.** `crates/node` (via `archon demo`/`archon agent`) discovers this machine as a Archon
+The goal is **completing the system** per `PLAN.md`: heterogeneous placement,
+device claims with real enforcement, container execution, health-driven
+operation, network/storage providers, durability depth, workload classes.
+No product/release work until complete.
+
+**2026-08-21: the v1 trigger fired by declaration; the execution track has
+shipped processes, cgroups, control plane, multi-node, identity, auth.** `crates/node` (via `archon demo`/`archon agent`) discovers this machine as a Archon
 graph, admits requests through the kernel, and executes lease commands as
 real OS processes — a process spawned on activation dies on lease revoke or
-expiry. Enforcement is lifecycle-only today (spawn/kill); cgroups-based
-resource isolation on Linux is the next adapter. The agent consumes kernel
+expiry. cgroups-based resource isolation shipped 2026-08-21. The agent consumes kernel
 `Effect`s through the same seam the simulator uses, so swapping in a remote
 agent protocol later does not touch the kernel.
 

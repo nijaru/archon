@@ -1,183 +1,103 @@
-# Archon Plan
+# Archon Completion Plan
 
-**Updated:** 2026-08-20
+**Updated:** 2026-08-21
 
-## Product hypothesis
+The goal is a **complete system**: every resource kind the graph models has an
+enforcement path, workloads run in their designed forms, placement respects
+real topology, and failure behavior is explicit and tested. No product or
+release work — packaging, install, docs, and commercial questions come after
+completeness.
 
-Archon is a distributed resource operating system for heterogeneous compute.
-It represents compute, memory, accelerators, networks, storage, data, health,
-and failure domains as a typed graph; allocates them through hierarchical
-leases; and runs services, batch/HPC, AI, containers, microVMs, VMs, and WASM
-through one control plane.
+Accepted contracts: [`design/kernel-primitives.md`](design/kernel-primitives.md)
+and [`design/lease-fencing.md`](design/lease-fencing.md). The full architecture
+is [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md).
 
-The first accelerator/inference workload is a proof of the abstraction, not the
-product boundary. vLLM, Slurm, Flux, Ray, MPI, Kubernetes, and other runtimes
-may execute inside or beside Archon allocations.
+## Done
 
-The first tree is `crates/kernel` plus `crates/sim`. The accepted kernel contract is
-[`design/kernel-primitives.md`](design/kernel-primitives.md). The fencing
-protocol is [`design/lease-fencing.md`](design/lease-fencing.md). The deleted
-Go model-serving scaffold is not a migration source.
+- **v0 kernel** (2026-08-18): typed graph, allocation, leases, fencing,
+  topology-aware scoring, explanations, nested leases, deterministic replay.
+  All nine required scenarios pass; two external review cycles closed 20
+  defects.
+- **Scheduling policies** (2026-08-20): queues, priorities, reservations,
+  EASY-style backfill, fair share (per-owner per-kind), data locality,
+  health-influenced placement, preemption rules — all simulator-proven.
+- **v1 trigger fired** (2026-08-21) by declaration: build real execution.
 
-## Workstream order
+## Shipped on the execution track
 
-### 1. Resource and lease kernel
+- Walking skeleton: `archon` binary discovers a machine, admits requests
+  through the kernel, runs lease commands as real OS processes; revoke/expiry
+  kills them.
+- cgroups v2 adapter (Linux): per-lease groups; CPU/memory claims become
+  `cpu.max`/`memory.max`; OOM-kill proven. macOS is lifecycle-only.
+- Control plane: persistent JSONL command log, replay recovery (revokes live
+  work, never re-executes), TCP API, CLI (`serve`/`agent`/`demo`/client).
+- Multi-node: agents dial in and register into one cluster graph; Effects
+  route per binding's machine; agent restart reconciles (rebind session,
+  respawn live work); stable instance identity; token auth on links.
 
-Design and implement these primitives before broad runtime integration:
+## Remaining, in dependency order
 
-- typed resource graph schema and materialized placement indexes;
-- resource registration and topology snapshots;
-- allocation request and constraint model;
-- lease acquisition, renewal, expiry, release, revocation, and fencing;
-- parent/child and nested allocations;
-- atomic commit, ambiguous outcomes, and recovery;
-- explainable refusal and placement results;
-- deterministic simulator using the production decision logic.
+### 1. Heterogeneous placement
 
-Required prototype:
+Machines with different shapes (CPU counts, memory sizes, device sets) placed
+against correctly. Kernel model already supports it; controller registration
+and scoring need exercise beyond identical machines. Sim-testable first, then
+loopback with asymmetric fake agents.
 
-- register 3–10 synthetic nodes;
-- model CPU, RAM, NUMA, GPU/accelerator, NIC, PCIe, and NVMe topology;
-- submit requests with hard and soft constraints;
-- filter candidate subgraphs and score them;
-- commit/release/revoke leases atomically;
-- create a nested lease;
-- replay state deterministically;
-- simulate node failure and stale-agent fencing.
+### 2. Device claims with real enforcement
 
-### 2. Cell control plane
+GPU/NIC/NVMe are graph kinds today but only CPU/memory are enforced. Give each
+device kind an enforcement story: exclusive GPU access (NVIDIA MPS off,
+device cgroups/CDI), NIC/NVMe via whatever the kernel exposes. Requires GPU
+hardware to prove; design now, prove when hardware is available.
 
-Add a small-cell control process with:
+### 3. Container execution adapter
 
-- typed API and command/transaction log;
-- replicated authoritative state;
-- materialized resource and lease indexes;
-- planner/reconciler loops;
-- node registration and heartbeats;
-- explicit degraded operation during global-plane loss;
-- CLI inspection and placement explanations.
+OCI containers as the second `ExecutionRuntime` implementation alongside raw
+processes: same lease semantics (activate = start container, revoke = kill),
+same cgroup limits applied to the container. Use an OCI runtime (crun/youki)
+or invoke podman/docker. Linux only; proves the adapter seam is real.
 
-Keep telemetry out of authoritative state. Use separate logs, metrics, traces,
-and hardware telemetry streams correlated by resource and allocation IDs.
+### 4. Health-driven operation
 
-### 3. Node resource manager
+`SetNodeHealth` exists but nothing acts on it. Wire agent heartbeats → health;
+unhealthy machines stop receiving placements; live work on them gets fenced
+and re-placed per policy. Restart policies for workloads ("keep this running"
+vs run-once).
 
-Implement the minimal immutable Linux node boundary:
+### 5. Network and storage providers
 
-- resource discovery and health;
-- lease enforcement and fencing;
-- cgroups/cpusets and NUMA policy;
-- OCI execution;
-- CDI/VFIO/provider device attachment;
-- local NVMe and NIC resource controls;
-- process, container, microVM, VM, and WASM execution adapters;
-- atomic node updates and rollback.
+Network policy foundations and persistent volumes per the spec. Not started;
+depends on container adapter (volumes/networking attach to containers).
 
-The first concrete workload can be a vLLM container on an accelerator node.
-That path validates the kernel; it does not make inference the architecture.
+### 6. Durability depth
 
-### 4. Scheduling policy layers
+Log compaction/snapshots (the JSONL log grows unboundedly), control-plane
+restart while agents stay connected (today they must re-dial), control-plane
+HA if single-process proves limiting.
 
-Add policy modules in this order:
+### 7. Workload classes
 
-- hard constraints and topology filtering;
-- fast scoring, spread, affinity, anti-affinity, and bin packing;
-- queues, priorities, reservations, fair share, backfill, and co-scheduled
-  jobs;
-- local network/storage constraints and data locality;
-- preemption and checkpoint-aware restart;
-- accelerator performance and goodput models;
-- communication graphs, network contention, elasticity, and global planning.
+Services vs batch vs run-once semantics; checkpoint-aware restart; then the
+compatibility layer (Kubernetes, Slurm, Ray as nested/integrated systems) per
+[`spec.md`](spec.md).
 
-Do not put a giant optimizer in the critical path for every allocation. Use
-fast explainable placement first and asynchronous optimization where migration
-is safe.
+## Explicit non-goals until complete
 
-### 5. Native workloads and compatibility
+- product/release work: packaging, installers, docs-for-others, marketing;
+- replacing Linux, KVM, drivers, NCCL, MPI, Ceph, or vendor stacks;
+- delegating resource authority to Kubernetes/Slurm;
+- high-rate telemetry in authoritative state;
+- global optimization before local placement is explainable;
+- cells/federation before local ownership transitions are proven.
 
-Archon's own schedulers and node managers are the primary control path for
-services, batch, HPC, AI, VMs, and other supported workload classes. Add native
-execution and policy for those classes while exposing virtual-cluster leases
-and optional integrations for:
+## Verification
 
-- OCI, CDI, OpenTelemetry, Linux/KVM, and standard protocols;
-- Slurm, Flux, Kubernetes, Ray, MPI, and PyTorch/JAX runtimes;
-- vLLM, SGLang, and other inference runtimes;
-- persistent storage providers and artifact stores.
-
-Compatibility integrations support migration and composition. They must not
-replace Archon's resource graph, lease semantics, or native scheduling authority.
-
-### 6. Cells, federation, and disaggregated resources
-
-After local leases, fencing, and failure behavior are proven, add:
-
-- global planner and multi-cell federation;
-- cross-cell identity, policy, and reservations;
-- multi-region placement, cost, energy, and data residency;
-- CXL and disaggregated memory/storage;
-- TPU/NPU/FPGA/DPU providers;
-- bare-metal lifecycle through Redfish and provisioning;
-- formal verification of critical controller invariants.
-
-## Roadmap
-
-### v0: resource/lease kernel — done 2026-08-18
-
-Graph, allocation, lease, fencing, topology-aware scoring, explanations,
-nested leases, deterministic replay, synthetic failure simulation, and CLI.
-Native/OCI execution boundaries moved to v1; see the v1 transition trigger in
-[`ai/brief.md`](../brief.md).
-
-### v1: operational substrate
-
-Shipped in the simulator: co-scheduled placement (structural), queues,
-priorities, reservations, fair share, backfill, data locality, and
-health-influenced placement. Remaining, gated on the v1 trigger from
-[`ai/brief.md`](../brief.md): accelerator providers, CDI, microVMs,
-persistent volumes, network policy foundations, virtual clusters, and
-compatibility experiments.
-
-### v2: AI/HPC and federation
-
-Goodput, performance models, communication-aware placement, checkpoint/restart
-cost, elasticity, accelerator partitioning/preemption, cache placement, cells,
-and global planning.
-
-### Later
-
-Disaggregated resources, multi-region federation, energy optimization,
-bare-metal lifecycle, more accelerator providers, and formal controller
-verification.
-
-## Explicit non-goals for the first kernel
-
-- replacing Linux, KVM, drivers, NCCL/RCCL, MPI, Ceph, or vendor stacks;
-- delegating Archon's resource-control and scheduling authority to an incumbent
-  orchestrator;
-- building a general-purpose graph database;
-- putting high-rate telemetry in the authoritative state machine;
-- supporting every runtime before the lease boundary is correct;
-- making Kubernetes or Slurm the internal abstraction;
-- making vLLM or GPUs the only workload/resource vocabulary;
-- implementing global optimization before local placement is explainable and
-  deterministic.
-
-## Decision gates
-
-The v0 kernel is done (2026-08-18) when:
-
-- leases are correctly fenced through simulated failure and stale agents;
-- replay produces identical placement/state results;
-- resource graph and placement queries remain bounded.
-
-These held. The execution gates move to v1 entry, reached only through the
-trigger in `ai/brief.md`:
-
-- node execution sees only allocated resources;
-- the same workload contract runs as a process and OCI workload;
-- a real accelerator workload validates topology and lifecycle behavior.
-
-Advance to cells/federation only when local ownership transitions, recovery,
-and provider boundaries are explicit. Add a policy or compatibility layer only
-when it exercises a stable primitive rather than hiding an unresolved contract.
+- `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D
+  warnings`, `cargo fmt --check`.
+- `cargo run -p archon-sim`: the fault-injection harness; new distributed
+  invariants get encoded as sim scenarios.
+- Loopback end-to-end with real binaries; Linux enforcement paths checked on
+  the desktop workstation (cgroup tests skip without root).
+- CI (GitHub Actions) is the authoritative gate.
