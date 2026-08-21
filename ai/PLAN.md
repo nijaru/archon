@@ -82,7 +82,8 @@ Add policy modules in this order:
 
 - hard constraints and topology filtering;
 - fast scoring, spread, affinity, anti-affinity, and bin packing;
-- queues, priorities, reservations, fair share, backfill, and gangs;
+- queues, priorities, reservations, fair share, backfill, and co-scheduled
+  jobs;
 - local network/storage constraints and data locality;
 - preemption and checkpoint-aware restart;
 - accelerator performance and goodput models;
@@ -130,7 +131,8 @@ Native/OCI execution boundaries moved to v1; see the v1 transition trigger in
 
 ### v1: operational substrate
 
-Gang scheduling, queues, reservations, fair share, backfill, accelerator
+Co-scheduled placement, queues, reservations, fair share, backfill,
+accelerator
 providers, CDI, microVMs, persistent volumes, health, data locality, network
 foundations, virtual clusters, and compatibility experiments.
 

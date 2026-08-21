@@ -164,7 +164,7 @@ OpenLease(Preparing, prepare_deadline)
       FenceBinding on every opened Binding
 ```
 
-A gang Request is one Lease. Every member Binding is prepared before
+A multi-member Request is one Lease. Every member Binding is prepared before
 `ActivateLease`. There is no Active Lease with a subset of Bindings.
 
 `prepare_deadline` is separate from `expires_at`. A late prepare fails the

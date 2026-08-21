@@ -29,7 +29,7 @@ replacement and not an inference-only product.
 ### Required scenarios
 
 1. Register heterogeneous synthetic nodes.
-2. Submit a service, batch, and gang allocation request.
+2. Submit a service and batch allocation request.
 3. Reject candidates that violate hard topology or capability constraints.
 4. Commit a lease and verify exclusive claims cannot overlap.
 5. Create a nested lease and verify the child cannot escape its parent.
@@ -58,7 +58,7 @@ Add:
 - native process and OCI execution;
 - cgroups/cpusets, NUMA policy, and device attachment;
 - CDI and accelerator providers;
-- queues, reservations, fair share, backfill, and gang scheduling;
+- queues, reservations, fair share, backfill, and co-scheduled placement;
 - health, fencing, and reconciliation;
 - data locality and artifact staging;
 - network/storage provider boundaries;
@@ -86,7 +86,7 @@ Add only after v1 ownership and recovery contracts are stable:
 
 The initial kernel succeeds when:
 
-- the same resource model represents service, batch, and gang requests;
+- the same resource model represents service and batch requests;
 - topology affects placement rather than serving as metadata only;
 - lease ownership is correct through release, revoke, stale writers, and failure;
 - placement and refusal decisions are explainable;

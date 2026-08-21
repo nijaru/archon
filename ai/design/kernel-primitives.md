@@ -203,7 +203,7 @@ A **Request** is abstract intent. It does not name concrete Node IDs.
 
 ```text
 Request
-  class         Service | Batch | Gang
+  class         Service | Batch
   needs         list of Need
   topology      required Edge relationships among selected Nodes
   preferences   Pack | Spread | PreferAttr; scoring only, never a hard filter
@@ -252,8 +252,8 @@ The distinction from Lease is direct:
 - **Allocation:** which Node units;
 - **Lease:** who may use them, until when, and under which authority.
 
-A gang Request prepares every member before commit. There is no silent partial
-Lease. Every refusal and Allocation includes an explanation.
+A multi-member Request prepares every member before commit. There is no
+silent partial Lease. Every refusal and Allocation includes an explanation.
 
 ## Lease
 
@@ -432,7 +432,7 @@ occupancy and Binding state; they do not by themselves advance
 1. Register machine Nodes with CPU, memory, NUMA, GPU, PCIe, NIC, and NVMe
    Nodes.
 2. Build Graph indexes and replay them from the Cluster log.
-3. Produce explainable Allocations for service, batch, and gang Requests.
+3. Produce explainable Allocations for service and batch Requests.
 4. Activate a Lease and prove exclusive claims do not overlap.
 5. Activate a child Lease and prove it stays within its parent.
 6. Expire, release, and revoke Leases; prove Bindings close or fence.

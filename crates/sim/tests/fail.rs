@@ -18,7 +18,7 @@ fn boot() -> World {
 fn gpu_request(id: u64, priority: u32) -> Request {
     Request {
         id: RequestId::from_u64(id),
-        class: RequestClass::Gang,
+        class: RequestClass::Batch,
         needs: vec![Need {
             kind: NodeKind::Gpu,
             quantity: qty(Dimension::Count, 1),

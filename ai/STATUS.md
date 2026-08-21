@@ -96,8 +96,9 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
    trigger in `ai/brief.md` fires.
 2. Do not scaffold the later crate map in `research/stack.md`.
 3. Launch and commercial work (`tk-kwzc`, `tk-n8e9`) stays later.
-4. Fair share, reservations, and backfill shipped. Gang semantics resolved:
-   atomic commit, uniform queue treatment. No open scheduling decisions.
+4. Fair share, reservations, and backfill shipped. Co-scheduling resolved:
+   atomic multi-member commit is structural; no distinct request class. No
+   open scheduling decisions.
 5. Data locality and health-influenced placement shipped: `DataObject` kind
    + `CachedOn` edge, `Request.data` locality scoring; `health=degraded`
    node attr penalizes placement but never refuses. Next sim-validatable

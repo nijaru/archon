@@ -16,12 +16,12 @@ fn boot() -> World {
     world
 }
 
-/// A two-member gang: two GPUs and two CPUs that must land together as one
-/// atomic allocation spanning both machines.
-fn gang(id: u64, priority: u32) -> Request {
+/// A two-member request: two GPUs and two CPUs that must land together as
+/// one atomic allocation spanning both machines.
+fn multi_member(id: u64, priority: u32) -> Request {
     Request {
         id: RequestId::from_u64(id),
-        class: RequestClass::Gang,
+        class: RequestClass::Batch,
         needs: vec![
             Need {
                 kind: NodeKind::Gpu,
@@ -74,13 +74,13 @@ fn gpu_hold(world: &mut World, lease: u64, expires_at: u64) {
 }
 
 #[test]
-fn gang_places_atomically_or_not_at_all() {
+fn multi_member_request_places_atomically_or_not_at_all() {
     let mut world = boot();
     gpu_hold(&mut world, 1, 1_000);
 
-    // One full member's worth of resources is free, but the gang needs both:
+    // One member's worth of resources is free, but the request needs both:
     // selection must refuse entirely, never place half the members.
-    world.enqueue(gang(2, 100), OwnerId::from_u64(2));
+    world.enqueue(multi_member(2, 100), OwnerId::from_u64(2));
     assert!(
         world
             .admit_next(LeaseId::from_u64(2), OwnerId::from_u64(2))
@@ -89,7 +89,7 @@ fn gang_places_atomically_or_not_at_all() {
     );
     assert_eq!(world.queue.len(), 1);
 
-    // Backfill may run short non-delaying work while the gang waits.
+    // Backfill may run short non-delaying work while the blocked request waits.
     world.set_now(2);
     let short = Request {
         id: RequestId::from_u64(3),
@@ -114,7 +114,7 @@ fn gang_places_atomically_or_not_at_all() {
     world.activate_lease(LeaseId::from_u64(3)).unwrap();
     world.deliver_all().unwrap();
 
-    // When the held GPU frees and the backfilled short job expires, the gang
+    // When the held GPU frees and the backfilled short job expires, the request
     // lands as one lease with all four claims and one activation.
     world.release_lease(LeaseId::from_u64(1)).unwrap();
     world.set_now(7);

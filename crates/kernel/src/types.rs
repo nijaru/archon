@@ -116,7 +116,6 @@ pub struct Edge {
 pub enum RequestClass {
     Service,
     Batch,
-    Gang,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

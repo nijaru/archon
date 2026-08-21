@@ -101,7 +101,7 @@ The lease is the universal allocation primitive. Lease semantics must cover:
 
 - exclusive and shareable capacity;
 - renewal, expiry, revoke, release, and fencing;
-- gang and partial allocation;
+- co-scheduled and partial allocation;
 - parent/child and nested allocations;
 - checkpoint-aware preemption;
 - failure recovery and explicit ambiguous outcomes.
@@ -110,7 +110,7 @@ Scheduling is hierarchical:
 
 ```text
 GLOBAL PLANNER       region, cell, capacity, cost, energy, data
-CELL ALLOCATOR       local queues, gangs, topology, backfill, fairness
+CELL ALLOCATOR       local queues, co-scheduling, topology, backfill, fairness
 NODE RESOURCE MGR    cgroups, NUMA, devices, NICs, NVMe, preemption
 WORKLOAD SCHEDULER   Slurm, Flux, Ray, MPI, application runtime
 ```
@@ -221,7 +221,7 @@ structure define the resource model.
 
 ### v1: operational substrate
 
-- gang scheduling, queues, reservations, fair share, backfill;
+- co-scheduled placement, queues, reservations, fair share, backfill;
 - accelerator topology, CDI, microVMs, and volume providers;
 - health/fencing, data locality, artifact staging, and network foundations;
 - virtual clusters and Slurm/Flux compatibility experiments.

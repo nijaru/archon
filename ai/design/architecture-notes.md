@@ -30,7 +30,8 @@ bound nested schedulers and
 virtual clusters.
 
 The contract must explicitly cover renewal, expiry, release, revocation, partial
-allocation, gang allocation, checkpoint-aware preemption, ambiguous outcomes,
+allocation, co-scheduled allocation, checkpoint-aware preemption, ambiguous
+outcomes,
 and recovery after node or control-plane failure.
 
 ## Hierarchical scheduling
@@ -39,7 +40,7 @@ Fleet uses separate policy and timing domains:
 
 ```text
 Global planner       region/cell, capacity, cost, energy, data
-Cell allocator       queues, gangs, reservations, topology, backfill
+Cell allocator       queues, co-scheduling, reservations, topology, backfill
 Node manager         cgroups, NUMA, devices, NICs, NVMe, preemption
 Nested scheduler     Slurm, Flux, Ray, MPI, or application runtime
 ```

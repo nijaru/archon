@@ -60,7 +60,7 @@ before:
 
 Node execution and provider adapters stay out of the workspace until then.
 Simulator-first remains the default: policies the simulator can validate fairly
-(reservations, backfill, gang semantics) are v1 work that does not need the
+(reservations, backfill, co-scheduling) are v1 work that does not need the
 trigger.
 
 ## Next action

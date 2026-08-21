@@ -71,7 +71,7 @@ cannot claim resources outside it.
    execution choices under one workload model.
 6. **Topology is default behavior.** NUMA, PCIe, accelerator links, NICs, RDMA,
    storage paths, racks, power domains, and fabrics influence placement.
-7. **AI and HPC are native workloads.** Gang scheduling, reservations,
+7. **AI and HPC are native workloads.** Co-scheduled placement, reservations,
    elasticity, fair share, goodput, communication patterns, checkpoints, and
    restart topology belong in policy rather than ad hoc integrations.
 8. **Small deployments stay small.** A single VPS or small host set should not
@@ -93,7 +93,8 @@ Workload classes include:
   and anti-affinity.
 - **Batch job:** queues, priority, fair share, reservations, deadlines,
   preemption, arrays, and backfill.
-- **Distributed job:** gang allocation, synchronized start, worker elasticity,
+- **Distributed job:** co-scheduled placement, synchronized start, worker
+  elasticity,
   communication topology, and coordinated restart.
 - **AI workload:** accelerator performance models, goodput, model/checkpoint
   locality, phase-specific resources, cache state, and restart cost.
@@ -113,7 +114,7 @@ resources_per_worker:
   accelerator: 8
   cpu: 96
   memory: 1TiB
-gang: true
+co_scheduled: true
 network: rdma
 ```
 
@@ -228,7 +229,7 @@ A lease must define:
 - exclusive and shareable ownership;
 - acquisition, renewal, expiry, revocation, and release;
 - fencing tokens for stale agents and writers;
-- partial and gang allocation semantics;
+- partial and co-scheduled allocation semantics;
 - parent/child and nested-lease relationships;
 - preemption and checkpoint requirements;
 - recovery after node, cell, or control-plane failure;
@@ -261,7 +262,7 @@ placement, cost, energy, and global failure domains.
 ### Cell allocator
 
 Owns local services and jobs, queues, fair share, reservations, backfill,
-gang scheduling, topology, accelerator placement, local storage/network
+co-scheduling, topology, accelerator placement, local storage/network
 constraints, and cell-level preemption.
 
 ### Node resource manager
@@ -484,7 +485,7 @@ simulate node failure.
 
 Add:
 
-- gang scheduling, queues, reservations, fair share, and backfill;
+- co-scheduled placement, queues, reservations, fair share, and backfill;
 - accelerator topology and CDI/provider attachment;
 - microVM execution;
 - persistent-volume provider boundary;

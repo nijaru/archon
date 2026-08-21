@@ -67,7 +67,7 @@ pub fn select(
 
 fn pack_mode(request: &Request) -> PackMode {
     let mut mode = match request.class {
-        RequestClass::Service | RequestClass::Batch | RequestClass::Gang => PackMode::Pack,
+        RequestClass::Service | RequestClass::Batch => PackMode::Pack,
     };
     for preference in &request.preferences {
         match preference {

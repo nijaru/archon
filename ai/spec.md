@@ -72,7 +72,7 @@ to them.
 4. Hierarchical scheduling rather than one monolithic scheduler.
 5. Selectable isolation under one workload model.
 6. Topology, data locality, health, and failure domains as first-class inputs.
-7. Native policy support for AI/HPC concerns such as gangs, goodput,
+7. Native policy support for AI/HPC concerns such as co-scheduling, goodput,
    communication topology, checkpoint cost, and elasticity.
 8. Small deployments remain small.
 9. Compatibility adapters enable migration without dictating the core.
@@ -91,7 +91,7 @@ Supported classes:
 |---|---|
 | Service | replicas, rollout, health, autoscaling, routing, SLOs, spread |
 | Batch | queues, priority, fair share, reservations, deadlines, backfill |
-| Distributed job | gang allocation, synchronized start, elasticity, restart |
+| Distributed job | co-scheduled placement, synchronized start, elasticity, restart |
 | AI workload | performance/goodput, model locality, communication, checkpoints |
 | VM/microVM | CPU/memory/device leases, disk, network identity, migration |
 | Nested allocation | a bounded lease for Slurm, Flux, Kubernetes, Ray, or MPI |
@@ -152,7 +152,7 @@ struct Allocation {
 ```
 
 The contract must define exclusive/shareable capacity, renewal, expiry,
-revocation, fencing, partial and gang allocation, parent/child leases,
+revocation, fencing, partial and co-scheduled allocation, parent/child leases,
 preemption, checkpoint requirements, authorization, and explicit refusal or
 termination reasons.
 
@@ -172,7 +172,8 @@ The global planner handles region/cell placement, large reservations, capacity,
 data placement, cost, energy, and global failure domains.
 
 The cell allocator handles local services/jobs, queues, fair share,
-reservations, backfill, gangs, topology, local storage/network constraints, and
+reservations, backfill, co-scheduled jobs, topology, local storage/network
+constraints, and
 accelerator placement.
 
 The node resource manager handles cgroups/cpusets, NUMA and memory policy,
@@ -346,7 +347,7 @@ leases, explains decisions, replays state, and simulates failure.
 
 - native process and OCI execution boundaries, gated on the v1 trigger in
   `ai/brief.md`;
-- gang scheduling, queues, reservations, fair share, and backfill;
+- co-scheduled placement, queues, reservations, fair share, and backfill;
 - GPU/accelerator topology and CDI/provider attachment;
 - microVMs;
 - persistent-volume providers;

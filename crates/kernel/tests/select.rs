@@ -70,12 +70,12 @@ fn replay_rebuilds_graph() {
 }
 
 #[test]
-fn selects_service_batch_and_gang() {
+fn selects_service_and_batch() {
     let cluster = graph();
     for class in [
         RequestClass::Service,
         RequestClass::Batch,
-        RequestClass::Gang,
+        RequestClass::Batch,
     ] {
         let allocation = cluster
             .allocate(&request(

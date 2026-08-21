@@ -91,10 +91,10 @@ fn waits_then_places_after_release() {
 }
 
 #[test]
-fn waiting_gang_does_not_block_other_kind() {
+fn waiting_large_request_does_not_block_other_kind() {
     let mut world = boot();
     world.enqueue(
-        request(1, RequestClass::Gang, NodeKind::Gpu, 4, 100),
+        request(1, RequestClass::Batch, NodeKind::Gpu, 4, 100),
         OwnerId::from_u64(1),
     );
     world.enqueue(
@@ -103,5 +103,5 @@ fn waiting_gang_does_not_block_other_kind() {
     );
     assert_eq!(take(&mut world, 1), RequestId::from_u64(2));
     assert_eq!(world.queue[0].request.id, RequestId::from_u64(1));
-    assert_eq!(world.queue[0].request.class, RequestClass::Gang);
+    assert_eq!(world.queue[0].request.class, RequestClass::Batch);
 }
