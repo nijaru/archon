@@ -306,6 +306,7 @@ fn demo(remote: Option<String>) {
         data: vec![],
         command: vec!["sleep".into(), "5".into()],
         machine_local: true,
+        image: None,
         lifetime: 30,
         priority: 1,
     };

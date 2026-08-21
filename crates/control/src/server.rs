@@ -268,6 +268,7 @@ impl ControlPlane {
             lifetime: lifetime_secs.max(1),
             priority: 1,
             machine_local: true,
+            image: None,
         };
         self.service
             .submit(request, OwnerId::from_u64(owner), command);

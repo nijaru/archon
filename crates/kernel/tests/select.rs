@@ -55,6 +55,7 @@ fn request(class: RequestClass, needs: Vec<Need>) -> Request {
         data: vec![],
         command: vec![],
         machine_local: true,
+        image: None,
         lifetime: 10,
         priority: 1,
     }

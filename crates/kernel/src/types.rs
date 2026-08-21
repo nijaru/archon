@@ -170,8 +170,12 @@ pub struct Request {
     /// Process to execute when the lease activates, e.g. ["sleep", "30"].
     /// Empty means a pure resource claim with no executable payload. The
     /// node's execution adapter consumes this; it is workload intent, not
-    /// resource state.
+    /// resource state. When `image` is set the command runs inside a
+    /// container instead of as a bare process.
     pub command: Vec<String>,
+    /// OCI image reference for container execution; None runs the command
+    /// as a plain process on the host.
+    pub image: Option<String>,
     pub lifetime: u64,
     pub priority: u32,
     /// Whether one need's claims must share a single machine. True (the

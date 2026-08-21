@@ -46,6 +46,7 @@ fn submit_sleep(service: &mut NodeService, id: u64, lifetime: u64) {
         lifetime,
         priority: 1,
         machine_local: true,
+        image: None,
     };
     service.submit(
         request,

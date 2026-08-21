@@ -29,6 +29,7 @@ fn service_request() -> Request {
         data: vec![],
         command: vec![],
         machine_local: true,
+        image: None,
         lifetime: 100,
         priority: 10,
     }

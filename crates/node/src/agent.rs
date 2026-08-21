@@ -8,7 +8,8 @@ use crate::protocol::{AgentRequest, AgentResponse};
 use crate::runtime::ProcessRuntime;
 
 pub struct LeaseAgent {
-    runtime: ProcessRuntime,
+    process: ProcessRuntime,
+    containers: crate::container::ContainerRuntime,
     /// Highest session seen; older generations are rejected. Sessions are
     /// process generations — an older hello never reinstates.
     session: u64,
@@ -18,7 +19,10 @@ pub struct LeaseAgent {
 impl LeaseAgent {
     pub fn new(runtime: ProcessRuntime) -> Self {
         Self {
-            runtime,
+            process: runtime,
+            containers: crate::container::ContainerRuntime::new(
+                std::env::var("ARCHON_CONTAINER_ENGINE").unwrap_or_else(|_| "docker".to_string()),
+            ),
             session: 0,
             next_handle: 1,
         }
@@ -32,10 +36,13 @@ impl LeaseAgent {
             AgentRequest::Register { .. } => {
                 self.failed_none("Register is not handled by an agent")
             }
-            AgentRequest::Status { lease } => AgentResponse::Running {
-                lease,
-                running: self.runtime.is_running(LeaseId::from_u64(lease)),
-            },
+            AgentRequest::Status { lease } => {
+                let lease_id = LeaseId::from_u64(lease);
+                let running = self.containers.is_tracked(lease_id)
+                    && self.containers.is_running(lease_id)
+                    || !self.containers.is_tracked(lease_id) && self.process.is_running(lease_id);
+                AgentResponse::Running { lease, running }
+            }
             AgentRequest::Prepare {
                 binding,
                 lease,
@@ -54,29 +61,46 @@ impl LeaseAgent {
                 binding,
                 lease,
                 session,
+                fence: _,
                 command,
                 limits,
-                ..
+                image,
             } => {
                 if self.check_session(session) {
                     return self.failed(binding, &format!("stale session {session}"));
                 }
-                match self
-                    .runtime
-                    .activate(LeaseId::from_u64(lease), &command, &limits)
-                {
+                let lease_id = LeaseId::from_u64(lease);
+                let result = if image.is_empty() {
+                    self.process.activate(lease_id, &command, &limits)
+                } else {
+                    self.containers
+                        .activate(lease_id, &image, &command, &limits)
+                };
+                match result {
                     Ok(()) => AgentResponse::Activated { binding },
                     Err(reason) => self.failed(binding, &reason),
                 }
             }
             AgentRequest::Release { binding, lease, .. } => {
-                match self.runtime.terminate(LeaseId::from_u64(lease)) {
+                let lease_id = LeaseId::from_u64(lease);
+                let terminated = if self.containers.is_tracked(lease_id) {
+                    self.containers.terminate(lease_id)
+                } else {
+                    self.process.terminate(lease_id)
+                };
+                match terminated {
                     Ok(_) => AgentResponse::Released { binding },
                     Err(reason) => self.failed(binding, &reason),
                 }
             }
             AgentRequest::Fence { binding, lease, .. } => {
-                match self.runtime.terminate(LeaseId::from_u64(lease)) {
+                let lease_id = LeaseId::from_u64(lease);
+                let terminated = if self.containers.is_tracked(lease_id) {
+                    self.containers.terminate(lease_id)
+                } else {
+                    self.process.terminate(lease_id)
+                };
+                match terminated {
                     Ok(_) => AgentResponse::Fenced { binding },
                     Err(reason) => self.failed(binding, &reason),
                 }

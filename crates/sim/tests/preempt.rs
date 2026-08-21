@@ -37,6 +37,7 @@ fn gpu_request_local(id: u64, count: u64, priority: u32, machine_local: bool) ->
         machine_local,
         lifetime: 100,
         priority,
+        image: None,
     }
 }
 

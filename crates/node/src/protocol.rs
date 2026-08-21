@@ -50,6 +50,9 @@ pub enum AgentRequest {
         fence: u64,
         command: Vec<String>,
         limits: LeaseLimits,
+        /// OCI image reference; empty runs the command as a plain process.
+        #[serde(default)]
+        image: String,
     },
     Release {
         binding: u64,

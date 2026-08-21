@@ -61,6 +61,7 @@ fn request(id: u64, command: Vec<String>, memory_mib: u64) -> Request {
         lifetime: 3_600,
         priority: 1,
         machine_local: true,
+        image: None,
     }
 }
 

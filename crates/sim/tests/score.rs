@@ -32,6 +32,7 @@ fn cpu_request(id: u64, preferences: Vec<Preference>) -> Request {
         data: vec![],
         command: vec![],
         machine_local: true,
+        image: None,
         lifetime: 100,
         priority: 10,
     }
@@ -51,6 +52,7 @@ fn gpu_request(preferences: Vec<Preference>, filters: Vec<Filter>) -> Request {
         data: vec![],
         command: vec![],
         machine_local: true,
+        image: None,
         lifetime: 100,
         priority: 10,
     }

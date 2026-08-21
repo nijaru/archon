@@ -48,6 +48,7 @@ fn request(id: u64, command: Vec<String>) -> Request {
         lifetime: 3_600,
         priority: 1,
         machine_local: true,
+        image: None,
     }
 }
 

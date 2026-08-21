@@ -74,6 +74,7 @@ fn submit(service: &mut NodeService, id: u64, cpus: u64) -> Option<RequestId> {
         data: vec![],
         command: vec!["sleep".into(), "30".into()],
         machine_local: true,
+        image: None,
         lifetime: 3_600,
         priority: 1,
     };

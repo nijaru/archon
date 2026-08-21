@@ -42,6 +42,7 @@ fn spread_request(
         command: vec![],
         lifetime,
         priority,
+        image: None,
         machine_local,
     }
 }

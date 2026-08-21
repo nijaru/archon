@@ -39,6 +39,7 @@ fn cpu_request_local(
         machine_local,
         lifetime: 100,
         priority,
+        image: None,
     }
 }
 

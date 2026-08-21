@@ -58,6 +58,7 @@ fn cpu_request(id: u64, count: u64, priority: u32) -> Request {
         data: vec![],
         command: vec![],
         machine_local: true,
+        image: None,
         lifetime: 10,
         priority,
     }

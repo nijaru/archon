@@ -75,6 +75,8 @@ pub struct NodeService {
     commands: BTreeMap<RequestId, Vec<String>>,
     /// Command per active lease, recorded when its request is admitted.
     lease_commands: BTreeMap<LeaseId, Vec<String>>,
+    /// Container image per active lease; None runs a bare process.
+    lease_images: BTreeMap<LeaseId, Option<String>>,
     pending: VecDeque<Effect>,
     next_session: u64,
     next_binding: u64,
@@ -228,6 +230,7 @@ impl NodeService {
             queue: Vec::new(),
             commands: BTreeMap::new(),
             lease_commands: BTreeMap::new(),
+            lease_images: BTreeMap::new(),
             pending: VecDeque::new(),
             next_session: 1,
             next_binding: 1,
@@ -288,6 +291,8 @@ impl NodeService {
         let lease = LeaseId::from_u64(self.cluster.leases.len() as u64 + 1);
         let command = self.commands.remove(&request_id).unwrap_or_default();
         self.lease_commands.insert(lease, command.clone());
+        self.lease_images
+            .insert(lease, admission.request.image.clone());
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
         self.commit(Command::OpenLease {
             lease,
@@ -553,6 +558,12 @@ impl NodeService {
                 fence,
                 command: self.lease_commands.get(&lease).cloned().unwrap_or_default(),
                 limits: self.lease_limits(lease)?,
+                image: self
+                    .lease_images
+                    .get(&lease)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_default(),
             },
             Effect::Release { .. } => AgentRequest::Release {
                 binding: binding_id.as_u64(),

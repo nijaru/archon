@@ -32,6 +32,7 @@ fn gpu_request(id: u64, count: u64, priority: u32) -> Request {
         command: vec![],
         lifetime: 100,
         priority,
+        image: None,
         machine_local,
     }
 }
@@ -51,6 +52,7 @@ fn cpu_request(id: u64, priority: u32) -> Request {
         command: vec![],
         lifetime: 100,
         priority,
+        image: None,
         machine_local: true,
     }
 }

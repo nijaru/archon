@@ -29,6 +29,7 @@ fn request(id: u64, class: RequestClass, kind: NodeKind, count: u64, priority: u
         data: vec![],
         command: vec![],
         machine_local: true,
+        image: None,
         lifetime: 100,
         priority,
     }
