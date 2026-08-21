@@ -162,7 +162,7 @@ pub struct Request {
 
 /// A queued request carries the owner that submitted it and the submit time,
 /// so fair-share admission can attribute consumption and break ties.
-pub struct QueuedRequest {
+pub struct Queued {
     pub request: Request,
     pub owner: crate::ids::OwnerId,
     pub submitted_at: u64,

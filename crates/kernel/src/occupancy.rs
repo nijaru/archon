@@ -34,6 +34,19 @@ impl Occupancy {
     pub fn is_used(&self, node: NodeId) -> bool {
         !self.used_on(node).is_empty()
     }
+
+    /// The first used node whose occupancy exceeds the given graph's
+    /// capacity, if any. Detects capacity reductions below live claims,
+    /// which saturating remaining-capacity arithmetic would hide.
+    pub fn exceeds_capacity(&self, graph: &Graph) -> Result<Option<NodeId>, Error> {
+        for (node, used) in &self.used {
+            let capacity = &graph.node(*node).ok_or(Error::UnknownNode(*node))?.capacity;
+            if !quantity_le(used, capacity) {
+                return Ok(Some(*node));
+            }
+        }
+        Ok(None)
+    }
 }
 
 pub fn lease_occupies(lease: &Lease, open_bindings: bool) -> bool {

@@ -361,7 +361,15 @@ impl Cluster {
         if !self.agreed {
             return Err(Error::NotAgreed);
         }
-        self.graph.apply(nodes, edges)?;
+        let mut staged = self.graph.clone();
+        staged.apply(nodes, edges)?;
+        // Capacity may grow freely but never drop below what live leases
+        // already hold: saturating arithmetic would hide the overcommit.
+        let occupancy = self.occupancy();
+        if let Some(node) = occupancy.exceeds_capacity(&staged)? {
+            return Err(Error::CapacityBelowOccupancy { node });
+        }
+        self.graph = staged;
         Ok(Vec::new())
     }
 

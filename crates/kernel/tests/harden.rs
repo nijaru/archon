@@ -579,3 +579,28 @@ fn reserve_lease_retries_are_idempotent() {
         LeaseState::Reserved
     ));
 }
+
+#[test]
+fn capacity_cannot_shrink_below_occupied_units() {
+    let mut cluster = graph();
+    active_root(&mut cluster, 1, 2, 1);
+    let before = cluster.digest();
+    // Node 2 holds one occupied CPU; shrinking it to zero must be refused.
+    let err = cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![node(2, NodeKind::Cpu, Quantity::new())],
+            edges: vec![],
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::CapacityBelowOccupancy { .. }));
+    assert_eq!(cluster.digest(), before);
+    // Growing capacity is fine.
+    cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![node(2, NodeKind::Cpu, qty(Dimension::Count, 4))],
+            edges: vec![],
+        })
+        .unwrap();
+    let replayed = Cluster::replay(&cluster.log).unwrap();
+    assert_eq!(replayed.digest(), cluster.digest());
+}

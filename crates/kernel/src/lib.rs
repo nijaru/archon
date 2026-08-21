@@ -16,7 +16,7 @@ mod select;
 mod types;
 
 pub use admit::{
-    Admission, BackfillCtx, Queued, admit, admit_backfill, admit_fair, owner_usage, refuse_reason,
+    Admission, BackfillCtx, admit, admit_backfill, admit_fair, owner_usage, refuse_reason,
 };
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
 pub use command::{Command, Effect};
@@ -29,8 +29,8 @@ pub use preempt::preempt_victims;
 pub use select::select;
 pub use types::{
     Allocation, Attrs, Binding, BindingState, Claim, Dimension, Edge, EdgeKind, Endpoint,
-    EndpointPhase, Filter, Lease, LeaseState, Need, Node, NodeKind, Preference, Quantity,
-    QueuedRequest, Request, RequestClass, TopologyConstraint, qty,
+    EndpointPhase, Filter, Lease, LeaseState, Need, Node, NodeKind, Preference, Queued,
+    Quantity, Request, RequestClass, TopologyConstraint, qty,
 };
 
 impl Cluster {

@@ -67,6 +67,9 @@ pub enum Error {
     InvalidTopology {
         reason: String,
     },
+    CapacityBelowOccupancy {
+        node: NodeId,
+    },
     ChildBindingRefused {
         lease: LeaseId,
     },
@@ -130,6 +133,12 @@ impl fmt::Display for Error {
                 write!(f, "binding {binding} fence {got} does not match {expected}")
             }
             Self::InvalidTopology { reason } => write!(f, "invalid topology: {reason}"),
+            Self::CapacityBelowOccupancy { node } => {
+                write!(
+                    f,
+                    "node {node} capacity would drop below occupied units"
+                )
+            }
             Self::ChildBindingRefused { lease } => {
                 write!(
                     f,

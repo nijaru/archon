@@ -6,15 +6,8 @@ use crate::ids::{LeaseId, NodeId, OwnerId};
 use crate::occupancy::{Occupancy, claims_by_node, lease_occupies, occupancy_from_leases};
 use crate::select::select;
 use crate::types::{
-    Allocation, Lease, Quantity, QueuedRequest, Request, quantity_add_assign, quantity_le,
+    Allocation, Lease, Quantity, Queued, Request, quantity_add_assign, quantity_le,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Queued {
-    pub request: Request,
-    pub owner: crate::ids::OwnerId,
-    pub submitted_at: u64,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Admission {
@@ -51,9 +44,9 @@ pub fn admit_fair(
     queue: &[Queued],
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
 ) -> Option<Admission> {
-    let queue: Vec<QueuedRequest> = queue
+    let queue: Vec<Queued> = queue
         .iter()
-        .map(|queued| QueuedRequest {
+        .map(|queued| Queued {
             request: queued.request.clone(),
             owner: queued.owner,
             submitted_at: queued.submitted_at,
@@ -109,7 +102,7 @@ fn usage_total(quantity: &Quantity) -> u64 {
     quantity.values().sum()
 }
 
-fn order_queue(queue: &[QueuedRequest], usage: &BTreeMap<OwnerId, Quantity>) -> Vec<usize> {
+fn order_queue(queue: &[Queued], usage: &BTreeMap<OwnerId, Quantity>) -> Vec<usize> {
     let mut order: Vec<usize> = (0..queue.len()).collect();
     order.sort_by(|&left, &right| {
         let left_request = &queue[left].request;
@@ -166,9 +159,9 @@ pub fn admit_backfill(
         leases,
         open_bindings,
     } = ctx;
-    let queue: Vec<QueuedRequest> = queue
+    let queue: Vec<Queued> = queue
         .iter()
-        .map(|queued| QueuedRequest {
+        .map(|queued| Queued {
             request: queued.request.clone(),
             owner: queued.owner,
             submitted_at: queued.submitted_at,

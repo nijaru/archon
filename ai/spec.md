@@ -347,12 +347,15 @@ leases, explains decisions, replays state, and simulates failure.
 
 - native process and OCI execution boundaries, gated on the v1 trigger in
   `ai/brief.md`;
-- co-scheduled placement, queues, reservations, fair share, and backfill;
+- co-scheduled placement, queues, reservations, fair share, and backfill
+  (shipped in the simulator);
 - GPU/accelerator topology and CDI/provider attachment;
 - microVMs;
 - persistent-volume providers;
-- health and fencing;
-- data locality and artifact staging;
+- health and fencing (health scoring shipped; telemetry stays out of
+  authoritative state);
+- data locality and artifact staging (locality scoring shipped; staging
+  follows the trigger);
 - network policy foundations;
 - virtual clusters and Slurm/Flux compatibility experiments.
 

@@ -131,10 +131,12 @@ Native/OCI execution boundaries moved to v1; see the v1 transition trigger in
 
 ### v1: operational substrate
 
-Co-scheduled placement, queues, reservations, fair share, backfill,
-accelerator
-providers, CDI, microVMs, persistent volumes, health, data locality, network
-foundations, virtual clusters, and compatibility experiments.
+Shipped in the simulator: co-scheduled placement (structural), queues,
+priorities, reservations, fair share, backfill, data locality, and
+health-influenced placement. Remaining, gated on the v1 trigger from
+[`ai/brief.md`](../brief.md): accelerator providers, CDI, microVMs,
+persistent volumes, network policy foundations, virtual clusters, and
+compatibility experiments.
 
 ### v2: AI/HPC and federation
 
