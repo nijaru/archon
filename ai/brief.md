@@ -78,7 +78,13 @@ substrate to reuse.
   effect lists live bindings, the controller rebinds + re-drives
   ActivateBinding, respawning work on the fresh agent. Unroutable effects
   are dropped honestly (dead agent holds no processes). `--no-local` gives
-  a pure control plane. Stable identity:
+  a pure control plane. Heterogeneous placement (2026-08-21): a need's claims are machine-local
+  by default — one workload's compute cannot span hosts; the old spread
+  behavior was a real defect on mixed clusters (4-CPU request claiming
+  2+2 across machines). Requests that intentionally span machines set
+  `machine_local: false`. Status probes no longer touch session
+  generations.
+Stable identity:
   agents persist an instance id (XDG state, `--id` overrides) stamped into
   the machine's attrs, so identity survives restarts on both sides and is
   recovered via log replay. Same display name + different instance =

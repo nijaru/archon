@@ -38,12 +38,12 @@ is [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md).
 
 ## Remaining, in dependency order
 
-### 1. Heterogeneous placement
+### 1. Heterogeneous placement — done 2026-08-21
 
-Machines with different shapes (CPU counts, memory sizes, device sets) placed
-against correctly. Kernel model already supports it; controller registration
-and scoring need exercise beyond identical machines. Sim-testable first, then
-loopback with asymmetric fake agents.
+Machine-local claims by default (`Request.machine_local`), explicit spread
+opt-out for multi-member groups, asymmetric-shape integration tests, and the
+session-poisoning fix for read-only probes. Kernel change; all nine sim
+scenarios re-verified against it.
 
 ### 2. Device claims with real enforcement
 
