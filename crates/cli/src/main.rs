@@ -44,6 +44,19 @@ fn main() {
     }
 }
 
+/// Shared secret for links: --token-file, then ARCHON_TOKEN. None means
+/// open mode (the server warns; clients just omit the token).
+fn load_token(token_file: &Option<String>) -> Option<String> {
+    if let Some(path) = token_file {
+        let content = std::fs::read_to_string(path).unwrap_or_else(|err| {
+            eprintln!("archon: cannot read token file {path}: {err}");
+            std::process::exit(2);
+        });
+        return Some(content.trim().to_string());
+    }
+    std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty())
+}
+
 fn usage() -> ! {
     eprintln!(
         "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon demo [--remote ADDR]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR status\n  archon -c ADDR revoke LEASE"
@@ -58,6 +71,7 @@ fn serve(args: &[String]) {
     let mut log = None;
     let mut remote = None;
     let mut no_local = false;
+    let mut token_file = None;
     let mut cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
     let mut index = 0;
     while index < args.len() {
@@ -74,6 +88,7 @@ fn serve(args: &[String]) {
             "--listen" => listen = Some(value.clone()),
             "--log" => log = Some(PathBuf::from(value)),
             "--remote" => remote = Some(value.clone()),
+            "--token-file" => token_file = Some(value.clone()),
             "--cgroup-root" => cgroup_root = Some(value.clone()),
             _ => usage(),
         }
@@ -87,9 +102,15 @@ fn serve(args: &[String]) {
         (None, false) => archon_control::server::AgentLink::Local { cgroup_root },
         (None, true) => archon_control::server::AgentLink::None,
     };
-    let plane = std::sync::Arc::new(std::sync::Mutex::new(
-        archon_control::server::ControlPlane::boot(link, log).expect("boot"),
-    ));
+    let mut plane = archon_control::server::ControlPlane::boot(link, log).expect("boot");
+    match load_token(&token_file) {
+        Some(token) => {
+            plane.require_token(token);
+            eprintln!("archon: link auth enabled");
+        }
+        None => eprintln!("archon: warning: no auth token configured; links are open"),
+    }
+    let plane = std::sync::Arc::new(std::sync::Mutex::new(plane));
     let listener = TcpListener::bind(&listen).expect("bind");
     eprintln!("archon: control plane serving on {listen}");
     archon_control::server::ControlPlane::serve(&plane, listener);
@@ -102,6 +123,7 @@ fn agent(args: &[String]) {
     let mut register = None;
     let mut name = None;
     let mut id = None;
+    let mut token_file = None;
     let mut cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
     let mut index = 0;
     while index < args.len() {
@@ -114,13 +136,14 @@ fn agent(args: &[String]) {
             "--register" => register = Some(value.clone()),
             "--name" => name = Some(value.clone()),
             "--id" => id = Some(value.clone()),
+            "--token-file" => token_file = Some(value.clone()),
             "--cgroup-root" => cgroup_root = Some(value.clone()),
             _ => usage(),
         }
         index += 2;
     }
     if let Some(addr) = register {
-        dial_in(&addr, id, name, cgroup_root);
+        dial_in(&addr, id, name, load_token(&token_file), cgroup_root);
         return;
     }
     let Some(listen) = listen else {
@@ -200,19 +223,26 @@ fn load_instance_id(id: Option<String>) -> String {
     id
 }
 
-fn dial_in(addr: &str, id: Option<String>, name: Option<String>, cgroup_root: Option<String>) {
+fn dial_in(
+    addr: &str,
+    id: Option<String>,
+    name: Option<String>,
+    token: Option<String>,
+    cgroup_root: Option<String>,
+) {
     let instance_id = load_instance_id(id);
     loop {
         match TcpStream::connect(addr) {
             Ok(mut stream) => {
                 let description = archon_node::discover::describe();
-                let register = archon_node::protocol::AgentRequest::Register {
+                let greeting = archon_control::api::Greeting::Agent {
+                    token: token.clone(),
                     instance_id: instance_id.clone(),
                     name: name.clone().unwrap_or(description.name),
                     cpus: description.cpus,
                     memory_bytes: description.memory_bytes,
                 };
-                if archon_node::protocol::write_frame(&mut stream, &register).is_err() {
+                if archon_node::protocol::write_frame(&mut stream, &greeting).is_err() {
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 }
@@ -348,6 +378,11 @@ fn client(connect: Option<String>, args: &[String]) {
     let rest: Vec<String> = args.to_vec();
     let Some(addr) = connect else { usage() };
     let mut stream = TcpStream::connect(&addr).expect("connect to control plane");
+    let token = std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty());
+    let greeting = archon_control::api::Greeting::Client { token };
+    archon_node::protocol::write_frame(&mut stream, &greeting).expect("send greeting");
+    // The server's auth failure is silent (connection closed); surface it
+    // on the first request failing instead.
     let response = match rest[0].as_str() {
         "submit" => submit_request(&rest[1..]),
         "status" => ClientRequest::Status,
@@ -357,7 +392,10 @@ fn client(connect: Option<String>, args: &[String]) {
         _ => usage(),
     };
     write_frame(&mut stream, &response).expect("send");
-    let reply = read_response(&mut stream).expect("read response");
+    let reply = read_response(&mut stream).unwrap_or_else(|_| {
+        eprintln!("error: connection closed by control plane (bad token?)");
+        std::process::exit(1);
+    });
     print_response(reply);
 }
 

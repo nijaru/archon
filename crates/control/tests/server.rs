@@ -34,6 +34,15 @@ fn roundtrip(stream: &mut TcpStream, request: ClientRequest) -> ServerResponse {
     read_response(stream).expect("receive")
 }
 
+/// Open-mode server: connections start with a Greeting, then requests.
+fn open(stream: &mut TcpStream) {
+    write_frame(
+        stream,
+        &archon_control::api::Greeting::Client { token: None },
+    )
+    .expect("send greeting");
+}
+
 fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
     while start.elapsed() < deadline {
@@ -49,6 +58,7 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 fn submit_status_revoke_over_the_wire() {
     let addr = spawn_server("lifecycle");
     let mut stream = TcpStream::connect(&addr).expect("connect");
+    open(&mut stream);
 
     let response = roundtrip(
         &mut stream,
@@ -85,9 +95,46 @@ fn submit_status_revoke_over_the_wire() {
 }
 
 #[test]
+fn wrong_token_is_rejected_before_any_work() {
+    use archon_control::api::Greeting;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap().to_string();
+    let log = temp_log("auth");
+    let token = "right-token".to_string();
+    let server_token = token.clone();
+    std::thread::spawn(move || {
+        let link = archon_control::server::AgentLink::Local { cgroup_root: None };
+        let mut plane = ControlPlane::boot(link, log).expect("boot");
+        plane.require_token(server_token);
+        ControlPlane::serve(&std::sync::Arc::new(std::sync::Mutex::new(plane)), listener);
+    });
+
+    // Wrong token: connection closes without a response.
+    let mut stream = TcpStream::connect(&addr).expect("connect");
+    write_frame(
+        &mut stream,
+        &Greeting::Client {
+            token: Some("wrong".into()),
+        },
+    )
+    .expect("send greeting");
+    let rejected = read_response(&mut stream).is_err();
+    assert!(rejected, "wrong token must close the connection");
+
+    // Right token: requests are served.
+    let mut stream = TcpStream::connect(&addr).expect("connect");
+    write_frame(&mut stream, &Greeting::Client { token: Some(token) }).expect("send greeting");
+    write_frame(&mut stream, &ClientRequest::Status).expect("send status");
+    let response = read_response(&mut stream).expect("status response");
+    assert!(matches!(response, ServerResponse::Status { .. }));
+}
+
+#[test]
 fn empty_command_is_rejected() {
     let addr = spawn_server("reject");
     let mut stream = TcpStream::connect(&addr).expect("connect");
+    open(&mut stream);
     let response = roundtrip(
         &mut stream,
         ClientRequest::Submit {

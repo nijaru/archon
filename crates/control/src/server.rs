@@ -27,6 +27,8 @@ pub struct ControlPlane {
     service: NodeService,
     _log_path: PathBuf,
     next_request: u64,
+    /// When set, every connection must present this token in its Greeting.
+    token: Option<String>,
 }
 
 impl ControlPlane {
@@ -89,9 +91,15 @@ impl ControlPlane {
         );
         Ok(Self {
             service,
+            token: None,
             _log_path: log_path,
             next_request,
         })
+    }
+
+    /// Require a shared token on every connection.
+    pub fn require_token(&mut self, token: String) {
+        self.token = Some(token);
     }
 
     /// Accept clients and dial-in agents. The first frame on a connection
@@ -112,52 +120,63 @@ impl ControlPlane {
             .peer_addr()
             .map(|addr| addr.to_string())
             .unwrap_or_default();
-        // The first frame decides the connection's role: agents announce
-        // themselves with Register; anything else is a client request.
-        let first = match crate::api::read_payload(&mut stream) {
-            Ok(payload) => payload,
-            Err(_) => return,
-        };
-        if let Ok(register) = serde_json::from_slice::<archon_node::protocol::AgentRequest>(&first)
+        // The first frame is always a Greeting: role declaration plus token
+        // when the plane requires one. A bad token ends the connection
+        // before any other work happens.
+        let greeting = match crate::api::read_payload(&mut stream)
+            .ok()
+            .and_then(|payload| serde_json::from_slice::<crate::api::Greeting>(&payload).ok())
         {
-            match register {
-                archon_node::protocol::AgentRequest::Register {
+            Some(greeting) => greeting,
+            None => {
+                eprintln!("archon: {peer} sent no valid greeting");
+                return;
+            }
+        };
+        let authorized = {
+            let plane = this.lock().unwrap();
+            match &plane.token {
+                Some(expected) => greeting
+                    .token()
+                    .is_some_and(|presented| crate::api::token_matches(expected, presented)),
+                None => true,
+            }
+        };
+        if !authorized {
+            eprintln!("archon: {peer} failed authentication");
+            return;
+        }
+        match greeting {
+            crate::api::Greeting::Agent {
+                instance_id,
+                name,
+                cpus,
+                memory_bytes,
+                ..
+            } => {
+                if let Err(err) = this.lock().unwrap().register_dial_in(
+                    stream,
                     instance_id,
                     name,
                     cpus,
                     memory_bytes,
-                } => {
-                    if let Err(err) = this.lock().unwrap().register_dial_in(
-                        stream,
-                        instance_id,
-                        name,
-                        cpus,
-                        memory_bytes,
-                    ) {
-                        eprintln!("archon: agent {peer} registration failed: {err}");
-                    } else {
-                        eprintln!("archon: agent {peer} disconnected");
+                ) {
+                    eprintln!("archon: agent {peer} registration failed: {err}");
+                } else {
+                    eprintln!("archon: agent {peer} disconnected");
+                }
+            }
+            crate::api::Greeting::Client { .. } => {
+                eprintln!("archon: client connected from {peer}");
+                while let Ok(request) = crate::api::read_request(&mut stream) {
+                    let response = this.lock().unwrap().tick_and_handle(request);
+                    if crate::api::write_response(&mut stream, &response).is_err() {
+                        break;
                     }
                 }
-                _ => eprintln!("archon: {peer} sent a non-register first frame"),
-            }
-            return;
-        }
-        let Ok(mut request) = serde_json::from_slice::<crate::api::ClientRequest>(&first) else {
-            return;
-        };
-        eprintln!("archon: client connected from {peer}");
-        loop {
-            let response = this.lock().unwrap().tick_and_handle(request);
-            if crate::api::write_response(&mut stream, &response).is_err() {
-                break;
-            }
-            match crate::api::read_request(&mut stream) {
-                Ok(next) => request = next,
-                Err(_) => break,
+                eprintln!("archon: client {peer} disconnected");
             }
         }
-        eprintln!("archon: client {peer} disconnected");
     }
 
     fn register_dial_in(

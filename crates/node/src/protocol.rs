@@ -99,8 +99,11 @@ pub enum AgentResponse {
     },
 }
 
-pub fn write_frame(stream: &mut impl Write, request: &AgentRequest) -> std::io::Result<()> {
-    let payload = serde_json::to_vec(request).expect("serialize request");
+pub fn write_frame<T: serde::Serialize>(
+    stream: &mut impl Write,
+    message: &T,
+) -> std::io::Result<()> {
+    let payload = serde_json::to_vec(message).expect("serialize frame");
     stream.write_all(&(payload.len() as u32).to_le_bytes())?;
     stream.write_all(&payload)
 }

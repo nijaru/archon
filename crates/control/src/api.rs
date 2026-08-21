@@ -5,6 +5,39 @@ use std::io::{Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+/// The first frame on any control-plane connection: declares the role and
+/// presents the shared token when the server requires one.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Greeting {
+    /// A dial-in agent announcing its machine.
+    Agent {
+        token: Option<String>,
+        instance_id: String,
+        name: String,
+        cpus: u64,
+        memory_bytes: u64,
+    },
+    /// A CLI client.
+    Client { token: Option<String> },
+}
+
+impl Greeting {
+    pub fn token(&self) -> Option<&str> {
+        match self {
+            Greeting::Agent { token, .. } | Greeting::Client { token } => token.as_deref(),
+        }
+    }
+}
+
+/// Constant-time equality; a length mismatch leaks only the length.
+pub fn token_matches(expected: &str, presented: &str) -> bool {
+    let (a, b) = (expected.as_bytes(), presented.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClientRequest {
     Submit {
