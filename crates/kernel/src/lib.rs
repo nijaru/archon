@@ -59,14 +59,14 @@ impl Cluster {
         )
     }
 
-    /// EASY-style backfill over the priority queue with an optional
-    /// per-owner fair-share ceiling.
-    pub fn admit_backfill(&self, queue: &[Queued]) -> Option<Admission> {
+    /// EASY-style backfill over the priority queue with a per-owner
+    /// fair-share ceiling.
+    pub fn admit_backfill(&self, queue: &[Queued], fair_share: &Quantity) -> Option<Admission> {
         admit_backfill(
             &self.graph,
             &self.occupancy(),
             &self.quarantine,
-            &Quantity::new(),
+            fair_share,
             queue,
             &crate::admit::BackfillCtx {
                 now: self.now,

@@ -1,6 +1,6 @@
 use fleet_kernel::{
-    BindingId, Cluster, Command, Dimension, Error, LeaseId, LeaseState, NodeId, NodeKind,
-    OwnerId, ProviderId, Quantity, qty,
+    BindingId, Cluster, Command, Dimension, Error, LeaseId, LeaseState, Need, NodeId, NodeKind,
+    OwnerId, ProviderId, Quantity, Request, RequestClass, RequestId, qty,
 };
 
 fn node(id: u64, kind: NodeKind, capacity: Quantity) -> fleet_kernel::Node {
@@ -603,4 +603,93 @@ fn capacity_cannot_shrink_below_occupied_units() {
         .unwrap();
     let replayed = Cluster::replay(&cluster.log).unwrap();
     assert_eq!(replayed.digest(), cluster.digest());
+}
+
+#[test]
+fn preparing_lease_expires_when_due() {
+    let mut cluster = graph();
+    cluster
+        .apply(Command::SetAgentSession {
+            machine: NodeId::from_u64(1),
+            session: 1,
+        })
+        .unwrap();
+    open(&mut cluster, 1, 2, None, 10);
+    bind(&mut cluster, 1, 2, 1);
+    cluster.set_now(10);
+    cluster
+        .apply(Command::ExpireLease {
+            lease: LeaseId::from_u64(1),
+        })
+        .unwrap();
+    assert!(matches!(
+        cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Expired
+    ));
+}
+
+#[test]
+fn backfill_honors_the_fair_share_ceiling() {
+    let mut cluster = graph();
+    active_root(&mut cluster, 1, 2, 1);
+    let queue = vec![fleet_kernel::Queued {
+        request: Request {
+            id: RequestId::from_u64(2),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: NodeKind::Cpu,
+                quantity: qty(Dimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 10,
+            priority: 1,
+        },
+        owner: OwnerId::from_u64(1),
+        submitted_at: 1,
+    }];
+    // Owner 1 already holds one CPU; a 1-CPU ceiling blocks its request even
+    // though capacity is free.
+    let fair = qty(Dimension::Count, 1);
+    assert!(cluster.admit_backfill(&queue, &fair).is_none());
+    assert!(cluster.admit_backfill(&queue, &fleet_kernel::Quantity::new()).is_some());
+}
+
+#[test]
+fn duplicate_node_claims_are_rejected() {
+    let mut cluster = graph();
+    cluster
+        .apply(Command::SetAgentSession {
+            machine: NodeId::from_u64(1),
+            session: 1,
+        })
+        .unwrap();
+    let allocation = fleet_kernel::Allocation {
+        claims: vec![
+            fleet_kernel::Claim {
+                node: NodeId::from_u64(2),
+                quantity: qty(Dimension::Count, 1),
+            },
+            fleet_kernel::Claim {
+                node: NodeId::from_u64(2),
+                quantity: qty(Dimension::Count, 1),
+            },
+        ],
+        graph_revision: cluster.graph.revision,
+        explanation: "dup".into(),
+    };
+    let err = cluster
+        .apply(Command::OpenLease {
+            lease: LeaseId::from_u64(1),
+            owner: OwnerId::from_u64(1),
+            allocation,
+            parent: None,
+            expires_at: 1_000,
+            prepare_deadline: 1_000,
+            priority: 1,
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::DuplicateClaim { .. }));
 }

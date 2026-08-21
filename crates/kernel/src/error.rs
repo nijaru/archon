@@ -70,6 +70,9 @@ pub enum Error {
     CapacityBelowOccupancy {
         node: NodeId,
     },
+    DuplicateClaim {
+        node: NodeId,
+    },
     ChildBindingRefused {
         lease: LeaseId,
     },
@@ -138,6 +141,9 @@ impl fmt::Display for Error {
                     f,
                     "node {node} capacity would drop below occupied units"
                 )
+            }
+            Self::DuplicateClaim { node } => {
+                write!(f, "allocation claims node {node} more than once")
             }
             Self::ChildBindingRefused { lease } => {
                 write!(

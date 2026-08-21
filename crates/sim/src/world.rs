@@ -210,7 +210,7 @@ impl World {
         lease: LeaseId,
         owner: OwnerId,
     ) -> Result<Option<RequestId>, Error> {
-        let Some(admission) = self.cluster.admit_backfill(&self.queue) else {
+        let Some(admission) = self.cluster.admit_backfill(&self.queue, &fleet_kernel::Quantity::new()) else {
             return Ok(None);
         };
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
@@ -433,7 +433,9 @@ impl World {
             .filter(|lease| {
                 matches!(
                     lease.state,
-                    fleet_kernel::LeaseState::Active | fleet_kernel::LeaseState::Reserved
+                    fleet_kernel::LeaseState::Preparing
+                        | fleet_kernel::LeaseState::Active
+                        | fleet_kernel::LeaseState::Reserved
                 ) && self.cluster.now >= lease.expires_at
             })
             .map(|lease| lease.id)

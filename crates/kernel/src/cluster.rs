@@ -409,7 +409,11 @@ impl Cluster {
             });
         }
         let mut claims = Vec::new();
+        let mut seen_nodes = BTreeSet::new();
         for claim in &allocation.claims {
+            if !seen_nodes.insert(claim.node) {
+                return Err(Error::DuplicateClaim { node: claim.node });
+            }
             claims.push(resolve_claim(&self.graph, claim)?);
         }
         for claim in &claims {
@@ -525,7 +529,11 @@ impl Cluster {
             });
         }
         let mut claims = Vec::new();
+        let mut seen_nodes = BTreeSet::new();
         for claim in &allocation.claims {
+            if !seen_nodes.insert(claim.node) {
+                return Err(Error::DuplicateClaim { node: claim.node });
+            }
             claims.push(resolve_claim(&self.graph, claim)?);
         }
         for claim in &claims {
@@ -799,7 +807,10 @@ impl Cluster {
             effects.extend(self.fence_effects(id));
             return Ok(effects);
         }
-        if !matches!(lease.state, LeaseState::Active | LeaseState::Reserved) {
+        if !matches!(
+            lease.state,
+            LeaseState::Preparing | LeaseState::Active | LeaseState::Reserved
+        ) {
             return Err(Error::LeaseState {
                 lease: id,
                 state: lease.state,
