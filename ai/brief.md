@@ -24,7 +24,10 @@ substrate to reuse.
 - Accepted kernel contract: `ai/design/kernel-primitives.md`.
 - Accepted fencing protocol: `ai/design/lease-fencing.md`.
 - Workspace: `crates/kernel` (`fleet-kernel`), `crates/sim` (`fleet-sim`),
-  and `crates/node` (`fleet-node`, real execution). Shared transition
+  `crates/node` (execution runtime library), `crates/control` (control
+  plane library), and `crates/cli` — one `fleet` binary with role
+  subcommands: `serve` (control plane), `agent` (node daemon), `demo`,
+  and `submit`/`status`/`revoke` client. Shared transition
   function; simulator owns delivery, clock, and faults; node executes real
   processes. Placement is deterministic scored selection plus `admit()`:
   priority, then submit time; first feasible request wins. Lower-priority
