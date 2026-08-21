@@ -84,6 +84,9 @@ substrate to reuse.
   2+2 across machines). Requests that intentionally span machines set
   `machine_local: false`. Status probes no longer touch session
   generations.
+Container adapter (2026-08-21): `Request.image` runs the workload as an
+  OCI container (Docker/Podman CLI, engine via ARCHON_CONTAINER_ENGINE)
+  with lease claims as `--cpus`/`--memory`; same seam, same kill-on-revoke.
 Stable identity:
   agents persist an instance id (XDG state, `--id` overrides) stamped into
   the machine's attrs, so identity survives restarts on both sides and is

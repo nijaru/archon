@@ -52,12 +52,12 @@ device kind an enforcement story: exclusive GPU access (NVIDIA MPS off,
 device cgroups/CDI), NIC/NVMe via whatever the kernel exposes. Requires GPU
 hardware to prove; design now, prove when hardware is available.
 
-### 3. Container execution adapter
+### 3. Container execution adapter — done 2026-08-21
 
-OCI containers as the second `ExecutionRuntime` implementation alongside raw
-processes: same lease semantics (activate = start container, revoke = kill),
-same cgroup limits applied to the container. Use an OCI runtime (crun/youki)
-or invoke podman/docker. Linux only; proves the adapter seam is real.
+`Request.image` selects container execution; `ContainerRuntime` drives
+Docker/Podman (engine via ARCHON_CONTAINER_ENGINE) with lease claims mapped
+to `--cpus`/`--memory`. Same Effects/Record seam, same revoke/expiry kill.
+Proven against real Docker; test skips when no engine is reachable.
 
 ### 4. Health-driven operation
 
@@ -69,7 +69,7 @@ vs run-once).
 ### 5. Network and storage providers
 
 Network policy foundations and persistent volumes per the spec. Not started;
-depends on container adapter (volumes/networking attach to containers).
+builds on the container adapter (volumes/networking attach to containers).
 
 ### 6. Durability depth
 
