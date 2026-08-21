@@ -80,9 +80,7 @@ fn lease_claims_become_kernel_limits() {
         return;
     }
     cleanup_root();
-    let mut service = NodeService::local_with_cgroups(ROOT.into());
-    let (_local, nodes, edges) = archon_node::discover::discover();
-    service.boot(nodes, edges).expect("boot");
+    let mut service = NodeService::local(Some(ROOT.into()));
     service.submit(
         request(1, vec!["sleep".into(), "30".into()], 64),
         OwnerId::from_u64(1),
@@ -112,9 +110,7 @@ fn memory_limit_kills_an_overallocating_process() {
         return;
     }
     cleanup_root();
-    let mut service = NodeService::local_with_cgroups(ROOT.into());
-    let (_local, nodes, edges) = archon_node::discover::discover();
-    service.boot(nodes, edges).expect("boot");
+    let mut service = NodeService::local(Some(ROOT.into()));
     // tail /dev/zero allocates without bound; the 16 MiB limit must OOM it.
     service.submit(
         request(1, vec!["tail".into(), "/dev/zero".into()], 16),
