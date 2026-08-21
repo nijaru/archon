@@ -52,10 +52,8 @@ fn large_graph_admits_places_and_replays() {
         world.enqueue(gpu_request(id, 1), OwnerId::from_u64(id));
     }
     let mut placed = 0;
-    let mut next_lease = 1;
-    for _ in 0..(REQUESTS + 8) {
-        let lease = LeaseId::from_u64(next_lease);
-        next_lease += 1;
+    for offset in 0..(REQUESTS + 8) {
+        let lease = LeaseId::from_u64(offset + 1);
         match world.admit_next(lease, OwnerId::from_u64(1)) {
             Ok(Some(_)) => {
                 placed += 1;
