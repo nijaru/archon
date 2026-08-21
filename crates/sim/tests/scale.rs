@@ -104,30 +104,23 @@ fn fair_share_and_backfill_terminate_at_scale() {
         world.enqueue(gpu_request(id, 1), OwnerId::from_u64(1));
     }
     let mut admitted = 0;
-    let mut next_lease = 1;
-    while !world.queue.is_empty() && admitted < 60 {
-        let lease = LeaseId::from_u64(next_lease);
-        next_lease += 1;
+    for lease_id in 1..=200u64 {
+        if world.queue.is_empty() || admitted >= 60 {
+            break;
+        }
+        let lease = LeaseId::from_u64(lease_id);
         if world
             .admit_next_fair(lease, OwnerId::from_u64(1), &ceiling)
             .unwrap()
             .is_some()
         {
             admitted += 1;
+            world.deliver_all().unwrap();
+            world.activate_lease(lease).unwrap();
+            world.deliver_all().unwrap();
         } else {
             world.set_now(world.cluster.now + 2_000);
             world.expire_due().unwrap();
-            world.deliver_all().unwrap();
-        }
-        if next_lease > 1
-            && world
-                .cluster
-                .leases
-                .contains_key(&LeaseId::from_u64(next_lease - 1))
-        {
-            let lease = LeaseId::from_u64(next_lease - 1);
-            world.deliver_all().unwrap();
-            let _ = world.activate_lease(lease);
             world.deliver_all().unwrap();
         }
     }
