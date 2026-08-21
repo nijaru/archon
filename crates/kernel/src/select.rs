@@ -117,12 +117,20 @@ fn select_need(
             trial.push(vec![claim.clone()]);
             if topology_holds(graph, &trial, request) {
                 let score = score_node(&ctx, &[], node)?;
-                let local = request.data.iter().any(|data| graph.caches(node, *data));
                 return Ok((
                     vec![claim],
                     vec![format!(
-                        "{node} score={score}{}",
-                        if local { " data-local" } else { "" }
+                        "{node} score={score}{}{}",
+                        if request.data.iter().any(|data| graph.caches(node, *data)) {
+                            " data-local"
+                        } else {
+                            ""
+                        },
+                        if graph.degraded_ancestor(node).is_some() {
+                            " health-degraded"
+                        } else {
+                            ""
+                        }
                     )],
                 ));
             }
@@ -159,9 +167,11 @@ fn select_need(
         if topology_holds(graph, &trial, request) {
             let score = score_node(&ctx, &chosen, node)?;
             let local = request.data.iter().any(|data| graph.caches(node, *data));
+            let degraded = graph.degraded_ancestor(node).is_some();
             notes.push(format!(
-                "{node} score={score}{}",
-                if local { " data-local" } else { "" }
+                "{node} score={score}{}{}",
+                if local { " data-local" } else { "" },
+                if degraded { " health-degraded" } else { "" }
             ));
             chosen.push(claim);
         }
@@ -274,6 +284,11 @@ fn score_node(ctx: &ScoreCtx<'_>, chosen: &[Claim], node: NodeId) -> Result<i64,
         if ctx.graph.caches(node, *data) {
             score += 10_000;
         }
+    }
+    // Health: degraded ancestry is a strong penalty, not a refusal —
+    // degraded resources remain usable for lower-priority workloads.
+    if ctx.graph.degraded_ancestor(node).is_some() {
+        score -= 20_000;
     }
     if ctx.memory_want > 0 {
         let leftover = quantity_get(&ctx.occupancy.remaining(ctx.graph, node)?, Dimension::Bytes)

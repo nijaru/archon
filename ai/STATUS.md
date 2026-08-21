@@ -98,9 +98,11 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 3. Launch and commercial work (`tk-kwzc`, `tk-n8e9`) stays later.
 4. Fair share, reservations, and backfill shipped. Gang semantics resolved:
    atomic commit, uniform queue treatment. No open scheduling decisions.
-5. Data locality shipped: `DataObject` kind + `CachedOn` edge, `Request.data`
-   locality scoring (outranks pack/spread, never refuses). Next
-   sim-validatable area: health-influenced placement.
+5. Data locality and health-influenced placement shipped: `DataObject` kind
+   + `CachedOn` edge, `Request.data` locality scoring; `health=degraded`
+   node attr penalizes placement but never refuses. Next sim-validatable
+   areas are thin: network foundations and virtual-cluster semantics need
+   larger design decisions; execution/providers wait on the v1 trigger.
 ## Open questions
 
 - dynamic topology, contention, and health representation;
