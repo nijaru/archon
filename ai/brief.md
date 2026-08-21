@@ -53,6 +53,17 @@ substrate to reuse.
   Mac controller ran and revoked a process on pacabot-ams inside a cgroup.
   Known gap: spawn happens before cgroup attach (brief escape window);
   fix with clone3-into-cgroup when the runtime seam is next touched.
+- **Control plane (2026-08-21): cluster state outlives processes.**
+  `crates/ctl` (`fleet-ctl`): every applied command is appended to a JSONL
+  log (kernel serde is an opt-in feature; the kernel stays dep-free);
+  restart replays the log exactly and revokes live leases instead of
+  re-executing them. API server (TCP JSON frames) + CLI (submit/status/
+  revoke). Proven: crash mid-lease, restart, state restored from log.
+- Verification hosts: loopback on the Mac for platform-neutral logic;
+  CI for Linux compile+tests. pacabot is off-limits. cgroup enforcement
+  tests need a root Linux host (`desktop` when needed); a disposable VM
+  is worth adding only when stress tests (OOM, CPU saturation) get
+  aggressive or kernel pinning matters.
 - Launch/commercial tasks `tk-kwzc` and `tk-n8e9` stay deferred.
 - Planned license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
   provider/extension interfaces. See `ai/design/LICENSE_BOUNDARY.md`.
@@ -87,9 +98,9 @@ skeleton runs: additional providers, microVMs, volumes, networking.
 
 ## Next action
 
-v1 execution track, in order: the minimal control plane — API server +
-persistent command log + CLI — so clusters outlive one process and more
-than one machine can be scheduled across (the protocol seam is ready;
-multi-node routing of Effects to per-machine agents is the new work).
+v1 execution track, next: multi-node scheduling — route Effects to
+per-machine agents so one control plane drives several machines (the
+AgentLink seam and protocol are ready; node-to-agent routing is the new
+work). Then: reconciliation of agent-reported state after agent restarts.
 Launch/commercial tasks (`tk-kwzc`, `tk-n8e9`) stay deferred until release
 work starts.

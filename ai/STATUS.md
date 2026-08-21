@@ -110,8 +110,10 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
   the workstation.
 - Remote agent protocol: controller and agent are separable processes over
   TCP (length-prefixed JSON); cross-machine lease execution proven
-  (Mac controller → pacabot-ams agent, cgroup-enforced). 93 tests on
-  Linux, 91 on macOS; clippy clean on both.
+  (Mac controller → pacabot-ams agent, cgroup-enforced).
+- Control plane: `fleet-ctl` — persistent JSONL command log, replay-based
+  recovery (revokes live work, never re-executes), TCP API server, CLI.
+  Crash-restart proven on loopback. 95 tests; clippy clean.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.
