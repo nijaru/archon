@@ -90,8 +90,11 @@ fn hostname() -> String {
 /// Build the Archon graph for a machine description: one Machine node, one
 /// Cpu node per logical CPU, one Memory node with total bytes. Shared by
 /// the local and remote paths so both produce identical graph shapes.
-pub fn build_graph(description: &MachineDescription) -> (LocalMachine, Vec<Node>, Vec<Edge>) {
-    let mut ids = IdGen { next: 0 };
+pub fn build_graph(
+    description: &MachineDescription,
+    first_id: u64,
+) -> (LocalMachine, Vec<Node>, Vec<Edge>) {
+    let mut ids = IdGen { next: first_id };
     let machine = ids.node();
     let cpus: Vec<_> = (0..description.cpus).map(|_| ids.node()).collect();
     let memory = ids.node();
@@ -147,5 +150,5 @@ pub fn build_graph(description: &MachineDescription) -> (LocalMachine, Vec<Node>
 
 /// Discover this machine and build its graph.
 pub fn discover() -> (LocalMachine, Vec<Node>, Vec<Edge>) {
-    build_graph(&describe())
+    build_graph(&describe(), 0)
 }

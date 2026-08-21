@@ -9,9 +9,9 @@ use archon_node::service::NodeService;
 
 fn boot() -> NodeService {
     let mut service = NodeService::new();
-    let (local, nodes, edges) = archon_node::discover::discover();
-    service.boot(nodes, edges).expect("boot");
-    let _ = local;
+    service
+        .register_local(None)
+        .expect("register local machine");
     service
 }
 

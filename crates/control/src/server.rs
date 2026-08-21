@@ -2,21 +2,22 @@
 //! over TCP. Expiry is checked as requests arrive; recovery replays the log
 //! and expires work that was live at shutdown.
 
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 
 use archon_kernel::{
     Command, Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
-use archon_node::discover;
 use archon_node::service::NodeService;
 
-/// How the control plane reaches its execution agent.
+/// How the control plane reaches its execution agents.
 pub enum AgentLink {
     /// Execute on this machine; cgroup root enables kernel enforcement.
     Local { cgroup_root: Option<String> },
-    /// Execute on a remote `archon agent` agent.
+    /// Connect out to one remote `archon agent` daemon at boot.
     Remote { addr: String },
+    /// Pure control plane: no built-in machine; agents dial in.
+    None,
 }
 
 use crate::api::{ClientRequest, LeaseInfo, ServerResponse};
@@ -35,10 +36,16 @@ impl ControlPlane {
     /// revoked: a fresh agent holds no processes, so recovery restores
     /// decisions, it never re-executes work.
     pub fn boot(link: AgentLink, log_path: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut service = match &link {
-            AgentLink::Local { cgroup_root } => NodeService::local(cgroup_root.clone()),
-            AgentLink::Remote { addr } => NodeService::connect(addr)?,
-        };
+        let mut service = NodeService::new();
+        match &link {
+            AgentLink::Local { cgroup_root } => {
+                service.register_local(cgroup_root.clone())?;
+            }
+            AgentLink::Remote { addr } => {
+                service.register_remote(addr)?;
+            }
+            AgentLink::None => {}
+        }
         let commands = CommandLog::read(&log_path)?;
         let first_boot = commands.is_empty();
         fn make_sink(log_path: &std::path::Path) -> Box<dyn FnMut(&Command) + Send> {
@@ -48,13 +55,22 @@ impl ControlPlane {
                 log.append(command).expect("append command log");
             })
         }
-        if first_boot && matches!(link, AgentLink::Local { .. }) {
-            // The graph of record enters the log on first boot so restarts
-            // replay it instead of rediscovering.
-            service.set_command_sink(Some(make_sink(&log_path)));
-            let (_local, nodes, edges) = discover::discover();
-            service.boot(nodes, edges)?;
-            service.set_command_sink(None);
+        if first_boot && !matches!(link, AgentLink::None) {
+            match &link {
+                AgentLink::None => {}
+                AgentLink::Local { cgroup_root } => {
+                    // The graph of record enters the log on first boot so
+                    // restarts replay it instead of rediscovering.
+                    service.set_command_sink(Some(make_sink(&log_path)));
+                    service.register_local(cgroup_root.clone())?;
+                    service.set_command_sink(None);
+                }
+                AgentLink::Remote { addr } => {
+                    service.set_command_sink(Some(make_sink(&log_path)));
+                    service.register_remote(addr)?;
+                    service.set_command_sink(None);
+                }
+            }
         }
         let replayed = commands.len();
         service.replay(commands)?;
@@ -78,28 +94,102 @@ impl ControlPlane {
         })
     }
 
-    /// Serve clients sequentially; a new connection replaces a dead one.
-    pub fn serve(&mut self, listener: TcpListener) -> std::io::Result<()> {
+    /// Accept clients and dial-in agents. The first frame on a connection
+    /// decides its role: `Hello` registers an agent (its machine joins the
+    /// graph, and re-registration with the same machine name reconciles);
+    /// anything else is a client. Agents are then driven lockstep by
+    /// whichever thread routes their effects.
+    pub fn serve(this: &std::sync::Arc<std::sync::Mutex<Self>>, listener: TcpListener) {
         for stream in listener.incoming() {
-            let mut stream = match stream {
-                Ok(stream) => stream,
-                Err(_) => continue,
-            };
-            let peer = stream
-                .peer_addr()
-                .map(|addr| addr.to_string())
-                .unwrap_or_default();
-            eprintln!("archon: client connected from {peer}");
-            while let Ok(request) = crate::api::read_request(&mut stream) {
-                self.service.tick().ok();
-                let response = self.handle(request);
-                if crate::api::write_response(&mut stream, &response).is_err() {
-                    break;
-                }
-            }
-            eprintln!("archon: client {peer} disconnected");
+            let Ok(stream) = stream else { continue };
+            let plane = this.clone();
+            std::thread::spawn(move || Self::accept(&plane, stream));
         }
+    }
+
+    fn accept(this: &std::sync::Arc<std::sync::Mutex<Self>>, mut stream: TcpStream) {
+        let peer = stream
+            .peer_addr()
+            .map(|addr| addr.to_string())
+            .unwrap_or_default();
+        // The first frame decides the connection's role: agents announce
+        // themselves with Register; anything else is a client request.
+        let first = match crate::api::read_payload(&mut stream) {
+            Ok(payload) => payload,
+            Err(_) => return,
+        };
+        if let Ok(register) = serde_json::from_slice::<archon_node::protocol::AgentRequest>(&first)
+        {
+            match register {
+                archon_node::protocol::AgentRequest::Register {
+                    name,
+                    cpus,
+                    memory_bytes,
+                } => {
+                    if let Err(err) =
+                        this.lock()
+                            .unwrap()
+                            .register_dial_in(stream, name, cpus, memory_bytes)
+                    {
+                        eprintln!("archon: agent {peer} registration failed: {err}");
+                    } else {
+                        eprintln!("archon: agent {peer} disconnected");
+                    }
+                }
+                _ => eprintln!("archon: {peer} sent a non-register first frame"),
+            }
+            return;
+        }
+        let Ok(mut request) = serde_json::from_slice::<crate::api::ClientRequest>(&first) else {
+            return;
+        };
+        eprintln!("archon: client connected from {peer}");
+        loop {
+            let response = this.lock().unwrap().tick_and_handle(request);
+            if crate::api::write_response(&mut stream, &response).is_err() {
+                break;
+            }
+            match crate::api::read_request(&mut stream) {
+                Ok(next) => request = next,
+                Err(_) => break,
+            }
+        }
+        eprintln!("archon: client {peer} disconnected");
+    }
+
+    fn register_dial_in(
+        &mut self,
+        stream: TcpStream,
+        name: String,
+        cpus: u64,
+        memory_bytes: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let description = archon_node::discover::MachineDescription {
+            name,
+            cpus,
+            memory_bytes,
+        };
+        let executor = archon_node::service::RemoteExecutor::from_stream(stream);
+        let machine = self
+            .service
+            .register_agent(description, Box::new(executor))?;
+        let name = self
+            .service
+            .cluster
+            .graph
+            .node(machine)
+            .and_then(|node| node.attrs.get("name").cloned())
+            .unwrap_or_default();
+        eprintln!("archon: agent registered as machine {machine} ({name})");
         Ok(())
+    }
+
+    fn tick_and_handle(
+        &mut self,
+        request: crate::api::ClientRequest,
+    ) -> crate::api::ServerResponse {
+        self.service.tick().ok();
+        self.handle(request)
     }
 
     fn handle(&mut self, request: ClientRequest) -> ServerResponse {

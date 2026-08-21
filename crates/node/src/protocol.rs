@@ -28,6 +28,13 @@ pub enum AgentRequest {
     /// Ask the agent to describe its machine; the controller builds the
     /// graph from the answer.
     Hello,
+    /// Dial-in registration: the agent connects to the control plane and
+    /// announces its machine up front.
+    Register {
+        name: String,
+        cpus: u64,
+        memory_bytes: u64,
+    },
     Prepare {
         binding: u64,
         lease: u64,

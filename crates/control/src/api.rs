@@ -64,7 +64,7 @@ pub fn read_response(stream: &mut impl Read) -> std::io::Result<ServerResponse> 
         .map(|payload| serde_json::from_slice(&payload).map_err(std::io::Error::other))?
 }
 
-fn read_payload(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
+pub fn read_payload(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
     let mut length = [0u8; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_le_bytes(length) as usize;

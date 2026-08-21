@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::net::TcpStream;
 
 use archon_kernel::{
-    BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, NodeKind, OwnerId, ProviderId,
-    Queued, Request, RequestId, quantity_get,
+    BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, NodeId, NodeKind, OwnerId,
+    ProviderId, Queued, Request, RequestId, quantity_get,
 };
 
 type CommandSink = Box<dyn FnMut(&Command) + Send>;
@@ -51,6 +51,11 @@ impl RemoteExecutor {
             stream: TcpStream::connect(addr)?,
         })
     }
+
+    /// Wrap an already-connected socket (dial-in agents).
+    pub fn from_stream(stream: TcpStream) -> Self {
+        Self { stream }
+    }
 }
 
 impl LeaseExecutor for RemoteExecutor {
@@ -62,7 +67,8 @@ impl LeaseExecutor for RemoteExecutor {
 
 pub struct NodeService {
     pub cluster: Cluster,
-    executor: Box<dyn LeaseExecutor>,
+    /// One executor per registered machine, keyed by the machine NodeId.
+    agents: BTreeMap<NodeId, Box<dyn LeaseExecutor>>,
     queue: Vec<Queued>,
     /// Workload payload per queued request, kept outside the kernel log:
     /// resource decisions never need it, only execution does.
@@ -77,6 +83,15 @@ pub struct NodeService {
     command_sink: Option<CommandSink>,
 }
 
+/// One registered machine's identity in the controller.
+#[derive(Clone, Debug)]
+pub struct MachineRegistration {
+    pub machine: NodeId,
+    pub name: String,
+    /// False when an agent re-registered over an existing machine.
+    pub new_machine: bool,
+}
+
 impl Default for NodeService {
     fn default() -> Self {
         Self::new()
@@ -84,71 +99,125 @@ impl Default for NodeService {
 }
 
 impl NodeService {
-    /// A controller executing on this machine, lifecycle-only (no cgroups).
+    /// A controller with no agents yet; register machines with
+    /// [`NodeService::register_local`] or [`NodeService::register_remote`].
     pub fn new() -> Self {
-        let executor = LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()));
-        Self::with_executor(Box::new(executor))
+        Self::with_agents(BTreeMap::new())
     }
 
     /// A controller executing on this machine; cgroup enforcement when a
-    /// root is given (Linux only). Unbooted: the caller applies the graph.
+    /// root is given (Linux only). Unregistered: call `register_local`.
     pub fn local(cgroup_root: Option<String>) -> Self {
+        let mut service = Self::new();
+        service
+            .register_local(cgroup_root)
+            .expect("register local machine");
+        service
+    }
+
+    /// Register this machine as an agent of the controller; cgroup
+    /// enforcement when a root is given (Linux only).
+    pub fn register_local(&mut self, cgroup_root: Option<String>) -> Result<NodeId, Error> {
+        let description = crate::discover::describe();
         #[cfg(target_os = "linux")]
-        if let Some(root) = cgroup_root {
-            return Self::local_with_cgroups(root);
-        }
+        let runtime = match cgroup_root {
+            Some(root) => ProcessRuntime::new().with_cgroup_root(root),
+            None => ProcessRuntime::new(),
+        };
         #[cfg(not(target_os = "linux"))]
-        let _ = cgroup_root;
-        Self::new()
-    }
-
-    /// A controller executing on this machine with cgroup v2 enforcement.
-    #[cfg(target_os = "linux")]
-    pub fn local_with_cgroups(root: String) -> Self {
-        let runtime = ProcessRuntime::new().with_cgroup_root(root);
+        let runtime = {
+            let _ = cgroup_root;
+            ProcessRuntime::new()
+        };
         let executor = LocalExecutor::new(LeaseAgent::new(runtime));
-        Self::with_executor(Box::new(executor))
+        self.register_agent(description, Box::new(executor))
     }
 
-    /// Connect to a remote agent, learn its machine, and boot the cluster
-    /// over its discovered graph.
-    pub fn connect(addr: &str) -> Result<Self, Error> {
+    /// Connect to a remote agent, learn its machine, and register it.
+    pub fn register_remote(&mut self, addr: &str) -> Result<NodeId, Error> {
         let mut executor = RemoteExecutor::connect(addr).map_err(|err| Error::Refused {
             explanation: format!("connect {addr}: {err}"),
         })?;
-        let welcome = executor
+        let description = Self::hello(&mut executor)?;
+        self.register_agent(description, Box::new(executor))
+    }
+
+    fn hello(
+        executor: &mut dyn LeaseExecutor,
+    ) -> Result<crate::discover::MachineDescription, Error> {
+        match executor
             .execute(AgentRequest::Hello)
             .map_err(|reason| Error::Refused {
                 explanation: reason,
-            })?;
-        let (name, cpus, memory_bytes) = match welcome {
+            })? {
             AgentResponse::Welcome {
                 name,
                 cpus,
                 memory_bytes,
-            } => (name, cpus, memory_bytes),
-            other => {
-                return Err(Error::Refused {
-                    explanation: format!("expected Welcome, got {other:?}"),
-                });
-            }
-        };
-        let description = crate::discover::MachineDescription {
-            name,
-            cpus,
-            memory_bytes,
-        };
-        let (_local, nodes, edges) = crate::discover::build_graph(&description);
-        let executor = Box::new(executor);
-        let mut service = Self::with_executor(executor);
-        service.boot(nodes, edges)?;
-        Ok(service)
+            } => Ok(crate::discover::MachineDescription {
+                name,
+                cpus,
+                memory_bytes,
+            }),
+            other => Err(Error::Refused {
+                explanation: format!("expected Welcome, got {other:?}"),
+            }),
+        }
     }
 
-    fn with_executor(executor: Box<dyn LeaseExecutor>) -> Self {
+    /// Register one machine's agent: apply its graph fragment (or match an
+    /// existing machine by name on re-registration), assign a fresh session,
+    /// and let the kernel's Reconcile re-drive live work onto the agent.
+    pub fn register_agent(
+        &mut self,
+        description: crate::discover::MachineDescription,
+        executor: Box<dyn LeaseExecutor>,
+    ) -> Result<NodeId, Error> {
+        let named = |cluster: &Cluster, name: &str| {
+            cluster
+                .graph
+                .nodes_of_kind(NodeKind::Machine)
+                .iter()
+                .copied()
+                .find(|id| {
+                    cluster
+                        .graph
+                        .node(*id)
+                        .and_then(|node| node.attrs.get("name"))
+                        .is_some_and(|attr| attr == name)
+                })
+        };
+        let (machine, new_machine) = match named(&self.cluster, &description.name) {
+            Some(machine) => (machine, false),
+            None => {
+                let base = self
+                    .cluster
+                    .graph
+                    .nodes()
+                    .map(|node| node.id.as_u64())
+                    .max()
+                    .unwrap_or(0);
+                let (_local, nodes, edges) = crate::discover::build_graph(&description, base);
+                self.commit(Command::ApplyGraph { nodes, edges })?;
+                let machine = named(&self.cluster, &description.name).ok_or(Error::Refused {
+                    explanation: "applied graph fragment but machine node is missing".into(),
+                })?;
+                (machine, true)
+            }
+        };
+        self.agents.insert(machine, executor);
+        let session = self.next_session;
+        self.next_session += 1;
+        self.commit(Command::SetAgentSession { machine, session })?;
+        self.deliver_all()?;
+        let _ = new_machine;
+        Ok(machine)
+    }
+
+    fn with_agents(agents: BTreeMap<NodeId, Box<dyn LeaseExecutor>>) -> Self {
         Self {
             cluster: Cluster::new(),
-            executor,
+            agents,
             queue: Vec::new(),
             commands: BTreeMap::new(),
             lease_commands: BTreeMap::new(),
@@ -179,25 +248,6 @@ impl NodeService {
     /// plane uses this for recovery actions and administrative commands.
     pub fn apply(&mut self, command: Command) -> Result<(), Error> {
         self.commit(command)?;
-        self.deliver_all()
-    }
-
-    pub fn boot(
-        &mut self,
-        nodes: Vec<archon_kernel::Node>,
-        edges: Vec<archon_kernel::Edge>,
-    ) -> Result<(), Error> {
-        self.commit(Command::ApplyGraph { nodes, edges })?;
-        let machine = self
-            .cluster
-            .graph
-            .nodes_of_kind(NodeKind::Machine)
-            .first()
-            .copied()
-            .expect("discovered machine");
-        let session = self.next_session;
-        self.next_session += 1;
-        self.commit(Command::SetAgentSession { machine, session })?;
         self.deliver_all()
     }
 
@@ -317,14 +367,27 @@ impl NodeService {
 
     /// Whether the lease's process is running, per the agent.
     pub fn is_running(&mut self, lease: LeaseId) -> bool {
-        let session = self.next_session.saturating_sub(1);
-        matches!(
-            self.executor.execute(AgentRequest::Status {
-                lease: lease.as_u64(),
-                session,
-            }),
-            Ok(AgentResponse::Running { running: true, .. })
-        )
+        let Some(lease_record) = self.cluster.leases.get(&lease) else {
+            return false;
+        };
+        let machines: std::collections::BTreeSet<NodeId> = lease_record
+            .allocation
+            .claims
+            .iter()
+            .filter_map(|claim| self.cluster.graph.machine_of(claim.node))
+            .collect();
+        machines
+            .into_iter()
+            .any(|machine| match self.agents.get_mut(&machine) {
+                Some(executor) => matches!(
+                    executor.execute(AgentRequest::Status {
+                        lease: lease.as_u64(),
+                        session: u64::MAX,
+                    }),
+                    Ok(AgentResponse::Running { running: true, .. })
+                ),
+                None => false,
+            })
     }
 
     fn dequeue(&mut self, request_id: &RequestId) {
@@ -405,15 +468,38 @@ impl NodeService {
         Ok(limits)
     }
 
-    /// The controller side of the seam: turn one kernel Effect into an
-    /// agent request and the acknowledgement commands the Cluster expects.
+    /// The controller side of the seam: route one kernel Effect to the
+    /// agent that owns its node, and turn the answer into Record commands.
     fn execute(&mut self, effect: Effect) -> Result<Vec<Command>, Error> {
+        // Reconcile re-drives a machine's live bindings onto its (fresh)
+        // agent: rebind each binding to the machine's new session, then
+        // ActivateBinding — idempotent for Active bindings, forward-moving
+        // for Preparing ones. The resulting Activate effects spawn the work
+        // again on the new agent process.
+        if let Effect::Reconcile {
+            bindings, session, ..
+        } = &effect
+        {
+            let mut commands: Vec<Command> = bindings
+                .iter()
+                .map(|binding| Command::RebindSession {
+                    binding: *binding,
+                    session: *session,
+                })
+                .collect();
+            commands.extend(
+                bindings
+                    .iter()
+                    .map(|binding| Command::ActivateBinding { binding: *binding }),
+            );
+            return Ok(commands);
+        }
         let binding_id = match &effect {
             Effect::Prepare { binding, .. }
             | Effect::Activate { binding, .. }
             | Effect::Release { binding, .. }
             | Effect::Fence { binding, .. } => *binding,
-            Effect::Reconcile { .. } => return Ok(Vec::new()),
+            Effect::Reconcile { .. } => unreachable!(),
         };
         let record = self
             .cluster
@@ -421,6 +507,13 @@ impl NodeService {
             .get(&binding_id)
             .ok_or(Error::UnknownBinding(binding_id))?;
         let (lease, session, fence) = (record.lease, record.agent_session, record.fence);
+        let machine = self
+            .cluster
+            .graph
+            .machine_of(record.node)
+            .ok_or(Error::Refused {
+                explanation: format!("binding {binding_id} node has no machine ancestor"),
+            })?;
 
         let request = match &effect {
             Effect::Prepare { .. } => AgentRequest::Prepare {
@@ -449,15 +542,20 @@ impl NodeService {
                 session,
                 fence,
             },
-            Effect::Reconcile { .. } => return Ok(Vec::new()),
+            Effect::Reconcile { .. } => unreachable!(),
         };
 
-        match self
-            .executor
-            .execute(request)
-            .map_err(|reason| Error::Refused {
-                explanation: reason,
-            })? {
+        let Some(executor) = self.agents.get_mut(&machine) else {
+            // No agent for this machine (restart before re-registration, or
+            // the agent died). Kernel state proceeds; Reconcile re-drives
+            // live work when the agent registers again. A dead agent holds
+            // no processes, so dropping the effect is honest.
+            eprintln!("archon: no agent for machine {machine}; dropping effect");
+            return Ok(Vec::new());
+        };
+        match executor.execute(request).map_err(|reason| Error::Refused {
+            explanation: reason,
+        })? {
             AgentResponse::Prepared { handle, .. } => Ok(vec![Command::RecordBindingPrepared {
                 binding: binding_id,
                 session,

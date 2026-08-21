@@ -46,7 +46,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR] [--cgroup-root PATH]\n  archon agent --listen ADDR [--cgroup-root PATH]\n  archon demo [--remote ADDR]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR status\n  archon -c ADDR revoke LEASE"
+        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon demo [--remote ADDR]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR status\n  archon -c ADDR revoke LEASE"
     );
     exit(2);
 }
@@ -57,9 +57,15 @@ fn serve(args: &[String]) {
     let mut listen = None;
     let mut log = None;
     let mut remote = None;
+    let mut no_local = false;
     let mut cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
     let mut index = 0;
     while index < args.len() {
+        if args[index] == "--no-local" {
+            no_local = true;
+            index += 1;
+            continue;
+        }
         let flag = args[index].as_str();
         let Some(value) = args.get(index + 1) else {
             usage()
@@ -76,20 +82,25 @@ fn serve(args: &[String]) {
     let (Some(listen), Some(log)) = (listen, log) else {
         usage();
     };
-    let link = match &remote {
-        Some(addr) => archon_control::server::AgentLink::Remote { addr: addr.clone() },
-        None => archon_control::server::AgentLink::Local { cgroup_root },
+    let link = match (&remote, no_local) {
+        (Some(addr), _) => archon_control::server::AgentLink::Remote { addr: addr.clone() },
+        (None, false) => archon_control::server::AgentLink::Local { cgroup_root },
+        (None, true) => archon_control::server::AgentLink::None,
     };
-    let mut plane = archon_control::server::ControlPlane::boot(link, log).expect("boot");
+    let plane = std::sync::Arc::new(std::sync::Mutex::new(
+        archon_control::server::ControlPlane::boot(link, log).expect("boot"),
+    ));
     let listener = TcpListener::bind(&listen).expect("bind");
     eprintln!("archon: control plane serving on {listen}");
-    plane.serve(listener).expect("serve");
+    archon_control::server::ControlPlane::serve(&plane, listener);
 }
 
 // --- node agent ----------------------------------------------------------
 
 fn agent(args: &[String]) {
     let mut listen = None;
+    let mut register = None;
+    let mut name = None;
     let mut cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
     let mut index = 0;
     while index < args.len() {
@@ -99,10 +110,16 @@ fn agent(args: &[String]) {
         };
         match flag {
             "--listen" => listen = Some(value.clone()),
+            "--register" => register = Some(value.clone()),
+            "--name" => name = Some(value.clone()),
             "--cgroup-root" => cgroup_root = Some(value.clone()),
             _ => usage(),
         }
         index += 2;
+    }
+    if let Some(addr) = register {
+        dial_in(&addr, name, cgroup_root);
+        return;
     }
     let Some(listen) = listen else {
         usage();
@@ -131,6 +148,38 @@ fn agent(args: &[String]) {
     }
 }
 
+/// Dial-in mode: connect to the control plane, announce this machine, then
+/// execute its leases. Reconnects until the control plane answers.
+fn dial_in(addr: &str, name: Option<String>, cgroup_root: Option<String>) {
+    loop {
+        match TcpStream::connect(addr) {
+            Ok(mut stream) => {
+                let description = archon_node::discover::describe();
+                let register = archon_node::protocol::AgentRequest::Register {
+                    name: name.clone().unwrap_or(description.name),
+                    cpus: description.cpus,
+                    memory_bytes: description.memory_bytes,
+                };
+                if archon_node::protocol::write_frame(&mut stream, &register).is_err() {
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+                eprintln!("archon: registered with control plane at {addr}");
+                let runtime = build_runtime(&cgroup_root);
+                let mut lease_agent = archon_node::agent::LeaseAgent::new(runtime);
+                while let Ok(request) = read_request(&mut stream) {
+                    let response = lease_agent.handle(request);
+                    if write_response(&mut stream, &response).is_err() {
+                        break;
+                    }
+                }
+                eprintln!("archon: lost the control plane; retrying");
+            }
+            Err(_) => std::thread::sleep(Duration::from_secs(2)),
+        }
+    }
+}
+
 fn build_runtime(cgroup_root: &Option<String>) -> archon_node::runtime::ProcessRuntime {
     #[cfg(target_os = "linux")]
     if let Some(root) = cgroup_root {
@@ -147,21 +196,16 @@ fn build_runtime(cgroup_root: &Option<String>) -> archon_node::runtime::ProcessR
 fn demo(remote: Option<String>) {
     let mut service = match &remote {
         Some(addr) => {
-            let service = NodeService::connect(addr).expect("connect to agent");
+            let mut service = NodeService::new();
+            service
+                .register_remote(addr)
+                .expect("register remote agent");
             eprintln!("archon: connected to remote agent at {addr}");
             service
         }
         None => {
-            let mut service = NodeService::new();
-            #[cfg(target_os = "linux")]
-            if let Ok(root) = std::env::var("ARCHON_CGROUP_ROOT") {
-                service = NodeService::local_with_cgroups(root);
-                eprintln!("archon: cgroup v2 enforcement enabled");
-            }
-            let (local, nodes, edges) = archon_node::discover::discover();
-            service.boot(nodes, edges).expect("boot cluster");
-            let _ = local;
-            service
+            let cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
+            NodeService::local(cgroup_root)
         }
     };
     print_machine(&service);

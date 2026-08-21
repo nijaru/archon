@@ -21,8 +21,10 @@ fn spawn_server(name: &str) -> String {
     let log = temp_log(name);
     std::thread::spawn(move || {
         let link = archon_control::server::AgentLink::Local { cgroup_root: None };
-        let mut plane = ControlPlane::boot(link, log).expect("boot");
-        plane.serve(listener).ok();
+        let plane = std::sync::Arc::new(std::sync::Mutex::new(
+            ControlPlane::boot(link, log).expect("boot"),
+        ));
+        ControlPlane::serve(&plane, listener);
     });
     addr
 }

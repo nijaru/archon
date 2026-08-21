@@ -24,8 +24,9 @@ fn logged_service(path: &Path) -> NodeService {
         let mut log = archon_control::log::CommandLog::open(&log_path).expect("open log");
         log.append(command).expect("append log");
     })));
-    let (_local, nodes, edges) = archon_node::discover::discover();
-    service.boot(nodes, edges).expect("boot");
+    service
+        .register_local(None)
+        .expect("register local machine");
     service
 }
 

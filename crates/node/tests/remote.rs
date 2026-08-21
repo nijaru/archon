@@ -64,7 +64,10 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 #[test]
 fn controller_runs_and_kills_a_process_on_a_remote_agent() {
     let addr = spawn_agent();
-    let mut service = NodeService::connect(&addr).expect("connect");
+    let mut service = NodeService::new();
+    service
+        .register_remote(&addr)
+        .expect("register remote agent");
     service.submit(
         request(1, vec!["sleep".into(), "30".into()]),
         OwnerId::from_u64(1),

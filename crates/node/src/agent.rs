@@ -27,6 +27,11 @@ impl LeaseAgent {
     pub fn handle(&mut self, request: AgentRequest) -> AgentResponse {
         match request {
             AgentRequest::Hello => self.hello(),
+            // Registration is consumed by the control plane before effects
+            // ever reach a LeaseAgent.
+            AgentRequest::Register { .. } => {
+                self.failed_none("Register is not handled by an agent")
+            }
             AgentRequest::Status { lease, session } => {
                 if self.check_session(session) {
                     return self.failed_none(&format!("stale session {session}"));
