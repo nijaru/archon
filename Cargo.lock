@@ -3,8 +3,21 @@
 version = 4
 
 [[package]]
+name = "fleet-ctl"
+version = "0.0.0"
+dependencies = [
+ "fleet-kernel",
+ "fleet-node",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fleet-kernel"
 version = "0.0.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "fleet-node"

@@ -2,6 +2,7 @@ use crate::ids::{BindingId, LeaseId, NodeId, OwnerId, ProviderId};
 use crate::types::{Allocation, Edge, Node};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Command {
     ApplyGraph {
         nodes: Vec<Node>,
@@ -114,6 +115,7 @@ pub enum Command {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Effect {
     Prepare {
         binding: BindingId,

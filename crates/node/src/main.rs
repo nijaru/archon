@@ -6,22 +6,14 @@
 //!   execute a controller's leases on this machine over the agent protocol.
 //! - `fleet-node demo --remote ADDR` — run the demo against a remote agent.
 
-mod agent;
-#[cfg(target_os = "linux")]
-mod cgroup;
-mod discover;
-mod protocol;
-mod runtime;
-mod service;
-
 use std::time::Duration;
 
 use fleet_kernel::{
     Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
 
-use crate::protocol::{read_request, write_response};
-use crate::service::NodeService;
+use fleet_node::protocol::{read_request, write_response};
+use fleet_node::service::NodeService;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -72,7 +64,7 @@ fn serve(args: &[String]) {
             .unwrap_or_default();
         println!("fleet: controller connected from {peer}");
         let runtime = build_runtime(&cgroup_root);
-        let mut agent = agent::LeaseAgent::new(runtime);
+        let mut agent = fleet_node::agent::LeaseAgent::new(runtime);
         while let Ok(request) = read_request(&mut stream) {
             let response = agent.handle(request);
             if write_response(&mut stream, &response).is_err() {
@@ -83,15 +75,15 @@ fn serve(args: &[String]) {
     }
 }
 
-fn build_runtime(cgroup_root: &Option<String>) -> runtime::ProcessRuntime {
+fn build_runtime(cgroup_root: &Option<String>) -> fleet_node::runtime::ProcessRuntime {
     #[cfg(target_os = "linux")]
     if let Some(root) = cgroup_root {
         println!("fleet: cgroup v2 enforcement enabled at {root}");
-        return runtime::ProcessRuntime::new().with_cgroup_root(root.clone());
+        return fleet_node::runtime::ProcessRuntime::new().with_cgroup_root(root.clone());
     }
     #[cfg(not(target_os = "linux"))]
     let _ = cgroup_root;
-    runtime::ProcessRuntime::new()
+    fleet_node::runtime::ProcessRuntime::new()
 }
 
 /// The walking-skeleton demo, local or against a remote agent.
@@ -109,7 +101,7 @@ fn demo(remote: Option<String>) {
                 service = NodeService::local_with_cgroups(root);
                 println!("fleet: cgroup v2 enforcement enabled");
             }
-            let (local, nodes, edges) = discover::discover();
+            let (local, nodes, edges) = fleet_node::discover::discover();
             service.boot(nodes, edges).expect("boot cluster");
             let _ = local;
             service

@@ -12,12 +12,14 @@ use fleet_kernel::{
     Queued, Request, RequestId, quantity_get,
 };
 
+type CommandSink = Box<dyn FnMut(&Command) + Send>;
+
 use crate::agent::LeaseAgent;
 use crate::protocol::{AgentRequest, AgentResponse, LeaseLimits, read_frame, write_frame};
 use crate::runtime::ProcessRuntime;
 
 /// The controller side of the enforcement seam.
-pub trait LeaseExecutor {
+pub trait LeaseExecutor: Send {
     fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String>;
 }
 
@@ -70,6 +72,9 @@ pub struct NodeService {
     pending: VecDeque<Effect>,
     next_session: u64,
     next_binding: u64,
+    /// Observes every command applied to the cluster; the control plane
+    /// persists them here.
+    command_sink: Option<CommandSink>,
 }
 
 impl Default for NodeService {
@@ -83,6 +88,18 @@ impl NodeService {
     pub fn new() -> Self {
         let executor = LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()));
         Self::with_executor(Box::new(executor))
+    }
+
+    /// A controller executing on this machine; cgroup enforcement when a
+    /// root is given (Linux only). Unbooted: the caller applies the graph.
+    pub fn local(cgroup_root: Option<String>) -> Self {
+        #[cfg(target_os = "linux")]
+        if let Some(root) = cgroup_root {
+            return Self::local_with_cgroups(root);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = cgroup_root;
+        Self::new()
     }
 
     /// A controller executing on this machine with cgroup v2 enforcement.
@@ -138,7 +155,31 @@ impl NodeService {
             pending: VecDeque::new(),
             next_session: 1,
             next_binding: 1,
+            command_sink: None,
         }
+    }
+
+    /// Persist every command applied to the cluster (kernel commands and
+    /// agent records alike). Detach while replaying a log: replayed
+    /// commands are already persisted.
+    pub fn set_command_sink(&mut self, sink: Option<CommandSink>) {
+        self.command_sink = sink;
+    }
+
+    /// Rebuild cluster state from a persisted command log without delivering
+    /// effects to the agent: the log already contains the agent's records.
+    pub fn replay(&mut self, commands: impl IntoIterator<Item = Command>) -> Result<(), Error> {
+        for command in commands {
+            self.commit(command)?;
+        }
+        Ok(())
+    }
+
+    /// Apply one command and deliver the resulting effects. The control
+    /// plane uses this for recovery actions and administrative commands.
+    pub fn apply(&mut self, command: Command) -> Result<(), Error> {
+        self.commit(command)?;
+        self.deliver_all()
     }
 
     pub fn boot(
@@ -204,6 +245,37 @@ impl NodeService {
         }
         self.deliver_all()?;
         Ok(Some(request_id))
+    }
+
+    /// Queue depth, for status reporting.
+    pub fn queue_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Revoke every live lease regardless of deadline. Recovery uses this:
+    /// a fresh agent holds no processes, so in-flight work cannot survive a
+    /// restart and must be revoked, not re-executed.
+    pub fn revoke_live_leases(&mut self) -> Result<usize, Error> {
+        let live: Vec<LeaseId> = self
+            .cluster
+            .leases
+            .values()
+            .filter(|lease| {
+                matches!(
+                    lease.state,
+                    fleet_kernel::LeaseState::Preparing
+                        | fleet_kernel::LeaseState::Active
+                        | fleet_kernel::LeaseState::Reserved
+                )
+            })
+            .map(|lease| lease.id)
+            .collect();
+        let count = live.len();
+        for lease in &live {
+            self.commit(Command::RevokeLease { lease: *lease })?;
+        }
+        self.deliver_all()?;
+        Ok(count)
     }
 
     pub fn revoke(&mut self, lease: LeaseId) -> Result<(), Error> {
@@ -290,7 +362,12 @@ impl NodeService {
     }
 
     fn commit(&mut self, command: Command) -> Result<(), Error> {
-        let effects = self.cluster.apply(command)?;
+        // Log only applied commands: a rejected command must not enter the
+        // log, or replay would diverge from the live cluster.
+        let effects = self.cluster.apply(command.clone())?;
+        if let Some(sink) = &mut self.command_sink {
+            sink(&command);
+        }
         self.pending.extend(effects);
         Ok(())
     }

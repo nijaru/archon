@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::ids::{BindingId, LeaseId, NodeId, OwnerId, ProviderId};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NodeKind {
     Machine,
     Rack,
@@ -38,6 +39,7 @@ impl NodeKind {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EdgeKind {
     Contains,
     SameNuma,
@@ -47,6 +49,7 @@ pub enum EdgeKind {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Dimension {
     Count,
     Bytes,
@@ -97,6 +100,7 @@ pub fn quantity_add_assign(left: &mut Quantity, right: &Quantity) {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Node {
     pub id: NodeId,
     pub kind: NodeKind,
@@ -105,6 +109,7 @@ pub struct Node {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Edge {
     pub from: NodeId,
     pub to: NodeId,
@@ -113,18 +118,21 @@ pub struct Edge {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RequestClass {
     Service,
     Batch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Filter {
     pub key: String,
     pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Need {
     pub kind: NodeKind,
     pub quantity: Quantity,
@@ -132,6 +140,7 @@ pub struct Need {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TopologyConstraint {
     pub left: usize,
     pub right: usize,
@@ -139,6 +148,7 @@ pub struct TopologyConstraint {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Preference {
     Pack,
     Spread,
@@ -146,6 +156,7 @@ pub enum Preference {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Request {
     pub id: crate::ids::RequestId,
     pub class: RequestClass,
@@ -174,12 +185,14 @@ pub struct Queued {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Claim {
     pub node: NodeId,
     pub quantity: Quantity,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Allocation {
     pub claims: Vec<Claim>,
     pub graph_revision: u64,
@@ -187,6 +200,7 @@ pub struct Allocation {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LeaseState {
     Reserved,
     Preparing,
@@ -198,6 +212,7 @@ pub enum LeaseState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Lease {
     pub id: LeaseId,
     pub owner: OwnerId,
@@ -210,6 +225,7 @@ pub struct Lease {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BindingState {
     Preparing,
     Active,
@@ -225,6 +241,7 @@ impl BindingState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Binding {
     pub id: BindingId,
     pub lease: LeaseId,
@@ -237,6 +254,7 @@ pub struct Binding {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EndpointPhase {
     Idle,
     Prepared,
@@ -244,6 +262,7 @@ pub enum EndpointPhase {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Endpoint {
     pub provider: ProviderId,
     pub node: NodeId,
