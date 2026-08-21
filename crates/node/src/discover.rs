@@ -30,6 +30,8 @@ impl IdGen {
 /// A machine as the agent reports it; the controller builds the graph.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MachineDescription {
+    /// Stable identity across reconnects; empty for local discovery.
+    pub instance_id: String,
     pub name: String,
     pub cpus: u64,
     pub memory_bytes: u64,
@@ -37,6 +39,7 @@ pub struct MachineDescription {
 
 pub fn describe() -> MachineDescription {
     MachineDescription {
+        instance_id: String::new(),
         name: hostname(),
         cpus: std::thread::available_parallelism().map_or(1, |n| n.get()) as u64,
         memory_bytes: total_memory_bytes(),
@@ -101,6 +104,7 @@ pub fn build_graph(
 
     let mut name = Attrs::new();
     name.insert("name".into(), description.name.clone());
+    name.insert("agent_id".into(), description.instance_id.clone());
     let mut nodes = vec![
         Node {
             id: machine,

@@ -29,8 +29,10 @@ pub enum AgentRequest {
     /// graph from the answer.
     Hello,
     /// Dial-in registration: the agent connects to the control plane and
-    /// announces its machine up front.
+    /// announces its machine up front. `instance_id` is the agent's stable
+    /// identity across reconnects; `name` is display-only.
     Register {
+        instance_id: String,
         name: String,
         cpus: u64,
         memory_bytes: u64,

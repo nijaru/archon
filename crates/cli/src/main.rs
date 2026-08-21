@@ -101,6 +101,7 @@ fn agent(args: &[String]) {
     let mut listen = None;
     let mut register = None;
     let mut name = None;
+    let mut id = None;
     let mut cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
     let mut index = 0;
     while index < args.len() {
@@ -112,13 +113,14 @@ fn agent(args: &[String]) {
             "--listen" => listen = Some(value.clone()),
             "--register" => register = Some(value.clone()),
             "--name" => name = Some(value.clone()),
+            "--id" => id = Some(value.clone()),
             "--cgroup-root" => cgroup_root = Some(value.clone()),
             _ => usage(),
         }
         index += 2;
     }
     if let Some(addr) = register {
-        dial_in(&addr, name, cgroup_root);
+        dial_in(&addr, id, name, cgroup_root);
         return;
     }
     let Some(listen) = listen else {
@@ -150,12 +152,62 @@ fn agent(args: &[String]) {
 
 /// Dial-in mode: connect to the control plane, announce this machine, then
 /// execute its leases. Reconnects until the control plane answers.
-fn dial_in(addr: &str, name: Option<String>, cgroup_root: Option<String>) {
+/// The agent's stable identity: generated once, persisted to the state
+/// directory, and presented on every registration.
+fn load_instance_id(id: Option<String>) -> String {
+    if let Some(id) = id {
+        return id;
+    }
+    let path = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/state"))
+        })
+        .map(|state| state.join("archon/agent-id"));
+    let Some(path) = path else {
+        eprintln!("archon: no state directory for the agent id; pass --id");
+        std::process::exit(2);
+    };
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let existing = existing.trim();
+        if !existing.is_empty() {
+            return existing.to_string();
+        }
+    }
+    // 64 random bits from the OS; time+pid only if /dev/urandom is absent
+    // (macOS has it, so this is effectively never).
+    use std::io::Read;
+    let mut bytes = [0u8; 8];
+    let ok = std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .is_ok();
+    let id = if ok {
+        format!("{:016x}", u64::from_le_bytes(bytes))
+    } else {
+        format!(
+            "{:016x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos() as u64
+                ^ std::process::id() as u64
+        )
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&path, &id).expect("persist agent id");
+    id
+}
+
+fn dial_in(addr: &str, id: Option<String>, name: Option<String>, cgroup_root: Option<String>) {
+    let instance_id = load_instance_id(id);
     loop {
         match TcpStream::connect(addr) {
             Ok(mut stream) => {
                 let description = archon_node::discover::describe();
                 let register = archon_node::protocol::AgentRequest::Register {
+                    instance_id: instance_id.clone(),
                     name: name.clone().unwrap_or(description.name),
                     cpus: description.cpus,
                     memory_bytes: description.memory_bytes,

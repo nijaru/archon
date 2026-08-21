@@ -81,6 +81,9 @@ pub struct NodeService {
     /// Observes every command applied to the cluster; the control plane
     /// persists them here.
     command_sink: Option<CommandSink>,
+    /// Every applied command since construction; tests and debugging use
+    /// this, the durable log remains the control plane's.
+    history: Vec<Command>,
 }
 
 /// One registered machine's identity in the controller.
@@ -142,7 +145,7 @@ impl NodeService {
         self.register_agent(description, Box::new(executor))
     }
 
-    fn hello(
+    pub fn hello(
         executor: &mut dyn LeaseExecutor,
     ) -> Result<crate::discover::MachineDescription, Error> {
         match executor
@@ -155,6 +158,7 @@ impl NodeService {
                 cpus,
                 memory_bytes,
             } => Ok(crate::discover::MachineDescription {
+                instance_id: String::new(),
                 name,
                 cpus,
                 memory_bytes,
@@ -173,7 +177,9 @@ impl NodeService {
         description: crate::discover::MachineDescription,
         executor: Box<dyn LeaseExecutor>,
     ) -> Result<NodeId, Error> {
-        let named = |cluster: &Cluster, name: &str| {
+        // Identity is the agent's instance id, stored in the machine's
+        // attrs so it survives control-plane restarts via replay.
+        let named = |cluster: &Cluster, instance: &str| {
             cluster
                 .graph
                 .nodes_of_kind(NodeKind::Machine)
@@ -183,11 +189,11 @@ impl NodeService {
                     cluster
                         .graph
                         .node(*id)
-                        .and_then(|node| node.attrs.get("name"))
-                        .is_some_and(|attr| attr == name)
+                        .and_then(|node| node.attrs.get("agent_id"))
+                        .is_some_and(|attr| attr == instance)
                 })
         };
-        let (machine, new_machine) = match named(&self.cluster, &description.name) {
+        let (machine, new_machine) = match named(&self.cluster, &description.instance_id) {
             Some(machine) => (machine, false),
             None => {
                 let base = self
@@ -199,9 +205,10 @@ impl NodeService {
                     .unwrap_or(0);
                 let (_local, nodes, edges) = crate::discover::build_graph(&description, base);
                 self.commit(Command::ApplyGraph { nodes, edges })?;
-                let machine = named(&self.cluster, &description.name).ok_or(Error::Refused {
-                    explanation: "applied graph fragment but machine node is missing".into(),
-                })?;
+                let machine =
+                    named(&self.cluster, &description.instance_id).ok_or(Error::Refused {
+                        explanation: "applied graph fragment but machine node is missing".into(),
+                    })?;
                 (machine, true)
             }
         };
@@ -225,6 +232,7 @@ impl NodeService {
             next_session: 1,
             next_binding: 1,
             command_sink: None,
+            history: Vec::new(),
         }
     }
 
@@ -237,8 +245,13 @@ impl NodeService {
 
     /// Rebuild cluster state from a persisted command log without delivering
     /// effects to the agent: the log already contains the agent's records.
+    /// Session numbering resumes above the highest replayed session — a
+    /// restarted controller must never hand out an old generation.
     pub fn replay(&mut self, commands: impl IntoIterator<Item = Command>) -> Result<(), Error> {
         for command in commands {
+            if let Command::SetAgentSession { session, .. } = &command {
+                self.next_session = self.next_session.max(*session + 1);
+            }
             self.commit(command)?;
         }
         Ok(())
@@ -295,6 +308,11 @@ impl NodeService {
         }
         self.deliver_all()?;
         Ok(Some(request_id))
+    }
+
+    /// Every command applied since construction, in order.
+    pub fn command_history(&self) -> Vec<Command> {
+        self.history.clone()
     }
 
     /// Queue depth, for status reporting.
@@ -428,6 +446,7 @@ impl NodeService {
         // Log only applied commands: a rejected command must not enter the
         // log, or replay would diverge from the live cluster.
         let effects = self.cluster.apply(command.clone())?;
+        self.history.push(command.clone());
         if let Some(sink) = &mut self.command_sink {
             sink(&command);
         }
@@ -472,26 +491,32 @@ impl NodeService {
     /// agent that owns its node, and turn the answer into Record commands.
     fn execute(&mut self, effect: Effect) -> Result<Vec<Command>, Error> {
         // Reconcile re-drives a machine's live bindings onto its (fresh)
-        // agent: rebind each binding to the machine's new session, then
-        // ActivateBinding — idempotent for Active bindings, forward-moving
-        // for Preparing ones. The resulting Activate effects spawn the work
-        // again on the new agent process.
+        // agent: rebind each still-Active binding to the machine's new
+        // session, then ActivateBinding — idempotent for Active bindings,
+        // forward-moving for Preparing ones. The resulting Activate effects
+        // spawn the work again on the new agent process. Revoked or expired
+        // leases stay dead.
         if let Effect::Reconcile {
             bindings, session, ..
         } = &effect
         {
-            let mut commands: Vec<Command> = bindings
-                .iter()
-                .map(|binding| Command::RebindSession {
+            let mut commands: Vec<Command> = Vec::new();
+            for binding in bindings {
+                let active = self
+                    .cluster
+                    .bindings
+                    .get(binding)
+                    .and_then(|record| self.cluster.leases.get(&record.lease))
+                    .is_some_and(|lease| lease.state == archon_kernel::LeaseState::Active);
+                if !active {
+                    continue;
+                }
+                commands.push(Command::RebindSession {
                     binding: *binding,
                     session: *session,
-                })
-                .collect();
-            commands.extend(
-                bindings
-                    .iter()
-                    .map(|binding| Command::ActivateBinding { binding: *binding }),
-            );
+                });
+                commands.push(Command::ActivateBinding { binding: *binding });
+            }
             return Ok(commands);
         }
         let binding_id = match &effect {

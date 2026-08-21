@@ -122,15 +122,18 @@ impl ControlPlane {
         {
             match register {
                 archon_node::protocol::AgentRequest::Register {
+                    instance_id,
                     name,
                     cpus,
                     memory_bytes,
                 } => {
-                    if let Err(err) =
-                        this.lock()
-                            .unwrap()
-                            .register_dial_in(stream, name, cpus, memory_bytes)
-                    {
+                    if let Err(err) = this.lock().unwrap().register_dial_in(
+                        stream,
+                        instance_id,
+                        name,
+                        cpus,
+                        memory_bytes,
+                    ) {
                         eprintln!("archon: agent {peer} registration failed: {err}");
                     } else {
                         eprintln!("archon: agent {peer} disconnected");
@@ -160,11 +163,13 @@ impl ControlPlane {
     fn register_dial_in(
         &mut self,
         stream: TcpStream,
+        instance_id: String,
         name: String,
         cpus: u64,
         memory_bytes: u64,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let description = archon_node::discover::MachineDescription {
+            instance_id,
             name,
             cpus,
             memory_bytes,

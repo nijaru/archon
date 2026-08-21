@@ -12,20 +12,19 @@ use archon_node::protocol::{read_request, write_response};
 use archon_node::runtime::ProcessRuntime;
 use archon_node::service::NodeService;
 
-/// A named in-process agent: serves one controller connection, then dies
-/// with its socket (like a real agent process would).
-fn spawn_named_agent(name: &'static str) -> String {
+/// A named in-process agent with a stable instance id: serves one
+/// controller connection, then dies with its socket.
+fn spawn_named_agent(_instance_id: &'static str, name: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
-            // Connect-out handshake: the controller asks, we describe.
-            use archon_node::protocol::AgentRequest;
+            use archon_node::protocol::{AgentRequest, AgentResponse};
             let Ok(AgentRequest::Hello) = read_request(&mut stream) else {
                 return;
             };
             let description = archon_node::discover::describe();
-            let welcome = archon_node::protocol::AgentResponse::Welcome {
+            let welcome = AgentResponse::Welcome {
                 name: name.to_string(),
                 cpus: description.cpus,
                 memory_bytes: description.memory_bytes,
@@ -43,6 +42,27 @@ fn spawn_named_agent(name: &'static str) -> String {
         }
     });
     addr
+}
+
+/// Register an executor whose machine carries this instance id and name,
+/// mirroring what the control plane does for dial-in agents.
+fn commands_of(service: &NodeService) -> Vec<archon_kernel::Command> {
+    service.command_history()
+}
+
+fn register_instance(
+    service: &mut NodeService,
+    instance_id: &str,
+    name: &str,
+    addr: &str,
+) -> archon_kernel::NodeId {
+    let mut executor = archon_node::service::RemoteExecutor::connect(addr).expect("connect");
+    let mut description = NodeService::hello(&mut executor).expect("hello");
+    description.instance_id = instance_id.to_string();
+    description.name = name.to_string();
+    service
+        .register_agent(description, Box::new(executor))
+        .expect("register")
 }
 
 fn submit_sleep(service: &mut NodeService, id: u64) -> RequestId {
@@ -73,10 +93,10 @@ fn submit_sleep(service: &mut NodeService, id: u64) -> RequestId {
 #[test]
 fn two_agents_register_and_both_machines_take_work() {
     let mut service = NodeService::new();
-    let alpha = spawn_named_agent("alpha");
-    let beta = spawn_named_agent("beta");
-    let m1 = service.register_remote(&alpha).expect("register alpha");
-    let m2 = service.register_remote(&beta).expect("register beta");
+    let alpha = spawn_named_agent("inst-alpha", "alpha");
+    let beta = spawn_named_agent("inst-beta", "beta");
+    let m1 = register_instance(&mut service, "inst-alpha", "alpha", &alpha);
+    let m2 = register_instance(&mut service, "inst-beta", "beta", &beta);
     assert_ne!(m1, m2, "distinct agents must get distinct machine nodes");
 
     // Both machines' capacity is schedulable: 2 requests fit concurrently.
@@ -96,8 +116,8 @@ fn two_agents_register_and_both_machines_take_work() {
 #[test]
 fn agent_re_registration_reconciles_live_work() {
     let mut service = NodeService::new();
-    let first = spawn_named_agent("worker");
-    service.register_remote(&first).expect("register");
+    let first = spawn_named_agent("inst-worker", "worker");
+    register_instance(&mut service, "inst-worker", "worker", &first);
     submit_sleep(&mut service, 1);
     let lease = LeaseId::from_u64(1);
 
@@ -114,9 +134,18 @@ fn agent_re_registration_reconciles_live_work() {
     drop(first);
     std::thread::sleep(Duration::from_millis(50));
 
-    // A fresh agent process registers under the same machine name.
-    let second = spawn_named_agent("worker");
-    service.register_remote(&second).expect("re-register");
+    // A fresh agent process with the SAME instance id re-registers: it is
+    // the same machine, reconciled — not a duplicate.
+    let second = spawn_named_agent("inst-worker", "worker");
+    let machine = register_instance(&mut service, "inst-worker", "worker", &second);
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .node(machine)
+            .and_then(|n| n.attrs.get("name")),
+        Some(&"worker".to_string())
+    );
 
     // Reconcile must have respawned the lease's work on the new agent.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -128,4 +157,34 @@ fn agent_re_registration_reconciles_live_work() {
         "reconciliation must respawn live work on the fresh agent"
     );
     service.revoke(lease).expect("revoke");
+
+    // A DIFFERENT instance id claiming the same display name is a distinct
+    // machine, not a takeover — no flap.
+    let machines_before = service.cluster.graph.nodes_of_kind(NodeKind::Machine).len();
+    let impostor = spawn_named_agent("inst-worker-2", "worker");
+    register_instance(&mut service, "inst-worker-2", "worker", &impostor);
+    let machines_after = service.cluster.graph.nodes_of_kind(NodeKind::Machine).len();
+    assert_eq!(machines_after, machines_before + 1);
+
+    // Control-plane restart: replay restores the graph including agent_id
+    // attrs, so the same instance re-registers as the same machine — not a
+    // duplicate graph fragment.
+    let mut recovered = NodeService::new();
+    recovered.replay(commands_of(&service)).expect("replay");
+    let machines_before_replay = recovered
+        .cluster
+        .graph
+        .nodes_of_kind(NodeKind::Machine)
+        .len();
+    let replacement = spawn_named_agent("inst-worker-2", "worker");
+    register_instance(&mut recovered, "inst-worker-2", "worker", &replacement);
+    let machines_after_replay = recovered
+        .cluster
+        .graph
+        .nodes_of_kind(NodeKind::Machine)
+        .len();
+    assert_eq!(
+        machines_after_replay, machines_before_replay,
+        "re-registration after restart must match, not duplicate"
+    );
 }
