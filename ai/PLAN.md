@@ -59,12 +59,13 @@ Docker/Podman (engine via ARCHON_CONTAINER_ENGINE) with lease claims mapped
 to `--cpus`/`--memory`. Same Effects/Record seam, same revoke/expiry kill.
 Proven against real Docker; test skips when no engine is reachable.
 
-### 4. Health-driven operation
+### 4. Health-driven operation — done 2026-08-21
 
-`SetNodeHealth` exists but nothing acts on it. Wire agent heartbeats → health;
-unhealthy machines stop receiving placements; live work on them gets fenced
-and re-placed per policy. Restart policies for workloads ("keep this running"
-vs run-once).
+Controller probes agents on a timer (--probe-secs); unreachable machines are
+marked unhealthy and quarantined (no new placements), live leases fail.
+`Request.keep_alive` re-queues and re-places services on survivors, capped
+at 5 restarts per request. Agent re-registration clears quarantine and
+health marks. Integration test proves the full loop.
 
 ### 5. Network and storage providers
 

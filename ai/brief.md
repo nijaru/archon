@@ -84,6 +84,10 @@ substrate to reuse.
   2+2 across machines). Requests that intentionally span machines set
   `machine_local: false`. Status probes no longer touch session
   generations.
+Health-driven operation (2026-08-21): controller probes agents
+  (--probe-secs); unreachable machines quarantine (no placements) and fail
+  their live leases; keep-alive workloads re-queue onto survivors, capped
+  restarts; re-registration clears quarantine.
 Container adapter (2026-08-21): `Request.image` runs the workload as an
   OCI container (Docker/Podman CLI, engine via ARCHON_CONTAINER_ENGINE)
   with lease claims as `--cpus`/`--memory`; same seam, same kill-on-revoke.
