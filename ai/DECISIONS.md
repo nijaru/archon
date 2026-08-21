@@ -85,6 +85,7 @@ constrain the resource, lease, or scheduler model.
 
 | Date | Decision | Rationale |
 |---|---|---|
+| 2026-08-20 | Gang is atomic commit, not a distinct queue policy | The gang property — all members or none, synchronized start — is structural: `select` is all-or-nothing per Request, one Lease commits atomically, and activation requires every Binding prepared. Queue treatment stays uniform: an unschedulable gang is a blocked head protected by backfill's shadow rule, and explicit holds use the existing reservation primitive. The `Gang` class remains a label for future policy hooks (elasticity, checkpoint/restart, goodput). Strict gang blocking or gang-specific reservations would duplicate reservations and hurt utilization. Pinned by `gang_places_atomically_or_not_at_all`. |
 | 2026-08-20 | Harden the kernel against adverse command orderings (gpt-5.6-sol review) | Root activation now requires prepared Bindings over every enforced claim plus deadline, expiry, and quarantine checks. Releasing a lease with live descendants is refused; expiry and failure cascade to descendants and fence their Bindings; sibling accounting counts whole descendant subtrees. Duplicate `OpenBinding` is state-aware (Prepare only while Preparing). Binding result commands carry the fence and are rejected on mismatch; a failed Binding fails its Lease. `SetAgentSession` and endpoint handshakes are monotonic. `ApplyGraph` validates staged state before mutating. Backfill treats an unproven shadow as unbounded (disjoint-claims jobs only). Fair-share usage always comes from the Cluster's own lease table; count-based budget charges are at least one unit. The simulator holds a failed machine's fence acks until a restarted Agent reconciles. |
 | 2026-08-20 | Backfill is EASY-style over the priority queue, shadow from lease expiry | `admit_backfill` walks the queue in admission order; a request that cannot select becomes a blocked head with shadow = earliest expiry event time at which it selects. A later request starts only if it finishes by every blocked head's shadow or claims none of that head's shadow claims — it can delay nothing. Unsatisfiable requests are dead and block nobody. The model is optimistic: renewals may push real starts later, never earlier. |
 | 2026-08-20 | A reservation is a Lease in `Reserved` state, not a second ownership type | Lease-first ownership: committed capacity with no Bindings, reusing lease expiry, release, revoke, occupancy, preemption, fair-share usage, and replay. `ReserveLease` opens root-only; `PromoteLease` moves Reserved → Preparing and re-checks graph revision and overlap before the ordinary prepare path. Reservations occupy, so lower-priority reservations preempt like running work. |
@@ -108,9 +109,8 @@ constrain the resource, lease, or scheduler model.
 
 - authority replication and global federation beyond one Cluster log;
 - static versus dynamic topology and contention edges;
-- next scheduling decision: gang-as-distinct-policy versus
-  gang-as-soft-preference (backfill and fair share shipped);
-- gang-as-distinct-policy versus gang-as-soft-preference;
-- device-level preemption/reset contracts across vendors;
+- dynamic topology, contention, and health representation;
+- provider contracts for accelerator partitioning and preemption;
 - virtual-cluster network, storage, and identity semantics;
+- device-level preemption/reset contracts across vendors;
 - security model for hostile multi-tenancy and confidential workloads.

@@ -96,9 +96,10 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
    trigger in `ai/brief.md` fires.
 2. Do not scaffold the later crate map in `research/stack.md`.
 3. Launch and commercial work (`tk-kwzc`, `tk-n8e9`) stays later.
-4. Fair share, reservations, and backfill shipped. Next scheduling decision:
-   gang-as-distinct-policy versus gang-as-soft-preference.
-5. Gang-as-distinct-policy versus gang-as-soft-preference.
+4. Fair share, reservations, and backfill shipped. Gang semantics resolved:
+   atomic commit, uniform queue treatment. No open scheduling decisions.
+5. Next sim-validatable v1 areas: data locality scoring and health-
+   influenced placement (both need bounded design decisions first).
 ## Open questions
 
 - dynamic topology, contention, and health representation;
