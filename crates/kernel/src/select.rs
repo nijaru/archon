@@ -117,7 +117,14 @@ fn select_need(
             trial.push(vec![claim.clone()]);
             if topology_holds(graph, &trial, request) {
                 let score = score_node(&ctx, &[], node)?;
-                return Ok((vec![claim], vec![format!("{node} score={score}")]));
+                let local = request.data.iter().any(|data| graph.caches(node, *data));
+                return Ok((
+                    vec![claim],
+                    vec![format!(
+                        "{node} score={score}{}",
+                        if local { " data-local" } else { "" }
+                    )],
+                ));
             }
         }
         return Err(Error::Refused {
@@ -151,7 +158,11 @@ fn select_need(
         trial.push(group);
         if topology_holds(graph, &trial, request) {
             let score = score_node(&ctx, &chosen, node)?;
-            notes.push(format!("{node} score={score}"));
+            let local = request.data.iter().any(|data| graph.caches(node, *data));
+            notes.push(format!(
+                "{node} score={score}{}",
+                if local { " data-local" } else { "" }
+            ));
             chosen.push(claim);
         }
     }
@@ -255,6 +266,13 @@ fn score_node(ctx: &ScoreCtx<'_>, chosen: &[Claim], node: NodeId) -> Result<i64,
                 .is_some_and(|item| item.attrs.get(key) == Some(value))
         {
             score += 1_000_000;
+        }
+    }
+    // Data locality: each requested object cached on this node's ancestry
+    // outranks pack/spread but not hard attribute preferences.
+    for data in &ctx.request.data {
+        if ctx.graph.caches(node, *data) {
+            score += 10_000;
         }
     }
     if ctx.memory_want > 0 {

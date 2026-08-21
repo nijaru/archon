@@ -30,6 +30,27 @@ pub struct TinyGraph {
     pub machines: Vec<MachineIds>,
 }
 
+impl TinyGraph {
+    /// Append a DataObject cached on machine `machine_index`'s NUMA node and
+    /// return its id. Call before applying the graph.
+    pub fn with_dataset(&mut self, machine_index: usize, id: u64) -> NodeId {
+        let data = NodeId::from_u64(id);
+        let numa = self.machines[machine_index].numa;
+        self.nodes.push(node(
+            data,
+            NodeKind::DataObject,
+            qty(Dimension::Bytes, 4 * GIB),
+        ));
+        self.edges.push(Edge {
+            from: data,
+            to: numa,
+            kind: EdgeKind::CachedOn,
+            attrs: Attrs::new(),
+        });
+        data
+    }
+}
+
 pub fn tiny_graph(machines: usize) -> TinyGraph {
     let mut ids = IdGen::default();
     let mut nodes = Vec::new();

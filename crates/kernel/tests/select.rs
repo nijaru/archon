@@ -52,6 +52,7 @@ fn request(class: RequestClass, needs: Vec<Need>) -> Request {
         needs,
         topology: vec![],
         preferences: vec![],
+        data: vec![],
         lifetime: 10,
         priority: 1,
     }

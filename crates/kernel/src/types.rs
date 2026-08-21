@@ -17,6 +17,7 @@ pub enum NodeKind {
     Nvme,
     Region,
     Datacenter,
+    DataObject,
 }
 
 impl NodeKind {
@@ -42,6 +43,7 @@ pub enum EdgeKind {
     SameNuma,
     SamePcie,
     Connected,
+    CachedOn,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -151,6 +153,10 @@ pub struct Request {
     pub needs: Vec<Need>,
     pub topology: Vec<TopologyConstraint>,
     pub preferences: Vec<Preference>,
+    /// Data objects the workload reads. Locality is a scoring preference:
+    /// candidates whose ancestry caches these objects rank higher, but the
+    /// request is never refused for missing locality.
+    pub data: Vec<NodeId>,
     pub lifetime: u64,
     pub priority: u32,
 }

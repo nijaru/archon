@@ -105,6 +105,15 @@ impl Graph {
         self.ancestor_of_kind(id, NodeKind::Machine)
     }
 
+    /// Whether any node in `id`'s ancestry (including itself) has a
+    /// `CachedOn` edge from `data` — i.e. the data is resident near `id`.
+    pub fn caches(&self, id: NodeId, data: NodeId) -> bool {
+        self.has_edge(data, id, EdgeKind::CachedOn)
+            || self.ancestors(id).into_iter().any(|ancestor| {
+                self.has_edge(data, ancestor, EdgeKind::CachedOn)
+            })
+    }
+
     pub fn related(&self, left: NodeId, right: NodeId, kind: EdgeKind) -> bool {
         match kind {
             EdgeKind::Contains => {
@@ -119,6 +128,7 @@ impl Graph {
                     || self.has_edge(left, right, EdgeKind::SamePcie)
             }
             EdgeKind::Connected => self.has_edge(left, right, EdgeKind::Connected),
+            EdgeKind::CachedOn => self.has_edge(left, right, EdgeKind::CachedOn),
         }
     }
 

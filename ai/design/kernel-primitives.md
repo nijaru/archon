@@ -148,7 +148,7 @@ Node
 Edge
   from
   to
-  kind         Contains | SameNuma | SamePcie | Connected
+  kind         Contains | SameNuma | SamePcie | Connected | CachedOn
   attrs        bandwidth, latency, or other edge data
 ```
 
@@ -162,9 +162,11 @@ PcieRoot, Gpu, Nic, Nvme
 Region and Datacenter are valid kinds when a Graph needs them. They are not
 required for the first synthetic 3–10 machine Graphs.
 
-Not v0 kinds: `Cell`, `AcceleratorPartition`, `DataObject`, `Switch`, `Fabric`,
+Not v0 kinds: `Cell`, `AcceleratorPartition`, `Switch`, `Fabric`,
 `StoragePool`, `CXLDevice`. Later kinds extend this enum. They do not add a
-second vertex type.
+second vertex type. `DataObject` joined as a v1 kind with the `CachedOn`
+edge: a data artifact cached near a NUMA node, used only as a placement
+preference, never claimed or enforced.
 
 A machine Node contains sockets, memory, devices, and local storage. An Agent
 runs on a machine Node. A GPU Node is not a machine and does not run an Agent.
@@ -205,6 +207,7 @@ Request
   needs         list of Need
   topology      required Edge relationships among selected Nodes
   preferences   Pack | Spread | PreferAttr; scoring only, never a hard filter
+  data          data objects the workload reads; locality is scoring only
   lifetime
   priority
 ```
