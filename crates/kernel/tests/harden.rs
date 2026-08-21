@@ -1,6 +1,6 @@
 use fleet_kernel::{
-    BindingId, Cluster, Command, Dimension, Error, LeaseId, LeaseState, Need, NodeId, NodeKind,
-    OwnerId, ProviderId, Quantity, Request, RequestClass, RequestId, qty,
+    BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, LeaseState, Need, NodeId,
+    NodeKind, OwnerId, ProviderId, Quantity, Request, RequestClass, RequestId, qty,
 };
 
 fn node(id: u64, kind: NodeKind, capacity: Quantity) -> fleet_kernel::Node {
@@ -447,13 +447,14 @@ fn stale_agent_hello_cannot_reinstate_an_old_session() {
         })
         .unwrap_err();
     assert!(matches!(err, Error::StaleSession { expected: 2, got: 1 }));
-    let err = cluster
+    // An equal-session retransmission is idempotent and re-emits reconcile.
+    let effects = cluster
         .apply(Command::SetAgentSession {
             machine: NodeId::from_u64(1),
             session: 2,
         })
-        .unwrap_err();
-    assert!(matches!(err, Error::StaleSession { expected: 2, got: 2 }));
+        .unwrap();
+    assert!(matches!(effects.as_slice(), [Effect::Reconcile { .. }]));
 }
 
 #[test]
@@ -692,4 +693,203 @@ fn duplicate_node_claims_are_rejected() {
         })
         .unwrap_err();
     assert!(matches!(err, Error::DuplicateClaim { .. }));
+}
+
+#[test]
+fn rejected_expiry_leaves_descendants_and_log_untouched() {
+    let mut cluster = graph();
+    active_root(&mut cluster, 1, 2, 1);
+    open(&mut cluster, 2, 2, Some(1), 1_000);
+    cluster
+        .apply(Command::ActivateLease {
+            lease: LeaseId::from_u64(2),
+        })
+        .unwrap();
+    let before = cluster.digest();
+    // Parent not yet due: the command is refused and mutates nothing.
+    let err = cluster
+        .apply(Command::ExpireLease {
+            lease: LeaseId::from_u64(1),
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::ExpireNotDue));
+    assert_eq!(cluster.digest(), before);
+    assert!(matches!(
+        cluster.leases[&LeaseId::from_u64(2)].state,
+        LeaseState::Active
+    ));
+}
+
+#[test]
+fn partial_memory_roots_sum_instead_of_taking_the_max() {
+    let mut cluster = Cluster::new();
+    cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![
+                node(1, NodeKind::Machine, Quantity::new()),
+                node(2, NodeKind::Memory, qty(Dimension::Bytes, 100)),
+            ],
+            edges: vec![fleet_kernel::Edge {
+                from: NodeId::from_u64(1),
+                to: NodeId::from_u64(2),
+                kind: fleet_kernel::EdgeKind::Contains,
+                attrs: Default::default(),
+            }],
+        })
+        .unwrap();
+    cluster
+        .apply(Command::SetAgentSession {
+            machine: NodeId::from_u64(1),
+            session: 1,
+        })
+        .unwrap();
+    for lease in 1..=2 {
+        cluster
+            .apply(Command::OpenLease {
+                lease: LeaseId::from_u64(lease),
+                owner: OwnerId::from_u64(lease),
+                allocation: fleet_kernel::Allocation {
+                    claims: vec![fleet_kernel::Claim {
+                        node: NodeId::from_u64(2),
+                        quantity: qty(Dimension::Bytes, 40),
+                    }],
+                    graph_revision: cluster.graph.revision,
+                    explanation: "mem".into(),
+                },
+                parent: None,
+                expires_at: 1_000,
+                prepare_deadline: 1_000,
+                priority: 1,
+            })
+            .unwrap();
+    }
+    // 40 + 40 used of 100: a third 40-byte root cannot open.
+    let err = cluster
+        .apply(Command::OpenLease {
+            lease: LeaseId::from_u64(3),
+            owner: OwnerId::from_u64(3),
+            allocation: fleet_kernel::Allocation {
+                claims: vec![fleet_kernel::Claim {
+                    node: NodeId::from_u64(2),
+                    quantity: qty(Dimension::Bytes, 40),
+                }],
+                graph_revision: cluster.graph.revision,
+                explanation: "mem".into(),
+            },
+            parent: None,
+            expires_at: 1_000,
+            prepare_deadline: 1_000,
+            priority: 1,
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::Overlap { .. }));
+    // And shrinking capacity below the 80 occupied bytes is refused.
+    let err = cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![node(2, NodeKind::Memory, qty(Dimension::Bytes, 50))],
+            edges: vec![],
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::CapacityBelowOccupancy { .. }));
+}
+
+#[test]
+fn promotion_survives_unrelated_graph_updates() {
+    let mut cluster = graph();
+    let allocation = cpu_claim(&cluster, 2);
+    cluster
+        .apply(Command::ReserveLease {
+            lease: LeaseId::from_u64(1),
+            owner: OwnerId::from_u64(1),
+            allocation,
+            expires_at: 1_000,
+            priority: 1,
+        })
+        .unwrap();
+    // An unrelated additive update advances the revision.
+    cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![node(9, NodeKind::Nvme, qty(Dimension::Count, 1))],
+            edges: vec![],
+        })
+        .unwrap();
+    cluster
+        .apply(Command::PromoteLease {
+            lease: LeaseId::from_u64(1),
+            prepare_deadline: 1_000,
+        })
+        .unwrap();
+    assert!(matches!(
+        cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Preparing
+    ));
+    assert_eq!(
+        cluster.leases[&LeaseId::from_u64(1)]
+            .allocation
+            .graph_revision,
+        cluster.graph.revision
+    );
+}
+
+#[test]
+fn data_objects_cannot_be_claimed() {
+    let mut cluster = graph();
+    cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![node(
+                7,
+                NodeKind::DataObject,
+                qty(Dimension::Bytes, 1 << 30),
+            )],
+            edges: vec![],
+        })
+        .unwrap();
+    let err = cluster
+        .apply(Command::OpenLease {
+            lease: LeaseId::from_u64(1),
+            owner: OwnerId::from_u64(1),
+            allocation: fleet_kernel::Allocation {
+                claims: vec![fleet_kernel::Claim {
+                    node: NodeId::from_u64(7),
+                    quantity: qty(Dimension::Bytes, 1 << 30),
+                }],
+                graph_revision: cluster.graph.revision,
+                explanation: "data".into(),
+            },
+            parent: None,
+            expires_at: 1_000,
+            prepare_deadline: 1_000,
+            priority: 1,
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::UnclaimableNode { .. }));
+}
+
+#[test]
+fn digest_distinguishes_capacity_and_edge_changes() {
+    let mut cluster = graph();
+    let before = cluster.digest();
+    cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![node(2, NodeKind::Cpu, qty(Dimension::Count, 8))],
+            edges: vec![],
+        })
+        .unwrap();
+    assert_ne!(cluster.digest(), before, "capacity change must show");
+    let after_capacity = cluster.digest();
+    cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![],
+            edges: vec![fleet_kernel::Edge {
+                from: NodeId::from_u64(2),
+                to: NodeId::from_u64(3),
+                kind: fleet_kernel::EdgeKind::SameNuma,
+                attrs: Default::default(),
+            }],
+        })
+        .unwrap();
+    assert_ne!(
+        cluster.digest(), after_capacity,
+        "edge change must show"
+    );
 }

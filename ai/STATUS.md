@@ -86,7 +86,14 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 - Follow-up design passes fixed: topology validated as a forest, root-only
   Bindings, non-revision health (`SetNodeHealth`), capacity-shrink refusal,
   preparing-lease expiry, duplicate-claim rejection, `Queued` type
-  unification, and fair-share-carrying backfill. 78 tests pass.
+  unification, and fair-share-carrying backfill.
+- A second gpt-5.6-sol review verified the fixes and found ten more issues;
+  all fixed and pinned: expiry validation before mutation, summed root
+  occupancy, direct-child subtree accounting, fencing-aware backfill
+  shadows, quarantine-blocked heads, promotion revalidation against the
+  current graph, owner-carrying Admission, edge attr updates, digest
+  capacity/edge coverage, bounded scoring tiers, idempotent equal-session
+  handshakes, and unclaimable DataObjects. 85 tests pass.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.

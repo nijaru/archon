@@ -60,6 +60,9 @@ pub fn resolve_claim(graph: &Graph, claim: &Claim) -> Result<Claim, Error> {
     let node = graph
         .node(claim.node)
         .ok_or(Error::UnknownNode(claim.node))?;
+    if node.kind == crate::types::NodeKind::DataObject {
+        return Err(Error::UnclaimableNode { node: claim.node });
+    }
     let quantity = if claim.quantity.is_empty() {
         node.capacity.clone()
     } else {
@@ -116,17 +119,17 @@ pub fn occupancy_from_leases<'a>(
             continue;
         }
         for (node, quantity) in claims_by_node(&lease.allocation.claims) {
-            let entry = used.entry(node).or_default();
-            *entry = quantity_max(entry, &quantity);
+            // Independent root trees hold disjoint units, so their claims sum.
+            quantity_add_assign(used.entry(node).or_default(), &quantity);
         }
     }
     Occupancy { used }
 }
 
-/// Occupancy of every live lease strictly inside `parent`'s subtree except
-/// `except`. Descendants of an intermediate child hold real capacity even
-/// when that child itself no longer occupies, so they must count against the
-/// parent's claims when a new sibling opens.
+/// Occupancy of the live direct children of `parent` except `except`. Child
+/// claims are always subsets of their parent's claims, so grandchildren add
+/// nothing beyond their own parent and counting only direct children charges
+/// each delegation lineage exactly once.
 pub fn subtree_used(
     leases: &BTreeMap<LeaseId, Lease>,
     open_binding_leases: &BTreeSet<LeaseId>,
@@ -135,7 +138,7 @@ pub fn subtree_used(
 ) -> Occupancy {
     let mut used = BTreeMap::new();
     for lease in leases.values() {
-        if lease.id == except || !within_subtree(leases, lease.id, parent) {
+        if lease.id == except || lease.parent != Some(parent) {
             continue;
         }
         if !lease_occupies(lease, open_binding_leases.contains(&lease.id)) {
@@ -146,21 +149,6 @@ pub fn subtree_used(
         }
     }
     Occupancy { used }
-}
-
-fn within_subtree(
-    leases: &BTreeMap<LeaseId, Lease>,
-    mut current: LeaseId,
-    root: LeaseId,
-) -> bool {
-    while let Some(lease) = leases.get(&current) {
-        match lease.parent {
-            Some(parent) if parent == root => return true,
-            Some(parent) => current = parent,
-            None => return false,
-        }
-    }
-    false
 }
 
 pub fn claim_fits(capacity: &Quantity, used: &Quantity, claim: &Quantity) -> bool {

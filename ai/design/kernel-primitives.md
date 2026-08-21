@@ -457,7 +457,6 @@ Not in this kernel contract:
 
 - dynamic contention or health edges as authority;
 - shared capacity and accelerator partitions;
-- data objects and cache edges;
 - virtual-cluster network, storage, and identity;
 - consensus implementation and crate layout;
 - runtime, device, network, and storage providers.

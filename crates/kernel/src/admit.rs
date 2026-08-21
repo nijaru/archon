@@ -15,6 +15,7 @@ use crate::types::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Admission {
     pub request: Request,
+    pub owner: OwnerId,
     pub allocation: Allocation,
 }
 
@@ -73,6 +74,7 @@ pub fn admit_fair(
         if let Ok(allocation) = select(graph, occupancy, &queued.request, quarantine) {
             return Some(Admission {
                 request: queued.request.clone(),
+                owner: queued.owner,
                 allocation,
             });
         }
@@ -208,12 +210,25 @@ pub fn admit_backfill(
                 if safe {
                     return Some(Admission {
                         request: queued.request.clone(),
+                        owner: queued.owner,
                         allocation,
                     });
                 }
             }
             Err(_) => {
-                if let Some(head) = shadow_head(
+                // A request the cluster could satisfy but for quarantine is
+                // temporarily blocked: no proven release time exists, so
+                // only claim-disjoint jobs may backfill past it.
+                if let Ok(allocation) =
+                    select(graph, occupancy, &queued.request, &BTreeSet::new())
+                {
+                    blocked.push(BlockedHead {
+                        shadow: None,
+                        shadow_claims: claims_by_node(&allocation.claims)
+                            .into_keys()
+                            .collect(),
+                    });
+                } else if let Some(head) = shadow_head(
                     graph,
                     quarantine,
                     leases,
@@ -251,9 +266,19 @@ fn shadow_head(
         .map(|lease| lease.expires_at)
         .collect();
     for shadow in times {
+        // Only live leases free at expiry: a terminal lease occupying through
+        // open Bindings frees on fence acknowledgement, which has no
+        // provable time, so it stays in every projection.
         let except: BTreeSet<LeaseId> = leases
             .values()
-            .filter(|lease| occupying(lease, open_bindings) && lease.expires_at <= shadow)
+            .filter(|lease| {
+                matches!(
+                    lease.state,
+                    crate::types::LeaseState::Reserved
+                        | crate::types::LeaseState::Preparing
+                        | crate::types::LeaseState::Active
+                ) && lease.expires_at <= shadow
+            })
             .map(|lease| lease.id)
             .collect();
         let projected = occupancy_from_leases(leases.values(), open_bindings, &except);
@@ -264,9 +289,10 @@ fn shadow_head(
             });
         }
     }
-    // Last chance: the request may fit only once every expiring lease is
-    // gone (e.g. capacity held by an overdue, not-yet-fenced lease). No
-    // finite release time is proven, so treat the shadow as unbounded.
+    // Last chance: the request may fit only once every occupying lease is
+    // fenced and gone (e.g. capacity held by an overdue, not-yet-fenced
+    // lease). Fence acknowledgement has no provable time, so treat the
+    // shadow as unbounded.
     let all: BTreeSet<LeaseId> = leases
         .values()
         .filter(|lease| occupying(lease, open_bindings))

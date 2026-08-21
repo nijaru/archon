@@ -39,6 +39,18 @@ impl Graph {
                 existing.from == edge.from && existing.to == edge.to && existing.kind == edge.kind
             }) {
                 staged_edges.push(edge);
+            } else {
+                // Same-tuple edges update attributes in place; topology
+                // shape is unchanged, so the forest check below still sees
+                // one edge per tuple.
+                for existing in staged_edges.iter_mut() {
+                    if existing.from == edge.from
+                        && existing.to == edge.to
+                        && existing.kind == edge.kind
+                    {
+                        existing.attrs = edge.attrs.clone();
+                    }
+                }
             }
         }
         validate_contains(&staged_edges)?;

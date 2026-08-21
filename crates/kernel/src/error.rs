@@ -73,6 +73,9 @@ pub enum Error {
     DuplicateClaim {
         node: NodeId,
     },
+    UnclaimableNode {
+        node: NodeId,
+    },
     ChildBindingRefused {
         lease: LeaseId,
     },
@@ -144,6 +147,9 @@ impl fmt::Display for Error {
             }
             Self::DuplicateClaim { node } => {
                 write!(f, "allocation claims node {node} more than once")
+            }
+            Self::UnclaimableNode { node } => {
+                write!(f, "node {node} is not a claimable resource")
             }
             Self::ChildBindingRefused { lease } => {
                 write!(

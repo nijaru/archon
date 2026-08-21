@@ -194,3 +194,37 @@ fn backfilled_lease_expires_before_shadow_and_frees_capacity() {
     );
     assert_eq!(world.queue.len(), 1);
 }
+
+#[test]
+fn quarantine_blocked_head_still_protects_capacity() {
+    let mut world = boot();
+    let graph_machines: Vec<_> = world
+        .cluster
+        .graph
+        .nodes_of_kind(NodeKind::Machine)
+        .to_vec();
+    // Quarantine one machine: its GPU and CPUs are hard-filtered.
+    world
+        .apply(fleet_kernel::Command::QuarantineNode { node: graph_machines[0] })
+        .unwrap();
+    // Head needs both GPUs; one is behind quarantine, so it cannot select —
+    // but quarantine is temporary, so the head must not be treated as dead.
+    world.enqueue(request(1, NodeKind::Gpu, 2, 100, 100), OwnerId::from_u64(1));
+    // A long GPU job claims the free GPU: it must wait, because it would
+    // delay the head once the machine unquarantines.
+    world.enqueue(request(2, NodeKind::Gpu, 1, 5_000, 1), OwnerId::from_u64(2));
+    assert!(
+        world
+            .admit_next_backfill(LeaseId::from_u64(2), OwnerId::from_u64(2))
+            .unwrap()
+            .is_none()
+    );
+    // Unquarantine: the head places immediately, unobstructed.
+    world
+        .apply(fleet_kernel::Command::UnquarantineNode { node: graph_machines[0] })
+        .unwrap();
+    assert_eq!(
+        world.admit_next_backfill(LeaseId::from_u64(1), OwnerId::from_u64(1)).unwrap(),
+        Some(fleet_kernel::RequestId::from_u64(1))
+    );
+}

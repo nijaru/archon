@@ -35,7 +35,8 @@ pub struct Digest {
     pub now: u64,
     pub agreed: bool,
     pub graph_revision: u64,
-    pub graph_nodes: BTreeMap<NodeId, (crate::types::NodeKind, crate::types::Attrs)>,
+    pub graph_nodes: BTreeMap<NodeId, (crate::types::NodeKind, Quantity, crate::types::Attrs)>,
+    pub graph_edges: Vec<(NodeId, NodeId, crate::types::EdgeKind)>,
     pub leases: BTreeMap<LeaseId, LeaseDigest>,
     pub bindings: BTreeMap<BindingId, BindingDigest>,
     pub sessions: BTreeMap<NodeId, u64>,
@@ -118,7 +119,13 @@ impl Cluster {
             graph_nodes: self
                 .graph
                 .nodes()
-                .map(|node| (node.id, (node.kind, node.attrs.clone())))
+                .map(|node| (node.id, (node.kind, node.capacity.clone(), node.attrs.clone())))
+                .collect(),
+            graph_edges: self
+                .graph
+                .edges()
+                .iter()
+                .map(|edge| (edge.from, edge.to, edge.kind))
                 .collect(),
             leases: self
                 .leases
@@ -464,13 +471,15 @@ impl Cluster {
                 state: lease.state,
             });
         }
-        if lease.allocation.graph_revision != self.graph.revision {
-            return Err(Error::StaleGraphRevision {
-                current: self.graph.revision,
-                got: lease.allocation.graph_revision,
-            });
-        }
-        let claims = lease.allocation.claims.clone();
+        // Revalidate the committed claims against the CURRENT graph: any
+        // ApplyGraph advances the revision, and an unrelated update must not
+        // strand a reservation that still fits.
+        let claims: Vec<crate::types::Claim> = lease
+            .allocation
+            .claims
+            .iter()
+            .map(|claim| resolve_claim(&self.graph, claim))
+            .collect::<Result<_, _>>()?;
         for claim in &claims {
             if self.node_quarantined(claim.node) {
                 return Err(Error::Quarantined(claim.node));
@@ -487,7 +496,10 @@ impl Cluster {
                 return Err(Error::Overlap { node: claim.node });
             }
         }
+        let revision = self.graph.revision;
         if let Some(lease) = self.leases.get_mut(&id) {
+            lease.allocation.claims = claims;
+            lease.allocation.graph_revision = revision;
             lease.state = LeaseState::Preparing;
             lease.prepare_deadline = prepare_deadline;
         }
@@ -789,6 +801,27 @@ impl Cluster {
 
     fn expire_lease(&mut self, id: LeaseId) -> Result<Vec<Effect>, Error> {
         let now = self.now;
+        // Validate the parent completely before touching descendants: a
+        // rejected expiry must mutate nothing and stay replay-consistent.
+        let (state, expires_at) = {
+            let lease = self.leases.get(&id).ok_or(Error::UnknownLease(id))?;
+            (lease.state, lease.expires_at)
+        };
+        if state == LeaseState::Expired {
+            return Ok(self.fence_effects(id));
+        }
+        if !matches!(
+            state,
+            LeaseState::Preparing | LeaseState::Active | LeaseState::Reserved
+        ) {
+            return Err(Error::LeaseState {
+                lease: id,
+                state,
+            });
+        }
+        if now < expires_at {
+            return Err(Error::ExpireNotDue);
+        }
         let mut effects = Vec::new();
         // Expiry terminates the parent's authority, so live descendants expire
         // with it and their Bindings fence, mirroring revocation.
@@ -807,22 +840,6 @@ impl Cluster {
             effects.extend(self.fence_effects(descendant));
         }
         let lease = self.leases.get_mut(&id).ok_or(Error::UnknownLease(id))?;
-        if lease.state == LeaseState::Expired {
-            effects.extend(self.fence_effects(id));
-            return Ok(effects);
-        }
-        if !matches!(
-            lease.state,
-            LeaseState::Preparing | LeaseState::Active | LeaseState::Reserved
-        ) {
-            return Err(Error::LeaseState {
-                lease: id,
-                state: lease.state,
-            });
-        }
-        if now < lease.expires_at {
-            return Err(Error::ExpireNotDue);
-        }
         lease.state = LeaseState::Expired;
         effects.extend(self.fence_effects(id));
         Ok(effects)
@@ -1193,14 +1210,23 @@ impl Cluster {
             return Err(Error::Invalid("agent session requires a machine node"));
         }
         // Sessions are process generations: a delayed hello from an older
-        // Agent process must never reinstate it as current.
-        if let Some(&current) = self.sessions.get(&machine)
-            && session <= current
-        {
-            return Err(Error::StaleSession {
-                expected: current,
-                got: session,
-            });
+        // Agent process must never reinstate it as current. An equal session
+        // is a retransmission: idempotent, but re-emit reconciliation so a
+        // lost response can be recovered.
+        if let Some(&current) = self.sessions.get(&machine) {
+            if session < current {
+                return Err(Error::StaleSession {
+                    expected: current,
+                    got: session,
+                });
+            }
+            self.sessions.insert(machine, session);
+            return Ok(vec![Effect::Reconcile {
+                machine,
+                session,
+                epoch: self.epoch,
+                bindings: self.live_machine_bindings(machine),
+            }]);
         }
         self.sessions.insert(machine, session);
         Ok(vec![Effect::Reconcile {

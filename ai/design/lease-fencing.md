@@ -28,7 +28,7 @@ ack, or the Node is quarantined.
 
 A Lease occupies its claims when:
 
-- its state is `Preparing` or `Active`; or
+- its state is `Reserved`, `Preparing`, or `Active`; or
 - its state is `Released`, `Expired`, `Revoked`, or `Failed` and any Binding
   is not yet `Released` or `Fenced`.
 
@@ -111,9 +111,10 @@ If `Release` times out or the endpoint is unreachable, escalate to `Fence`.
 `FailBinding` is a Cluster reason record. The endpoint action on a failed or
 uncertain Binding is `Fence`.
 
-Revoking a parent fences child Leases first, then the parent. A child Lease
-may have its own Bindings. A child with no Bindings is only a claim record;
-revoking it does not free parent claims.
+Revoking a parent fences child Leases first, then the parent. Only root
+Leases hold Bindings: one endpoint per `(provider, node)` cannot hold two
+Leases' enforcement, so children are claim records enforced through their
+parent's Bindings.
 
 ## Messages
 
@@ -193,7 +194,7 @@ Never reuse exclusive claims because a deadline passed or a message was lost.
 
 ```text
 RenewLease
-  require Active
+  require Active or Reserved
   require new_expires_at > lease.expires_at
   require new_expires_at > Cluster.now
   write expires_at

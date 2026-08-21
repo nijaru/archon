@@ -190,6 +190,11 @@ fn candidates(
     need: &Need,
     quarantine: &BTreeSet<NodeId>,
 ) -> Result<Vec<NodeId>, Error> {
+    if need.kind == NodeKind::DataObject {
+        return Err(Error::Refused {
+            explanation: "data objects are locality hints, not claimable resources".into(),
+        });
+    }
     let mut out = Vec::new();
     for id in graph.nodes_of_kind(need.kind) {
         let node = graph.node(*id).ok_or(Error::UnknownNode(*id))?;
@@ -279,8 +284,9 @@ fn score_node(ctx: &ScoreCtx<'_>, chosen: &[Claim], node: NodeId) -> Result<i64,
         }
     }
     // Data locality: each requested object cached on this node's ancestry
-    // outranks pack/spread but not hard attribute preferences.
-    for data in &ctx.request.data {
+    // outranks pack/spread but not hard attribute preferences. Duplicate
+    // data ids count once.
+    for data in ctx.request.data.iter().collect::<BTreeSet<_>>() {
         if ctx.graph.caches(node, *data) {
             score += 10_000;
         }
@@ -291,12 +297,15 @@ fn score_node(ctx: &ScoreCtx<'_>, chosen: &[Claim], node: NodeId) -> Result<i64,
         score -= 20_000;
     }
     if ctx.memory_want > 0 {
-        let leftover = quantity_get(&ctx.occupancy.remaining(ctx.graph, node)?, Dimension::Bytes)
+        // Bounded so fragmentation preference stays below the locality and
+        // health tiers regardless of node size.
+        let leftover = (quantity_get(&ctx.occupancy.remaining(ctx.graph, node)?, Dimension::Bytes)
             .saturating_sub(ctx.memory_want)
-            / (1 << 20);
+            / (1 << 20))
+            .min(4_000) as i64;
         match ctx.mode {
-            PackMode::Pack => score -= leftover as i64,
-            PackMode::Spread => score += leftover as i64,
+            PackMode::Pack => score -= leftover,
+            PackMode::Spread => score += leftover,
         }
     }
     Ok(score)
