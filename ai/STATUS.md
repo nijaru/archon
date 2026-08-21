@@ -111,6 +111,9 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 - Remote agent protocol: controller and agent are separable processes over
   TCP (length-prefixed JSON); cross-machine lease execution proven
   (Mac controller → pacabot-ams agent, cgroup-enforced).
+- Multi-node: dial-in agents register into one cluster graph; Effects
+  route per binding's machine; agent restart reconciles (rebind session +
+  respawn live work). Verified loopback: serve --no-local + two agents.
 - Control plane: `archon serve` — persistent JSONL command log, replay-based
   recovery (revokes live work, never re-executes), TCP API server, CLI.
   Crash-restart proven on loopback. 95 tests; clippy clean.

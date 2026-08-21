@@ -70,7 +70,17 @@ substrate to reuse.
   Mac controller ran and revoked a process on pacabot-ams inside a cgroup.
   Known gap: spawn happens before cgroup attach (brief escape window);
   fix with clone3-into-cgroup when the runtime seam is next touched.
-- **Control plane (2026-08-21): cluster state outlives processes.**
+- **Multi-node scheduling (2026-08-21): one control plane, many machines.**
+  Agents dial in (`archon agent --register ADDR`), announce their machine,
+  and join the cluster graph; Effects route to the agent owning the
+  binding's node via `graph.machine_of`. Reconnection is reconciliation:
+  same-name re-registration bumps the session, the kernel's Reconcile
+  effect lists live bindings, the controller rebinds + re-drives
+  ActivateBinding, respawning work on the fresh agent. Unroutable effects
+  are dropped honestly (dead agent holds no processes). `--no-local` gives
+  a pure control plane. Known limits: machine identity is the reported
+  hostname (`--name` overrides; same-name agents flap by design — stable
+  agent identity is future work); no auth/TLS yet.
   `crates/control` (the `archon` binary): every applied command is appended to a JSONL
   log (kernel serde is an opt-in feature; the kernel stays dep-free);
   restart replays the log exactly and revokes live leases instead of
