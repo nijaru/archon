@@ -16,6 +16,12 @@ fn boot() -> World {
 }
 
 fn gpu_request(id: u64, count: u64, priority: u32) -> Request {
+    // 2-GPU requests span the two 1-GPU machines by design.
+    let machine_local = count <= 1;
+    gpu_request_local(id, count, priority, machine_local)
+}
+
+fn gpu_request_local(id: u64, count: u64, priority: u32, machine_local: bool) -> Request {
     Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
@@ -28,6 +34,7 @@ fn gpu_request(id: u64, count: u64, priority: u32) -> Request {
         preferences: vec![],
         data: vec![],
         command: vec![],
+        machine_local,
         lifetime: 100,
         priority,
     }

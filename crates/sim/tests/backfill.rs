@@ -16,6 +16,18 @@ fn boot() -> World {
 }
 
 fn request(id: u64, kind: NodeKind, count: u64, lifetime: u64, priority: u32) -> Request {
+    spread_request(id, kind, count, lifetime, priority, false)
+}
+
+/// `spread = false` keeps the need's claims on one machine.
+fn spread_request(
+    id: u64,
+    kind: NodeKind,
+    count: u64,
+    lifetime: u64,
+    priority: u32,
+    machine_local: bool,
+) -> Request {
     Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
@@ -30,6 +42,7 @@ fn request(id: u64, kind: NodeKind, count: u64, lifetime: u64, priority: u32) ->
         command: vec![],
         lifetime,
         priority,
+        machine_local,
     }
 }
 
@@ -57,7 +70,10 @@ fn backfill_starts_job_that_finishes_before_shadow() {
     let mut world = boot();
     hold_gpu(&mut world, 1, 1_000);
     // Head wants both GPUs; the held one frees at 1_000.
-    world.enqueue(request(2, NodeKind::Gpu, 2, 100, 100), OwnerId::from_u64(2));
+    world.enqueue(
+        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        OwnerId::from_u64(2),
+    );
     // Low-priority job needs one GPU and finishes at 11, long before 1_000.
     world.enqueue(request(3, NodeKind::Gpu, 1, 10, 1), OwnerId::from_u64(3));
     assert_eq!(
@@ -74,7 +90,10 @@ fn backfill_starts_job_that_finishes_before_shadow() {
 fn backfill_skips_job_that_would_delay_the_head() {
     let mut world = boot();
     hold_gpu(&mut world, 1, 1_000);
-    world.enqueue(request(2, NodeKind::Gpu, 2, 100, 100), OwnerId::from_u64(2));
+    world.enqueue(
+        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        OwnerId::from_u64(2),
+    );
     // Long GPU job finishes at 5_001, after the head's shadow, and claims a
     // GPU the head would take: it must wait.
     world.enqueue(request(3, NodeKind::Gpu, 1, 5_000, 1), OwnerId::from_u64(3));
@@ -100,7 +119,10 @@ fn backfill_skips_job_that_would_delay_the_head() {
 fn non_conflicting_job_backfills_past_the_shadow() {
     let mut world = boot();
     hold_gpu(&mut world, 1, 1_000);
-    world.enqueue(request(2, NodeKind::Gpu, 2, 100, 100), OwnerId::from_u64(2));
+    world.enqueue(
+        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        OwnerId::from_u64(2),
+    );
     // CPU-only job never claims a node the GPU head would take.
     world.enqueue(request(3, NodeKind::Cpu, 1, 5_000, 1), OwnerId::from_u64(3));
     assert_eq!(
@@ -136,7 +158,10 @@ fn reservation_expiry_feeds_the_shadow() {
             50,
         )
         .unwrap();
-    world.enqueue(request(2, NodeKind::Gpu, 2, 100, 100), OwnerId::from_u64(2));
+    world.enqueue(
+        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        OwnerId::from_u64(2),
+    );
     // Finishes at 101, past the reservation shadow of 50, on a claimed GPU.
     world.enqueue(request(3, NodeKind::Gpu, 1, 100, 1), OwnerId::from_u64(3));
     assert!(
@@ -164,7 +189,10 @@ fn unproven_shadow_admits_only_disjoint_jobs() {
     world.release_lease(LeaseId::from_u64(1)).unwrap();
 
     // Head needs both GPUs; capacity frees only when the fence ack lands.
-    world.enqueue(request(2, NodeKind::Gpu, 2, 100, 100), OwnerId::from_u64(2));
+    world.enqueue(
+        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        OwnerId::from_u64(2),
+    );
     // A long GPU job claims a node the head would take: must wait even though
     // the stale occupancy looks overdue.
     world.enqueue(request(3, NodeKind::Gpu, 1, 5_000, 1), OwnerId::from_u64(3));
@@ -188,7 +216,10 @@ fn unproven_shadow_admits_only_disjoint_jobs() {
 fn backfilled_lease_expires_before_shadow_and_frees_capacity() {
     let mut world = boot();
     hold_gpu(&mut world, 1, 1_000);
-    world.enqueue(request(2, NodeKind::Gpu, 2, 100, 100), OwnerId::from_u64(2));
+    world.enqueue(
+        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        OwnerId::from_u64(2),
+    );
     world.enqueue(request(3, NodeKind::Gpu, 1, 10, 1), OwnerId::from_u64(3));
     let admitted = world
         .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))

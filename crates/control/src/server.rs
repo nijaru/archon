@@ -267,6 +267,7 @@ impl ControlPlane {
             command: command.clone(),
             lifetime: lifetime_secs.max(1),
             priority: 1,
+            machine_local: true,
         };
         self.service
             .submit(request, OwnerId::from_u64(owner), command);

@@ -174,6 +174,11 @@ pub struct Request {
     pub command: Vec<String>,
     pub lifetime: u64,
     pub priority: u32,
+    /// Whether one need's claims must share a single machine. True (the
+    /// default) fits process/container workloads that cannot span hosts;
+    /// false allows a need's claims to spread across machines for explicit
+    /// multi-member groups.
+    pub machine_local: bool,
 }
 
 /// A queued request carries the owner that submitted it and the submit time,

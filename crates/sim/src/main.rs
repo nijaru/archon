@@ -34,6 +34,7 @@ fn main() {
         preferences: vec![],
         data: vec![],
         command: vec![],
+        machine_local: true,
         lifetime: 100,
         priority: 10,
     };

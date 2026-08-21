@@ -47,6 +47,7 @@ fn request(id: u64, command: Vec<String>) -> Request {
         command: command.clone(),
         lifetime: 3_600,
         priority: 1,
+        machine_local: true,
     }
 }
 
@@ -94,15 +95,18 @@ fn stale_sessions_are_rejected_by_the_agent() {
     use archon_node::protocol::{AgentRequest, AgentResponse};
 
     let mut agent = LeaseAgent::new(ProcessRuntime::new());
-    // Session 2 is accepted and becomes the current generation.
-    let response = agent.handle(AgentRequest::Status {
-        lease: 1,
-        session: 2,
-    });
-    assert!(matches!(response, AgentResponse::Running { .. }));
-    // An older generation is refused.
+    // Session 2 arrives on a mutating request and becomes the current
+    // generation.
     let response = agent.handle(AgentRequest::Prepare {
         binding: 1,
+        lease: 1,
+        session: 2,
+        fence: 1,
+    });
+    assert!(matches!(response, AgentResponse::Prepared { .. }));
+    // An older generation is refused.
+    let response = agent.handle(AgentRequest::Prepare {
+        binding: 2,
         lease: 1,
         session: 1,
         fence: 1,

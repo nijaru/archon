@@ -28,6 +28,7 @@ fn gpu_request(id: u64, priority: u32) -> Request {
         preferences: vec![],
         data: vec![],
         command: vec![],
+        machine_local: true,
         lifetime: 100,
         priority,
     }

@@ -32,15 +32,10 @@ impl LeaseAgent {
             AgentRequest::Register { .. } => {
                 self.failed_none("Register is not handled by an agent")
             }
-            AgentRequest::Status { lease, session } => {
-                if self.check_session(session) {
-                    return self.failed_none(&format!("stale session {session}"));
-                }
-                AgentResponse::Running {
-                    lease,
-                    running: self.runtime.is_running(LeaseId::from_u64(lease)),
-                }
-            }
+            AgentRequest::Status { lease } => AgentResponse::Running {
+                lease,
+                running: self.runtime.is_running(LeaseId::from_u64(lease)),
+            },
             AgentRequest::Prepare {
                 binding,
                 lease,

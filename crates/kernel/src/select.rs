@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Error;
 use crate::graph::Graph;
@@ -140,9 +140,10 @@ fn select_need(
         });
     }
 
+    // A need's claims are machine-local by default: one workload's compute
+    // cannot span hosts. Requests with machine_local=false (explicit
+    // multi-member groups) may spread across machines as before.
     let count = quantity_get(&need.quantity, Dimension::Count).max(1);
-    let mut chosen = Vec::new();
-    let mut notes = Vec::new();
     let ctx = ScoreCtx {
         graph,
         occupancy,
@@ -151,7 +152,74 @@ fn select_need(
         mode,
         memory_want: 0,
     };
-    let ranked = rank(&ctx, &chosen, &candidates)?;
+    if !request.machine_local {
+        return select_spread(graph, request, already, need, &ctx, candidates, count);
+    }
+    let ranked = rank(&ctx, &[], &candidates)?;
+    let mut machines: Vec<NodeId> = Vec::new();
+    let mut by_machine: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for node in ranked {
+        let Some(machine) = graph.machine_of(node) else {
+            continue;
+        };
+        if !by_machine.contains_key(&machine) {
+            machines.push(machine);
+        }
+        by_machine.entry(machine).or_default().push(node);
+    }
+    for machine in &machines {
+        let mut chosen: Vec<Claim> = Vec::new();
+        let mut notes = Vec::new();
+        for &node in by_machine.get(machine).expect("grouped") {
+            if chosen.len() as u64 >= count {
+                break;
+            }
+            let claim = Claim {
+                node,
+                quantity: qty(Dimension::Count, 1),
+            };
+            let mut trial = already.to_vec();
+            let mut group = chosen.clone();
+            group.push(claim.clone());
+            trial.push(group);
+            if topology_holds(graph, &trial, request) {
+                let score = score_node(&ctx, &chosen, node)?;
+                let local = request.data.iter().any(|data| graph.caches(node, *data));
+                let degraded = graph.degraded_ancestor(node).is_some();
+                notes.push(format!(
+                    "{node} score={score}{}{}",
+                    if local { " data-local" } else { "" },
+                    if degraded { " health-degraded" } else { "" }
+                ));
+                chosen.push(claim);
+            }
+        }
+        if chosen.len() as u64 == count {
+            return Ok((chosen, notes));
+        }
+    }
+    Err(Error::Refused {
+        explanation: format!(
+            "need {:?} x{count} does not fit on any single machine",
+            need.kind
+        ),
+    })
+}
+
+/// The legacy spread path: claims may land on any machine, in ranked
+/// order, subject only to topology constraints.
+fn select_spread(
+    graph: &Graph,
+    request: &Request,
+    already: &[Vec<Claim>],
+    need: &Need,
+    ctx: &ScoreCtx<'_>,
+    candidates: Vec<NodeId>,
+    count: u64,
+) -> Result<(Vec<Claim>, Vec<String>), Error> {
+    let mut chosen: Vec<Claim> = Vec::new();
+    let mut notes = Vec::new();
+    let ranked = rank(ctx, &chosen, &candidates)?;
     for node in ranked {
         if chosen.len() as u64 >= count {
             break;
@@ -165,7 +233,7 @@ fn select_need(
         group.push(claim.clone());
         trial.push(group);
         if topology_holds(graph, &trial, request) {
-            let score = score_node(&ctx, &chosen, node)?;
+            let score = score_node(ctx, &chosen, node)?;
             let local = request.data.iter().any(|data| graph.caches(node, *data));
             let degraded = graph.degraded_ancestor(node).is_some();
             notes.push(format!(

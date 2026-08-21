@@ -14,6 +14,16 @@ fn boot() -> World {
 }
 
 fn cpu_request(id: u64, count: u64, priority: u32) -> archon_kernel::Request {
+    // 3-CPU requests span the two 2-CPU machines by design.
+    cpu_request_local(id, count, priority, count <= 2)
+}
+
+fn cpu_request_local(
+    id: u64,
+    count: u64,
+    priority: u32,
+    machine_local: bool,
+) -> archon_kernel::Request {
     archon_kernel::Request {
         id: archon_kernel::RequestId::from_u64(id),
         class: archon_kernel::RequestClass::Service,
@@ -26,6 +36,7 @@ fn cpu_request(id: u64, count: u64, priority: u32) -> archon_kernel::Request {
         preferences: vec![],
         data: vec![],
         command: vec![],
+        machine_local,
         lifetime: 100,
         priority,
     }
@@ -83,7 +94,8 @@ fn fair_share_ceiling_lets_small_owners_through() {
         .activate_lease(archon_kernel::LeaseId::from_u64(1))
         .unwrap();
     world.deliver_all().unwrap();
-    world.enqueue(cpu_request(2, 2, 10), OwnerId::from_u64(1));
+    // The 2-CPU request intentionally spreads across both machines.
+    world.enqueue(cpu_request_local(2, 2, 10, false), OwnerId::from_u64(1));
     world.enqueue(cpu_request(3, 1, 10), OwnerId::from_u64(2));
     world.enqueue(cpu_request(4, 1, 10), OwnerId::from_u64(3));
     // Fair-share ceiling of 2 CPUs per owner: owner 1 is over budget and is

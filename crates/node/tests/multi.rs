@@ -78,6 +78,7 @@ fn submit_sleep(service: &mut NodeService, id: u64) -> RequestId {
         preferences: vec![],
         data: vec![],
         command: vec!["sleep".into(), "30".into()],
+        machine_local: true,
         lifetime: 3_600,
         priority: 1,
     };

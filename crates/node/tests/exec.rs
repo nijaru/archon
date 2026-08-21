@@ -30,6 +30,7 @@ fn request(id: u64, command: Vec<String>) -> Request {
         command: command.clone(),
         lifetime: 3_600,
         priority: 1,
+        machine_local: true,
     }
 }
 

@@ -63,8 +63,9 @@ pub enum AgentRequest {
         session: u64,
         fence: u64,
     },
-    /// Liveness probe for a lease's process.
-    Status { lease: u64, session: u64 },
+    /// Liveness probe for a lease's process. Read-only: carries no
+    /// session, so probing never touches fencing generations.
+    Status { lease: u64 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -45,6 +45,7 @@ fn submit_sleep(service: &mut NodeService, id: u64, lifetime: u64) {
         command: vec!["sleep".into(), "30".into()],
         lifetime,
         priority: 1,
+        machine_local: true,
     };
     service.submit(
         request,

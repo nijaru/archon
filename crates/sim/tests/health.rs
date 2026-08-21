@@ -31,6 +31,7 @@ fn cpu_request(id: u64) -> Request {
         preferences: vec![],
         data: vec![],
         command: vec![],
+        machine_local: true,
         lifetime: 100,
         priority: 10,
     }

@@ -30,6 +30,7 @@ fn cpu_request(id: u64, data: Vec<NodeId>) -> Request {
         preferences: vec![Preference::Spread],
         data,
         command: vec![],
+        machine_local: true,
         lifetime: 100,
         priority: 10,
     }
@@ -52,6 +53,7 @@ fn hold_cpu_at(world: &mut World, lease: u64, binding: u64) {
         preferences: vec![],
         data: vec![],
         command: vec![],
+        machine_local: true,
         lifetime: 100,
         priority: 10,
     };

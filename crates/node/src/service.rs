@@ -399,8 +399,7 @@ impl NodeService {
             .any(|machine| match self.agents.get_mut(&machine) {
                 Some(executor) => matches!(
                     executor.execute(AgentRequest::Status {
-                        lease: lease.as_u64(),
-                        session: u64::MAX,
+                        lease: lease.as_u64()
                     }),
                     Ok(AgentResponse::Running { running: true, .. })
                 ),
@@ -570,6 +569,10 @@ impl NodeService {
             Effect::Reconcile { .. } => unreachable!(),
         };
 
+        if std::env::var("ARCHON_DEBUG_ROUTE").is_ok() {
+            let m = self.cluster.graph.machine_of(record.node);
+            eprintln!("debug: {effect:?} -> machine {m:?}");
+        }
         let Some(executor) = self.agents.get_mut(&machine) else {
             // No agent for this machine (restart before re-registration, or
             // the agent died). Kernel state proceeds; Reconcile re-drives
@@ -602,12 +605,17 @@ impl NodeService {
                 session,
                 fence,
             }]),
-            AgentResponse::Failed { reason, .. } => Ok(vec![Command::RecordBindingFailed {
-                binding: binding_id,
-                session,
-                reason,
-                fence,
-            }]),
+            AgentResponse::Failed { reason, .. } => {
+                if std::env::var("ARCHON_DEBUG_ROUTE").is_ok() {
+                    eprintln!("debug: agent FAILED binding {binding_id}: {reason}");
+                }
+                Ok(vec![Command::RecordBindingFailed {
+                    binding: binding_id,
+                    session,
+                    reason,
+                    fence,
+                }])
+            }
             other => Err(Error::Refused {
                 explanation: format!("unexpected agent response {other:?}"),
             }),
