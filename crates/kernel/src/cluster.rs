@@ -4,19 +4,27 @@ use crate::command::{Command, Effect};
 use crate::error::Error;
 use crate::graph::Graph;
 use crate::ids::{BindingId, LeaseId, NodeId};
-use crate::occupancy::{claim_fits, covers, occupancy_from_leases, resolve_claim, sibling_used};
+use crate::occupancy::{claim_fits, covers, occupancy_from_leases, resolve_claim, subtree_used};
 use crate::types::{Binding, BindingState, Lease, LeaseState, Quantity};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaseDigest {
     pub state: LeaseState,
+    pub owner: crate::ids::OwnerId,
+    pub parent: Option<LeaseId>,
+    pub priority: u32,
     pub expires_at: u64,
+    pub prepare_deadline: u64,
+    pub graph_revision: u64,
     pub claims: Vec<(NodeId, Quantity)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BindingDigest {
     pub state: BindingState,
+    pub lease: LeaseId,
+    pub node: NodeId,
+    pub provider: crate::ids::ProviderId,
     pub fence: u64,
     pub session: u64,
 }
@@ -25,10 +33,13 @@ pub struct BindingDigest {
 pub struct Digest {
     pub epoch: u64,
     pub now: u64,
+    pub agreed: bool,
     pub graph_revision: u64,
+    pub graph_nodes: BTreeMap<NodeId, crate::types::NodeKind>,
     pub leases: BTreeMap<LeaseId, LeaseDigest>,
     pub bindings: BTreeMap<BindingId, BindingDigest>,
     pub sessions: BTreeMap<NodeId, u64>,
+    pub last_fence: BTreeMap<(crate::ids::ProviderId, NodeId), u64>,
     pub quarantine: BTreeSet<NodeId>,
 }
 
@@ -98,7 +109,13 @@ impl Cluster {
         Digest {
             epoch: self.epoch,
             now: self.now,
+            agreed: self.agreed,
             graph_revision: self.graph.revision,
+            graph_nodes: self
+                .graph
+                .nodes()
+                .map(|node| (node.id, node.kind))
+                .collect(),
             leases: self
                 .leases
                 .iter()
@@ -107,7 +124,12 @@ impl Cluster {
                         *id,
                         LeaseDigest {
                             state: lease.state,
+                            owner: lease.owner,
+                            parent: lease.parent,
+                            priority: lease.priority,
                             expires_at: lease.expires_at,
+                            prepare_deadline: lease.prepare_deadline,
+                            graph_revision: lease.allocation.graph_revision,
                             claims: lease
                                 .allocation
                                 .claims
@@ -126,6 +148,9 @@ impl Cluster {
                         *id,
                         BindingDigest {
                             state: binding.state,
+                            lease: binding.lease,
+                            node: binding.node,
+                            provider: binding.provider,
                             fence: binding.fence,
                             session: binding.agent_session,
                         },
@@ -133,6 +158,7 @@ impl Cluster {
                 })
                 .collect(),
             sessions: self.sessions.clone(),
+            last_fence: self.last_fence.clone(),
             quarantine: self.quarantine.clone(),
         }
     }
@@ -298,21 +324,23 @@ impl Cluster {
                 binding,
                 session,
                 provider_handle,
-            } => self.record_prepared(*binding, *session, *provider_handle),
-            Command::RecordBindingActive { binding, session } => {
-                self.record_active(*binding, *session)
+                fence,
+            } => self.record_prepared(*binding, *session, *provider_handle, *fence),
+            Command::RecordBindingActive { binding, session, fence } => {
+                self.record_active(*binding, *session, *fence)
             }
-            Command::RecordBindingReleased { binding, session } => {
-                self.record_released(*binding, *session)
+            Command::RecordBindingReleased { binding, session, fence } => {
+                self.record_released(*binding, *session, *fence)
             }
-            Command::RecordBindingFenced { binding, session } => {
-                self.record_fenced(*binding, *session)
+            Command::RecordBindingFenced { binding, session, fence } => {
+                self.record_fenced(*binding, *session, *fence)
             }
             Command::RecordBindingFailed {
                 binding,
                 session,
                 reason,
-            } => self.record_failed(*binding, *session, reason),
+                fence,
+            } => self.record_failed(*binding, *session, reason, *fence),
             Command::SetAgentSession { machine, session } => {
                 self.set_agent_session(*machine, *session)
             }
@@ -417,6 +445,14 @@ impl Cluster {
             });
         }
         let claims = lease.allocation.claims.clone();
+        for claim in &claims {
+            if self.node_quarantined(claim.node) {
+                return Err(Error::Quarantined(claim.node));
+            }
+        }
+        if self.now >= lease.expires_at {
+            return Err(Error::LeaseExpired { lease: id });
+        }
         let except = BTreeSet::from([id]);
         let occupancy =
             occupancy_from_leases(self.leases.values(), &self.open_binding_leases(), &except);
@@ -505,7 +541,7 @@ impl Cluster {
                         parent: parent_id,
                     })?;
                 let sibling_qty =
-                    sibling_used(&self.leases, &self.open_binding_leases(), parent_id, id)
+                    subtree_used(&self.leases, &self.open_binding_leases(), parent_id, id)
                         .used_on(claim.node);
                 if !claim_fits(parent_qty, &sibling_qty, &claim.quantity) {
                     return Err(Error::Overlap { node: claim.node });
@@ -560,6 +596,19 @@ impl Cluster {
         }
         let claims = lease.allocation.claims.clone();
         let parent = lease.parent;
+        for claim in &claims {
+            if self.node_quarantined(claim.node) {
+                return Err(Error::Quarantined(claim.node));
+            }
+        }
+        let now = self.now;
+        let (expires_at, prepare_deadline) = (lease.expires_at, lease.prepare_deadline);
+        if now >= expires_at {
+            return Err(Error::LeaseExpired { lease: id });
+        }
+        if now > prepare_deadline {
+            return Err(Error::PrepareDeadlinePassed { lease: id });
+        }
         if let Some(parent_id) = parent {
             let parent_lease = self
                 .leases
@@ -591,6 +640,29 @@ impl Cluster {
         }) {
             return Err(Error::BindingsNotPrepared { lease: id });
         }
+        // A root lease must enforce every enforced claim through a prepared
+        // Binding before it becomes Active; accounting-only children may
+        // activate without Bindings.
+        if parent.is_none() {
+            for claim in &claims {
+                let enforced = self
+                    .graph
+                    .node(claim.node)
+                    .is_some_and(|node| node.kind.is_enforced());
+                if !enforced {
+                    continue;
+                }
+                let covered = self.bindings.values().any(|binding| {
+                    binding.lease == id
+                        && binding.node == claim.node
+                        && binding.state == BindingState::Preparing
+                        && binding.provider_handle.is_some()
+                });
+                if !covered {
+                    return Err(Error::BindingsNotPrepared { lease: id });
+                }
+            }
+        }
         if let Some(lease) = self.leases.get_mut(&id) {
             lease.state = LeaseState::Active;
         }
@@ -598,18 +670,51 @@ impl Cluster {
     }
 
     fn fail_lease(&mut self, id: LeaseId, _reason: &str) -> Result<Vec<Effect>, Error> {
+        let mut effects = Vec::new();
+        for descendant in self.descendants_postorder(id) {
+            if let Some(lease) = self.leases.get_mut(&descendant)
+                && !matches!(
+                    lease.state,
+                    LeaseState::Failed
+                        | LeaseState::Released
+                        | LeaseState::Revoked
+                        | LeaseState::Expired
+                )
+            {
+                lease.state = LeaseState::Failed;
+            }
+            effects.extend(self.fence_effects(descendant));
+        }
         let lease = self.leases.get_mut(&id).ok_or(Error::UnknownLease(id))?;
         if matches!(
             lease.state,
             LeaseState::Failed | LeaseState::Released | LeaseState::Revoked | LeaseState::Expired
         ) {
-            return Ok(Vec::new());
+            return Ok(effects);
         }
         lease.state = LeaseState::Failed;
-        Ok(self.fence_effects(id))
+        effects.extend(self.fence_effects(id));
+        Ok(effects)
+    }
+
+    fn live_descendants(&self, id: LeaseId) -> Vec<LeaseId> {
+        self.descendants_postorder(id)
+            .into_iter()
+            .filter(|descendant| {
+                self.leases
+                    .get(descendant)
+                    .is_some_and(|lease| self.occupies(lease.id))
+            })
+            .collect()
     }
 
     fn release_lease(&mut self, id: LeaseId) -> Result<Vec<Effect>, Error> {
+        // Releasing a lease ends the authority its descendants borrow, so the
+        // owner must terminate them first.
+        let live = self.live_descendants(id);
+        if !live.is_empty() {
+            return Err(Error::HasLiveDescendants { lease: id });
+        }
         let lease = self.leases.get_mut(&id).ok_or(Error::UnknownLease(id))?;
         if lease.state == LeaseState::Released {
             return Ok(self.release_effects(id));
@@ -654,9 +759,27 @@ impl Cluster {
 
     fn expire_lease(&mut self, id: LeaseId) -> Result<Vec<Effect>, Error> {
         let now = self.now;
+        let mut effects = Vec::new();
+        // Expiry terminates the parent's authority, so live descendants expire
+        // with it and their Bindings fence, mirroring revocation.
+        for descendant in self.descendants_postorder(id) {
+            if let Some(lease) = self.leases.get_mut(&descendant)
+                && !matches!(
+                    lease.state,
+                    LeaseState::Revoked
+                        | LeaseState::Released
+                        | LeaseState::Expired
+                        | LeaseState::Failed
+                )
+            {
+                lease.state = LeaseState::Expired;
+            }
+            effects.extend(self.fence_effects(descendant));
+        }
         let lease = self.leases.get_mut(&id).ok_or(Error::UnknownLease(id))?;
         if lease.state == LeaseState::Expired {
-            return Ok(self.fence_effects(id));
+            effects.extend(self.fence_effects(id));
+            return Ok(effects);
         }
         if !matches!(lease.state, LeaseState::Active | LeaseState::Reserved) {
             return Err(Error::LeaseState {
@@ -668,7 +791,8 @@ impl Cluster {
             return Err(Error::ExpireNotDue);
         }
         lease.state = LeaseState::Expired;
-        Ok(self.fence_effects(id))
+        effects.extend(self.fence_effects(id));
+        Ok(effects)
     }
 
     fn renew_lease(&mut self, id: LeaseId, new_expires_at: u64) -> Result<Vec<Effect>, Error> {
@@ -698,19 +822,23 @@ impl Cluster {
         provider: crate::ids::ProviderId,
     ) -> Result<Vec<Effect>, Error> {
         if let Some(existing) = self.bindings.get(&id) {
-            if existing.lease == lease_id && existing.node == node && existing.provider == provider
-            {
-                return Ok(vec![self.binding_effect(
-                    existing,
-                    |binding, node, provider, fence, session, epoch| Effect::Prepare {
-                        binding,
-                        node,
-                        provider,
-                        fence,
-                        session,
-                        epoch,
-                    },
-                )]);
+            if existing.lease == lease_id && existing.node == node && existing.provider == provider {
+                // Retry of a committed OpenBinding: re-emit Prepare only while
+                // still preparing; never disturb Active or closed Bindings.
+                if existing.state == BindingState::Preparing {
+                    return Ok(vec![self.binding_effect(
+                        existing,
+                        |binding, node, provider, fence, session, epoch| Effect::Prepare {
+                            binding,
+                            node,
+                            provider,
+                            fence,
+                            session,
+                            epoch,
+                        },
+                    )]);
+                }
+                return Ok(Vec::new());
             }
             return Err(Error::DuplicateBinding(id));
         }
@@ -911,9 +1039,11 @@ impl Cluster {
         id: BindingId,
         session: u64,
         handle: u64,
+        fence: u64,
     ) -> Result<Vec<Effect>, Error> {
         let binding = self.bindings.get(&id).ok_or(Error::UnknownBinding(id))?;
         self.require_session(binding.node, session)?;
+        self.require_fence(id, binding.fence, fence)?;
         if binding.state == BindingState::Preparing || binding.state == BindingState::Active {
             if let Some(binding) = self.bindings.get_mut(&id) {
                 binding.provider_handle = Some(handle);
@@ -927,9 +1057,10 @@ impl Cluster {
         })
     }
 
-    fn record_active(&mut self, id: BindingId, session: u64) -> Result<Vec<Effect>, Error> {
+    fn record_active(&mut self, id: BindingId, session: u64, fence: u64) -> Result<Vec<Effect>, Error> {
         let binding = self.bindings.get(&id).ok_or(Error::UnknownBinding(id))?;
         self.require_session(binding.node, session)?;
+        self.require_fence(id, binding.fence, fence)?;
         if binding.state == BindingState::Active {
             if let Some(binding) = self.bindings.get_mut(&id) {
                 binding.agent_session = session;
@@ -942,9 +1073,10 @@ impl Cluster {
         })
     }
 
-    fn record_released(&mut self, id: BindingId, session: u64) -> Result<Vec<Effect>, Error> {
+    fn record_released(&mut self, id: BindingId, session: u64, fence: u64) -> Result<Vec<Effect>, Error> {
         let binding = self.bindings.get(&id).ok_or(Error::UnknownBinding(id))?;
         self.require_session(binding.node, session)?;
+        self.require_fence(id, binding.fence, fence)?;
         if let Some(binding) = self.bindings.get_mut(&id) {
             binding.agent_session = session;
             binding.state = BindingState::Released;
@@ -952,9 +1084,10 @@ impl Cluster {
         Ok(Vec::new())
     }
 
-    fn record_fenced(&mut self, id: BindingId, session: u64) -> Result<Vec<Effect>, Error> {
+    fn record_fenced(&mut self, id: BindingId, session: u64, fence: u64) -> Result<Vec<Effect>, Error> {
         let binding = self.bindings.get(&id).ok_or(Error::UnknownBinding(id))?;
         self.require_session(binding.node, session)?;
+        self.require_fence(id, binding.fence, fence)?;
         if let Some(binding) = self.bindings.get_mut(&id) {
             binding.agent_session = session;
             binding.state = BindingState::Fenced;
@@ -967,21 +1100,39 @@ impl Cluster {
         id: BindingId,
         session: u64,
         _reason: &str,
+        fence: u64,
     ) -> Result<Vec<Effect>, Error> {
         let binding = self.bindings.get(&id).ok_or(Error::UnknownBinding(id))?;
         self.require_session(binding.node, session)?;
+        self.require_fence(id, binding.fence, fence)?;
+        let lease_id = binding.lease;
         if let Some(binding) = self.bindings.get_mut(&id) {
             binding.agent_session = session;
             if !binding.state.is_closed() {
                 binding.state = BindingState::Failed;
             }
         }
-        Ok(self.fence_effects(
-            self.bindings
-                .get(&id)
-                .map(|binding| binding.lease)
-                .ok_or(Error::UnknownBinding(id))?,
-        ))
+        // A failed Binding means enforcement was lost or never established;
+        // the Lease cannot stay Active or continue preparing past it.
+        let lease = self.leases.get_mut(&lease_id).ok_or(Error::UnknownLease(lease_id))?;
+        if !matches!(
+            lease.state,
+            LeaseState::Failed | LeaseState::Released | LeaseState::Revoked | LeaseState::Expired
+        ) {
+            lease.state = LeaseState::Failed;
+        }
+        Ok(self.fence_effects(lease_id))
+    }
+
+    fn require_fence(&self, binding: BindingId, expected: u64, got: u64) -> Result<(), Error> {
+        if expected != got {
+            return Err(Error::FenceMismatch {
+                binding,
+                expected,
+                got,
+            });
+        }
+        Ok(())
     }
 
     fn set_agent_session(&mut self, machine: NodeId, session: u64) -> Result<Vec<Effect>, Error> {
@@ -991,6 +1142,16 @@ impl Cluster {
             .ok_or(Error::UnknownNode(machine))?;
         if node.kind != crate::types::NodeKind::Machine {
             return Err(Error::Invalid("agent session requires a machine node"));
+        }
+        // Sessions are process generations: a delayed hello from an older
+        // Agent process must never reinstate it as current.
+        if let Some(&current) = self.sessions.get(&machine)
+            && session <= current
+        {
+            return Err(Error::StaleSession {
+                expected: current,
+                got: session,
+            });
         }
         self.sessions.insert(machine, session);
         Ok(vec![Effect::Reconcile {

@@ -140,6 +140,33 @@ fn reservation_expiry_feeds_the_shadow() {
 }
 
 #[test]
+fn unproven_shadow_admits_only_disjoint_jobs() {
+    let mut world = boot();
+    hold_gpu(&mut world, 1, 1_000);
+    // Release without delivering: the lease is Released but still occupies
+    // its GPU through the open Binding, with no proven release time.
+    world.release_lease(LeaseId::from_u64(1)).unwrap();
+
+    // Head needs both GPUs; capacity frees only when the fence ack lands.
+    world.enqueue(request(2, NodeKind::Gpu, 2, 100, 100), OwnerId::from_u64(2));
+    // A long GPU job claims a node the head would take: must wait even though
+    // the stale occupancy looks overdue.
+    world.enqueue(request(3, NodeKind::Gpu, 1, 5_000, 1), OwnerId::from_u64(3));
+    assert!(
+        world
+            .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))
+            .unwrap()
+            .is_none()
+    );
+    // A CPU job shares nothing with the head: safe to backfill.
+    world.enqueue(request(4, NodeKind::Cpu, 1, 5_000, 1), OwnerId::from_u64(4));
+    assert_eq!(
+        world.admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4)).unwrap(),
+        Some(RequestId::from_u64(4))
+    );
+}
+
+#[test]
 fn backfilled_lease_expires_before_shadow_and_frees_capacity() {
     let mut world = boot();
     hold_gpu(&mut world, 1, 1_000);

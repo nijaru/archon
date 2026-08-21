@@ -20,22 +20,29 @@ impl Graph {
     }
 
     pub fn apply(&mut self, nodes: Vec<Node>, edges: Vec<Edge>) -> Result<(), Error> {
+        // Validate the complete update against staged state before mutating
+        // anything: a rejected ApplyGraph must leave the Graph and the command
+        // log consistent for replay.
+        let mut staged_nodes = self.nodes.clone();
         for node in nodes {
-            self.nodes.insert(node.id, node);
+            staged_nodes.insert(node.id, node);
         }
+        let mut staged_edges = self.edges.clone();
         for edge in edges {
-            if !self.nodes.contains_key(&edge.from) {
+            if !staged_nodes.contains_key(&edge.from) {
                 return Err(Error::UnknownNode(edge.from));
             }
-            if !self.nodes.contains_key(&edge.to) {
+            if !staged_nodes.contains_key(&edge.to) {
                 return Err(Error::UnknownNode(edge.to));
             }
-            if !self.edges.iter().any(|existing| {
+            if !staged_edges.iter().any(|existing| {
                 existing.from == edge.from && existing.to == edge.to && existing.kind == edge.kind
             }) {
-                self.edges.push(edge);
+                staged_edges.push(edge);
             }
         }
+        self.nodes = staged_nodes;
+        self.edges = staged_edges;
         self.rebuild();
         self.revision = self.revision.saturating_add(1);
         Ok(())

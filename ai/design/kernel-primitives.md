@@ -264,7 +264,7 @@ Lease
   parent                 optional enclosing Lease
   expires_at
   priority
-  state                  Preparing | Active | Released | Expired | Revoked | Failed
+  state                  Reserved | Preparing | Active | Released | Expired | Revoked | Failed
 ```
 
 A child Lease may use only claims already covered by its parent. Two active

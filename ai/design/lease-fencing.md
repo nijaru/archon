@@ -35,7 +35,8 @@ A Lease occupies its claims when:
 Occupied claims are not available to another exclusive Lease. `expires_at`
 passing does not free them. `ExpireLease` only starts the fence path.
 
-`RenewLease` is allowed only on `Active`. It writes a later `expires_at` and
+`RenewLease` is allowed on `Active` or `Reserved` leases (a reservation hold
+may be extended before promotion). It writes a later `expires_at` and
 changes no claims, fences, Binding identities, or sessions.
 
 ## Versions
@@ -288,7 +289,8 @@ contract. Their occupancy effect is this protocol.
 
 The kernel proof still holds. These cases are required with it:
 
-1. Renew an Active Lease; fences and claims stay; `expires_at` moves.
+1. Renew an Active or Reserved Lease; fences and claims stay; `expires_at`
+   moves.
 2. Expire an Active Lease; claims stay occupied until fence ack.
 3. Deliver `Prepare` with an old fence; endpoint rejects it.
 4. Deliver any Binding message with an old session; Cluster and Provider

@@ -158,6 +158,7 @@ fn old_session_is_rejected() {
         .apply(fleet_kernel::Command::RecordBindingActive {
             binding: binding.id,
             session: binding.agent_session,
+            fence: binding.fence,
         })
         .unwrap_err();
     assert!(matches!(err, Error::StaleSession { .. }));

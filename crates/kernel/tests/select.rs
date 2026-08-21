@@ -160,6 +160,24 @@ fn child_cannot_escape_parent() {
             priority: 1,
         })
         .unwrap();
+    // A root lease over an enforced claim needs a prepared Binding before it
+    // can activate.
+    cluster
+        .apply(Command::OpenBinding {
+            binding: fleet_kernel::BindingId::from_u64(1),
+            lease: LeaseId::from_u64(1),
+            node: NodeId::from_u64(3),
+            provider: fleet_kernel::ProviderId::ENFORCE,
+        })
+        .unwrap();
+    cluster
+        .apply(Command::RecordBindingPrepared {
+            binding: fleet_kernel::BindingId::from_u64(1),
+            session: 1,
+            provider_handle: 1,
+            fence: 1,
+        })
+        .unwrap();
     cluster
         .apply(Command::ActivateLease {
             lease: LeaseId::from_u64(1),

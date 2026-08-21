@@ -73,6 +73,9 @@ fn fair_share_ceiling_lets_small_owners_through() {
             20,
         )
         .unwrap();
+    world
+        .bind_enforced(fleet_kernel::LeaseId::from_u64(1), 100)
+        .unwrap();
     world.deliver_all().unwrap();
     world
         .activate_lease(fleet_kernel::LeaseId::from_u64(1))

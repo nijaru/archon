@@ -3,8 +3,6 @@
 //! Production and the simulator share this crate. Delivery, clocks, and faults
 //! stay outside `Cluster::apply`.
 
-use std::collections::BTreeMap;
-
 mod admit;
 mod cluster;
 mod command;
@@ -48,20 +46,16 @@ impl Cluster {
         admit(&self.graph, &self.occupancy(), queue, &self.quarantine)
     }
 
-    /// Budget-aware admission with a per-owner fair-share ceiling.
-    pub fn admit_fair(
-        &self,
-        queue: &[Queued],
-        fair_share: &Quantity,
-        leases: &BTreeMap<LeaseId, Lease>,
-    ) -> Option<Admission> {
+    /// Budget-aware admission with a per-owner fair-share ceiling. Usage is
+    /// always computed from this Cluster's own lease table.
+    pub fn admit_fair(&self, queue: &[Queued], fair_share: &Quantity) -> Option<Admission> {
         admit_fair(
             &self.graph,
             &self.occupancy(),
             &self.quarantine,
             fair_share,
             queue,
-            leases,
+            &self.leases,
         )
     }
 

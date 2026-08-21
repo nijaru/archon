@@ -232,10 +232,7 @@ impl World {
         owner: OwnerId,
         fair_share: &Quantity,
     ) -> Result<Option<RequestId>, Error> {
-        let Some(admission) =
-            self.cluster
-                .admit_fair(&self.queue, fair_share, &self.cluster.leases)
-        else {
+        let Some(admission) = self.cluster.admit_fair(&self.queue, fair_share) else {
             return Ok(None);
         };
         self.queue
@@ -373,6 +370,10 @@ impl World {
         Ok(Some(victims))
     }
 
+    /// Fail a machine: quarantine it, revoke the leases it enforces, and take
+    /// its Agent unreachable. Fence effects stay undelivered — occupancy
+    /// persists until a restarted Agent's session reconciles and acknowledges
+    /// the fences.
     pub fn fail_machine(&mut self, machine: NodeId) -> Result<Vec<LeaseId>, Error> {
         let node = self
             .cluster
@@ -389,12 +390,9 @@ impl World {
             .values()
             .filter(|lease| lease.parent.is_none())
             .filter(|lease| {
-                lease
-                    .allocation
-                    .claims
-                    .iter()
-                    .find_map(|claim| self.cluster.graph.machine_of(claim.node))
-                    == Some(machine)
+                lease.allocation.claims.iter().any(|claim| {
+                    self.cluster.graph.machine_of(claim.node) == Some(machine)
+                })
             })
             .filter(|lease| self.cluster.occupies(lease.id))
             .map(|lease| lease.id)
@@ -402,7 +400,7 @@ impl World {
         for lease in &victims {
             self.revoke_lease(*lease)?;
         }
-        self.deliver_all()?;
+        self.agents.remove(&machine);
         Ok(victims)
     }
 
@@ -515,11 +513,22 @@ impl World {
             };
             let key = (binding.provider, binding.node);
             let endpoint = self.endpoints.get(&key);
-            let same = endpoint.is_some_and(|endpoint| {
-                endpoint.open
-                    && endpoint.binding == Some(binding_id)
-                    && endpoint.accepted_fence == binding.fence
+            // A binding whose lease is terminal must fence on reconcile even
+            // if the endpoint still looks consistent: the authority is gone.
+            let lease_live = self.cluster.leases.get(&binding.lease).is_some_and(|lease| {
+                matches!(
+                    lease.state,
+                    fleet_kernel::LeaseState::Reserved
+                        | fleet_kernel::LeaseState::Preparing
+                        | fleet_kernel::LeaseState::Active
+                )
             });
+            let same = lease_live
+                && endpoint.is_some_and(|endpoint| {
+                    endpoint.open
+                        && endpoint.binding == Some(binding_id)
+                        && endpoint.accepted_fence == binding.fence
+                });
             if same {
                 self.commit(Command::RebindSession {
                     binding: binding_id,
@@ -700,11 +709,18 @@ fn apply_effect(
                         binding,
                         session,
                         provider_handle: handle,
+                        fence,
                     }
                 }
-                EndpointOp::Activate => Command::RecordBindingActive { binding, session },
-                EndpointOp::Release => Command::RecordBindingReleased { binding, session },
-                EndpointOp::Fence => Command::RecordBindingFenced { binding, session },
+                EndpointOp::Activate => {
+                    Command::RecordBindingActive { binding, session, fence }
+                }
+                EndpointOp::Release => {
+                    Command::RecordBindingReleased { binding, session, fence }
+                }
+                EndpointOp::Fence => {
+                    Command::RecordBindingFenced { binding, session, fence }
+                }
             };
             return Ok(Some(command));
         }
@@ -714,6 +730,7 @@ fn apply_effect(
                     binding,
                     session,
                     reason: "endpoint rejected prepare".into(),
+                    fence,
                 }));
             }
         }

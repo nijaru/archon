@@ -128,10 +128,12 @@ fn order_queue(queue: &[QueuedRequest], usage: &BTreeMap<OwnerId, Quantity>) -> 
     order
 }
 
-/// A queued request that cannot start yet, with the earliest time its
-/// capacity frees (shadow) and the claims it would take at that time.
+/// A queued request that cannot start yet: `shadow` is the earliest time its
+/// capacity frees (`None` means no finite release is proven — only jobs on
+/// disjoint nodes may backfill), and `shadow_claims` are the claims it would
+/// take at that time.
 struct BlockedHead {
-    shadow: u64,
+    shadow: Option<u64>,
     shadow_claims: BTreeSet<NodeId>,
 }
 
@@ -188,8 +190,13 @@ pub fn admit_backfill(
                 let claims: BTreeSet<NodeId> =
                     allocation.claims.iter().map(|claim| claim.node).collect();
                 let finishes = now.saturating_add(queued.request.lifetime);
-                let safe = blocked.iter().all(|head| {
-                    finishes <= head.shadow || claims.is_disjoint(&head.shadow_claims)
+                let safe = blocked.iter().all(|head| match head.shadow {
+                    Some(shadow) => {
+                        finishes <= shadow || claims.is_disjoint(&head.shadow_claims)
+                    }
+                    // No finite release is proven: only a job that never
+                    // touches the head's nodes can be sure not to delay it.
+                    None => claims.is_disjoint(&head.shadow_claims),
                 });
                 if safe {
                     return Some(Admission {
@@ -220,7 +227,9 @@ fn occupying(lease: &Lease, open_bindings: &BTreeSet<LeaseId>) -> bool {
 }
 
 /// Earliest lease-expiry event time at which `request` selects, plus the
-/// claims it would take then. None means the request can never select.
+/// claims it would take then. `shadow: None` means the request selects only
+/// once every expiring lease is gone, so no finite release time is proven.
+/// `None` overall means the request can never select.
 fn shadow_head(
     graph: &Graph,
     quarantine: &std::collections::BTreeSet<NodeId>,
@@ -229,12 +238,11 @@ fn shadow_head(
     request: &Request,
     now: u64,
 ) -> Option<BlockedHead> {
-    let mut times: BTreeSet<u64> = leases
+    let times: BTreeSet<u64> = leases
         .values()
         .filter(|lease| occupying(lease, open_bindings) && lease.expires_at > now)
         .map(|lease| lease.expires_at)
         .collect();
-    times.insert(u64::MAX);
     for shadow in times {
         let except: BTreeSet<LeaseId> = leases
             .values()
@@ -244,23 +252,42 @@ fn shadow_head(
         let projected = occupancy_from_leases(leases.values(), open_bindings, &except);
         if let Ok(allocation) = select(graph, &projected, request, quarantine) {
             return Some(BlockedHead {
-                shadow,
+                shadow: Some(shadow),
                 shadow_claims: claims_by_node(&allocation.claims).into_keys().collect(),
             });
         }
     }
-    None
+    // Last chance: the request may fit only once every expiring lease is
+    // gone (e.g. capacity held by an overdue, not-yet-fenced lease). No
+    // finite release time is proven, so treat the shadow as unbounded.
+    let all: BTreeSet<LeaseId> = leases
+        .values()
+        .filter(|lease| occupying(lease, open_bindings))
+        .map(|lease| lease.id)
+        .collect();
+    let projected = occupancy_from_leases(leases.values(), open_bindings, &all);
+    select(graph, &projected, request, quarantine).ok().map(|allocation| BlockedHead {
+        shadow: None,
+        shadow_claims: claims_by_node(&allocation.claims).into_keys().collect(),
+    })
 }
 
 /// Whether `request` fits under `fair_share` for `owner` given current usage.
-/// An empty ceiling disables the budget entirely.
+/// An empty ceiling disables the budget entirely. Charges match what select
+/// grants: count-based needs claim at least one unit, memory claims bytes.
 pub fn within_budget(usage: &Quantity, request: &Request, fair_share: &Quantity) -> bool {
     if fair_share.is_empty() {
         return true;
     }
     let mut projected = usage.clone();
     for need in &request.needs {
-        quantity_add_assign(&mut projected, &need.quantity);
+        if need.kind == crate::types::NodeKind::Memory {
+            quantity_add_assign(&mut projected, &need.quantity);
+        } else {
+            let count = crate::types::quantity_get(&need.quantity, crate::types::Dimension::Count)
+                .max(1);
+            quantity_add_assign(&mut projected, &crate::types::qty(crate::types::Dimension::Count, count));
+        }
     }
     quantity_le(&projected, fair_share)
 }

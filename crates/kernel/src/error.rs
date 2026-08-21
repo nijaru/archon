@@ -50,6 +50,20 @@ pub enum Error {
     },
     RenewNotLater,
     ExpireNotDue,
+    PrepareDeadlinePassed {
+        lease: LeaseId,
+    },
+    LeaseExpired {
+        lease: LeaseId,
+    },
+    HasLiveDescendants {
+        lease: LeaseId,
+    },
+    FenceMismatch {
+        binding: BindingId,
+        expected: u64,
+        got: u64,
+    },
     UnquarantineBlocked {
         node: NodeId,
     },
@@ -93,6 +107,22 @@ impl fmt::Display for Error {
             Self::NoAgent { machine } => write!(f, "no agent session for {machine}"),
             Self::RenewNotLater => write!(f, "renewal must extend expires_at"),
             Self::ExpireNotDue => write!(f, "lease has not reached expires_at"),
+            Self::PrepareDeadlinePassed { lease } => {
+                write!(f, "lease {lease} passed its prepare deadline")
+            }
+            Self::LeaseExpired { lease } => {
+                write!(f, "lease {lease} expired before activation")
+            }
+            Self::HasLiveDescendants { lease } => {
+                write!(f, "lease {lease} still has live descendants")
+            }
+            Self::FenceMismatch {
+                binding,
+                expected,
+                got,
+            } => {
+                write!(f, "binding {binding} fence {got} does not match {expected}")
+            }
             Self::UnquarantineBlocked { node } => {
                 write!(f, "cannot unquarantine {node} before fence ack")
             }

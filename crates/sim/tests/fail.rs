@@ -66,6 +66,11 @@ fn failed_machine_quarantines_and_releases() {
     let victims = world.fail_machine(machine).unwrap();
     assert_eq!(victims, vec![LeaseId::from_u64(1)]);
     assert!(world.cluster.quarantine.contains(&machine));
+    // Occupancy persists while the machine is unreachable: no fence acks.
+    world.deliver_all().unwrap();
+    assert!(world.cluster.occupies(LeaseId::from_u64(1)));
+    // A restarted Agent reconciles and acknowledges the fences.
+    world.restart_agent(machine).unwrap();
     world.deliver_all().unwrap();
     assert!(!world.cluster.occupies(LeaseId::from_u64(1)));
     let other = world
@@ -77,6 +82,7 @@ fn failed_machine_quarantines_and_releases() {
         .copied()
         .unwrap();
     world.fail_machine(other).unwrap();
+    world.restart_agent(other).unwrap();
     world.deliver_all().unwrap();
     assert!(
         world
@@ -105,7 +111,12 @@ fn recovery_unquarantines_and_replaces() {
     occupy(&mut world, 1, 1);
     let machine = machine_of(&world, 1);
     world.fail_machine(machine).unwrap();
+    assert!(world.cluster.occupies(LeaseId::from_u64(1)));
+    // Unquarantine is blocked until the restarted Agent fences the bindings.
+    assert!(world.unquarantine_machine(machine).is_err());
+    world.restart_agent(machine).unwrap();
     world.deliver_all().unwrap();
+    assert!(!world.cluster.occupies(LeaseId::from_u64(1)));
     world.unquarantine_machine(machine).unwrap();
     world.deliver_all().unwrap();
     assert!(!world.cluster.quarantine.contains(&machine));
@@ -135,6 +146,7 @@ fn other_machine_keeps_running() {
     occupy(&mut world, 1, 1);
     let machine = machine_of(&world, 1);
     world.fail_machine(machine).unwrap();
+    world.restart_agent(machine).unwrap();
     world.deliver_all().unwrap();
     let other = world
         .cluster

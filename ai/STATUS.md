@@ -76,6 +76,12 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
   starts only if it finishes by every blocked head's shadow or claims none of
   that head's shadow claims. Unsatisfiable requests block nobody. Six
   backfill scenarios pass.
+- A gpt-5.6-sol review found ten defects; all are fixed and pinned by tests
+  (`crates/kernel/tests/harden.rs`): binding-covered activation, descendant
+  cascades and subtree sibling accounting, fence-carrying binding acks,
+  monotonic sessions, atomic ApplyGraph, state-aware binding retries, backfill
+  shadow soundness, fair-share usage from the Cluster's own table, and
+  simulator fence-ack withholding until Agent restart. 63 tests pass.
 - Canonical long-term architecture: `design/DISTRIBUTED_RESOURCE_OS.md`.
 - `spec.md` is the product/system specification.
 - `DESIGN.md`, `DECISIONS.md`, and `PLAN.md` now use the resource-OS model.

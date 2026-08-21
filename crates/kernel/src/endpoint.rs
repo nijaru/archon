@@ -39,7 +39,10 @@ impl Endpoint {
     }
 
     pub fn handshake(&mut self, session: u64) {
-        self.session = session;
+        // Sessions are process generations; an older hello never reinstates.
+        if session > self.session {
+            self.session = session;
+        }
     }
 
     fn prepare(&mut self, binding: BindingId, fence: u64) -> Result<(), EndpointError> {

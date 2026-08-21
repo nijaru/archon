@@ -70,23 +70,28 @@ pub enum Command {
         binding: BindingId,
         session: u64,
         provider_handle: u64,
+        fence: u64,
     },
     RecordBindingActive {
         binding: BindingId,
         session: u64,
+        fence: u64,
     },
     RecordBindingReleased {
         binding: BindingId,
         session: u64,
+        fence: u64,
     },
     RecordBindingFenced {
         binding: BindingId,
         session: u64,
+        fence: u64,
     },
     RecordBindingFailed {
         binding: BindingId,
         session: u64,
         reason: String,
+        fence: u64,
     },
     SetAgentSession {
         machine: NodeId,

@@ -110,7 +110,11 @@ pub fn occupancy_from_leases<'a>(
     Occupancy { used }
 }
 
-pub fn sibling_used(
+/// Occupancy of every live lease strictly inside `parent`'s subtree except
+/// `except`. Descendants of an intermediate child hold real capacity even
+/// when that child itself no longer occupies, so they must count against the
+/// parent's claims when a new sibling opens.
+pub fn subtree_used(
     leases: &BTreeMap<LeaseId, Lease>,
     open_binding_leases: &BTreeSet<LeaseId>,
     parent: LeaseId,
@@ -118,7 +122,7 @@ pub fn sibling_used(
 ) -> Occupancy {
     let mut used = BTreeMap::new();
     for lease in leases.values() {
-        if lease.id == except || lease.parent != Some(parent) {
+        if lease.id == except || !within_subtree(leases, lease.id, parent) {
             continue;
         }
         if !lease_occupies(lease, open_binding_leases.contains(&lease.id)) {
@@ -129,6 +133,21 @@ pub fn sibling_used(
         }
     }
     Occupancy { used }
+}
+
+fn within_subtree(
+    leases: &BTreeMap<LeaseId, Lease>,
+    mut current: LeaseId,
+    root: LeaseId,
+) -> bool {
+    while let Some(lease) = leases.get(&current) {
+        match lease.parent {
+            Some(parent) if parent == root => return true,
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+    false
 }
 
 pub fn claim_fits(capacity: &Quantity, used: &Quantity, claim: &Quantity) -> bool {
