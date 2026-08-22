@@ -65,8 +65,10 @@ impl ContainerRuntime {
         let count = limits.cpu_count;
         let mut cmd = Command::new(&self.engine);
         cmd.arg("run")
+            // No --rm: the adapter removes containers on teardown, and a
+            // removed container's exit code is unreadable, which would
+            // misreport natural completion as failure.
             .arg("-d")
-            .arg("--rm")
             .arg("--name")
             .arg(&name)
             .arg("--pull")
