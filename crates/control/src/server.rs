@@ -202,6 +202,18 @@ impl ControlPlane {
         if let Err(err) = self.service.collect_completions() {
             eprintln!("archon: completion collection failed: {err}");
         }
+        // Freed capacity re-opens admission: drain the queue until nothing
+        // more places.
+        loop {
+            match self.service.admit_one() {
+                Ok(Some(_)) => continue,
+                Ok(None) => break,
+                Err(err) => {
+                    eprintln!("archon: admission failed: {err}");
+                    break;
+                }
+            }
+        }
         let unreachable = self.service.probe_agents();
         for machine in unreachable {
             if self.service.mark_machine_unhealthy(machine).is_err() {
