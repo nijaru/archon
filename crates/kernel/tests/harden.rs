@@ -662,6 +662,8 @@ fn backfill_honors_the_fair_share_ceiling() {
             command: vec![],
             machine_local: true,
             image: None,
+            storage: vec![],
+            ports: vec![],
             lifetime: 10,
             keep_alive: false,
             priority: 1,

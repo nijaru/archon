@@ -41,6 +41,8 @@ fn cpu_request_local(
         keep_alive: false,
         priority,
         image: None,
+        storage: vec![],
+        ports: vec![],
     }
 }
 

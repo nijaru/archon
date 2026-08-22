@@ -33,6 +33,8 @@ fn cpu_request(id: u64) -> Request {
         command: vec![],
         machine_local: true,
         image: None,
+        storage: vec![],
+        ports: vec![],
         lifetime: 100,
         keep_alive: false,
         priority: 10,

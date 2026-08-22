@@ -50,6 +50,8 @@ fn request(id: u64, command: Vec<String>) -> Request {
         priority: 1,
         machine_local: true,
         image: None,
+        storage: vec![],
+        ports: vec![],
     }
 }
 
@@ -74,7 +76,6 @@ fn controller_runs_and_kills_a_process_on_a_remote_agent() {
     service.submit(
         request(1, vec!["sleep".into(), "30".into()]),
         OwnerId::from_u64(1),
-        vec!["sleep".into(), "30".into()],
     );
     service.tick().unwrap();
     assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));

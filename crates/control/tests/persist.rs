@@ -47,13 +47,11 @@ fn submit_sleep(service: &mut NodeService, id: u64, lifetime: u64) {
         priority: 1,
         machine_local: true,
         image: None,
+        storage: vec![],
+        ports: vec![],
         keep_alive: false,
     };
-    service.submit(
-        request,
-        OwnerId::from_u64(1),
-        vec!["sleep".into(), "30".into()],
-    );
+    service.submit(request, OwnerId::from_u64(1));
     service.cluster.set_now(1);
     service.admit_one().expect("admit");
 }

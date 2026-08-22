@@ -30,6 +30,8 @@ fn request(id: u64, class: RequestClass, kind: NodeKind, count: u64, priority: u
         command: vec![],
         machine_local: true,
         image: None,
+        storage: vec![],
+        ports: vec![],
         lifetime: 100,
         keep_alive: false,
         priority,

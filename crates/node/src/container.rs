@@ -6,26 +6,32 @@
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 
-use archon_kernel::LeaseId;
+use archon_kernel::{LeaseId, PortPublish, StorageMount};
 
 use crate::protocol::LeaseLimits;
 
 pub struct ContainerRuntime {
     /// Engine binary; "docker" and "podman" share the CLI surface.
     engine: String,
+    /// Per-runtime prefix so concurrent agents never fight over names.
+    namespace: String,
     containers: BTreeMap<LeaseId, String>,
 }
 
+static CONTAINER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl ContainerRuntime {
     pub fn new(engine: String) -> Self {
+        let seq = CONTAINER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self {
             engine,
+            namespace: format!("{}-{}-{seq}", std::process::id(), lease_namespace_salt()),
             containers: BTreeMap::new(),
         }
     }
 
-    fn name(lease: LeaseId) -> String {
-        format!("archon-lease-{}", lease.as_u64())
+    fn name(&self, lease: LeaseId) -> String {
+        format!("archon-{}-lease-{}", self.namespace, lease.as_u64())
     }
 
     pub fn activate(
@@ -34,11 +40,13 @@ impl ContainerRuntime {
         image: &str,
         command: &[String],
         limits: &LeaseLimits,
+        storage: &[StorageMount],
+        ports: &[PortPublish],
     ) -> Result<(), String> {
         if self.containers.contains_key(&lease) {
             return Ok(());
         }
-        let name = Self::name(lease);
+        let name = self.name(lease);
         let count = limits.cpu_count;
         let mut cmd = Command::new(&self.engine);
         cmd.arg("run")
@@ -53,6 +61,15 @@ impl ContainerRuntime {
         }
         if limits.memory_bytes > 0 {
             cmd.arg(format!("--memory={}b", limits.memory_bytes));
+        }
+        for mount in storage {
+            cmd.arg(format!("--volume={}:{}", mount.host_path, mount.mount_path));
+        }
+        for port in ports {
+            match port.host_port {
+                Some(host) => cmd.arg(format!("-p={host}:{}", port.container_port)),
+                None => cmd.arg(format!("-p={}", port.container_port)),
+            };
         }
         cmd.arg(image).args(command);
         let output = cmd
@@ -105,4 +122,12 @@ impl ContainerRuntime {
             Err(_) => false,
         }
     }
+}
+
+fn lease_namespace_salt() -> u64 {
+    use std::time::SystemTime;
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0)
 }

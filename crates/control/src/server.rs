@@ -10,6 +10,18 @@ use archon_kernel::{
 };
 use archon_node::service::NodeService;
 
+/// A parsed client submission.
+struct SubmitSpec {
+    owner: u64,
+    cpus: u64,
+    memory_mib: u64,
+    lifetime_secs: u64,
+    command: Vec<String>,
+    keep_alive: bool,
+    volumes: Vec<String>,
+    ports: Vec<String>,
+}
+
 /// How the control plane reaches its execution agents.
 pub enum AgentLink {
     /// Execute on this machine; cgroup root enables kernel enforcement.
@@ -114,8 +126,7 @@ impl ControlPlane {
         }
         for (request, owner) in self.service.take_restarts() {
             eprintln!("archon: restarting keep-alive request {}", request.id);
-            let command = request.command.clone();
-            self.service.submit(request, owner, command);
+            self.service.submit(request, owner);
             match self.service.admit_one() {
                 Ok(Some(id)) => eprintln!("archon: restarted as request {id}"),
                 Ok(None) => {} // queued until capacity returns
@@ -247,21 +258,34 @@ impl ControlPlane {
                 lifetime_secs,
                 command,
                 keep_alive,
-            } => self.submit(owner, cpus, memory_mib, lifetime_secs, command, keep_alive),
+                volumes,
+                ports,
+            } => self.submit(SubmitSpec {
+                owner,
+                cpus,
+                memory_mib,
+                lifetime_secs,
+                command,
+                keep_alive,
+                volumes,
+                ports,
+            }),
             ClientRequest::Status => self.status(),
             ClientRequest::Revoke { lease } => self.revoke(lease),
         }
     }
 
-    fn submit(
-        &mut self,
-        owner: u64,
-        cpus: u64,
-        memory_mib: u64,
-        lifetime_secs: u64,
-        command: Vec<String>,
-        keep_alive: bool,
-    ) -> ServerResponse {
+    fn submit(&mut self, spec: SubmitSpec) -> ServerResponse {
+        let SubmitSpec {
+            owner,
+            cpus,
+            memory_mib,
+            lifetime_secs,
+            command,
+            keep_alive,
+            volumes,
+            ports,
+        } = spec;
         if command.is_empty() {
             return ServerResponse::Error {
                 reason: "empty command".into(),
@@ -294,9 +318,29 @@ impl ControlPlane {
             priority: 1,
             machine_local: true,
             image: None,
+            storage: volumes
+                .iter()
+                .filter_map(|spec| spec.split_once(':'))
+                .map(|(host_path, mount_path)| archon_kernel::StorageMount {
+                    host_path: host_path.into(),
+                    mount_path: mount_path.into(),
+                })
+                .collect(),
+            ports: ports
+                .iter()
+                .map(|spec| match spec.split_once(':') {
+                    Some((host, container)) => archon_kernel::PortPublish {
+                        container_port: container.parse().expect("port"),
+                        host_port: Some(host.parse().expect("host port")),
+                    },
+                    None => archon_kernel::PortPublish {
+                        container_port: spec.parse().expect("port"),
+                        host_port: None,
+                    },
+                })
+                .collect(),
         };
-        self.service
-            .submit(request, OwnerId::from_u64(owner), command);
+        self.service.submit(request, OwnerId::from_u64(owner));
         match self.service.admit_one() {
             Ok(Some(_)) => ServerResponse::Submitted {
                 request: id.as_u64(),

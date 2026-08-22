@@ -290,8 +290,8 @@ impl NodeService {
 
     /// Submit a workload: queued for admission; its command runs when the
     /// lease activates.
-    pub fn submit(&mut self, request: Request, owner: OwnerId, command: Vec<String>) {
-        self.commands.insert(request.id, command);
+    pub fn submit(&mut self, request: Request, owner: OwnerId) {
+        self.commands.remove(&request.id);
         self.next_request_id = self.next_request_id.max(request.id.as_u64() + 1);
         self.queue.push(Queued {
             request,
@@ -311,8 +311,9 @@ impl NodeService {
         };
         let request_id = admission.request.id;
         let lease = LeaseId::from_u64(self.cluster.leases.len() as u64 + 1);
-        let command = self.commands.remove(&request_id).unwrap_or_default();
-        self.lease_commands.insert(lease, command.clone());
+        self.commands.remove(&request_id);
+        let command = admission.request.command.clone();
+        self.lease_commands.insert(lease, command);
         self.lease_images
             .insert(lease, admission.request.image.clone());
         self.requests
@@ -683,6 +684,16 @@ impl NodeService {
                     .get(&lease)
                     .cloned()
                     .flatten()
+                    .unwrap_or_default(),
+                storage: self
+                    .requests
+                    .get(&lease)
+                    .map(|(request, _)| request.storage.clone())
+                    .unwrap_or_default(),
+                ports: self
+                    .requests
+                    .get(&lease)
+                    .map(|(request, _)| request.ports.clone())
                     .unwrap_or_default(),
             },
             Effect::Release { .. } => AgentRequest::Release {

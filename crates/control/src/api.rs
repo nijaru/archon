@@ -48,6 +48,12 @@ pub enum ClientRequest {
         command: Vec<String>,
         #[serde(default)]
         keep_alive: bool,
+        /// "host_path:mount_path" bind mounts.
+        #[serde(default)]
+        volumes: Vec<String>,
+        /// Ports to publish; "container" or "host:container".
+        #[serde(default)]
+        ports: Vec<String>,
     },
     Status,
     Revoke {

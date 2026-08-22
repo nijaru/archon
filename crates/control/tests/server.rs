@@ -69,6 +69,8 @@ fn submit_status_revoke_over_the_wire() {
             lifetime_secs: 3_600,
             command: vec!["sleep".into(), "30".into()],
             keep_alive: false,
+            volumes: vec![],
+            ports: vec![],
         },
     );
     let ServerResponse::Submitted { lease, .. } = response else {
@@ -145,6 +147,8 @@ fn empty_command_is_rejected() {
             lifetime_secs: 60,
             command: vec![],
             keep_alive: false,
+            volumes: vec![],
+            ports: vec![],
         },
     );
     assert!(matches!(response, ServerResponse::Error { .. }));

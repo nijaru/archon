@@ -63,6 +63,8 @@ fn request(id: u64, command: Vec<String>, memory_mib: u64) -> Request {
         priority: 1,
         machine_local: true,
         image: None,
+        storage: vec![],
+        ports: vec![],
     }
 }
 

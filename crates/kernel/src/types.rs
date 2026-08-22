@@ -176,6 +176,12 @@ pub struct Request {
     /// OCI image reference for container execution; None runs the command
     /// as a plain process on the host.
     pub image: Option<String>,
+    /// Host directories bound into the container. Ignored by the process
+    /// adapter (it already shares the host filesystem).
+    pub storage: Vec<StorageMount>,
+    /// Container ports to publish to the host. Ignored by the process
+    /// adapter (it already shares the host network namespace).
+    pub ports: Vec<PortPublish>,
     pub lifetime: u64,
     pub priority: u32,
     /// Keep-alive workloads are re-queued and re-placed automatically when
@@ -194,6 +200,21 @@ pub struct Queued {
     pub request: Request,
     pub owner: crate::ids::OwnerId,
     pub submitted_at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct StorageMount {
+    pub host_path: String,
+    pub mount_path: String,
+}
+
+/// A container port published to the host; None lets the host choose.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortPublish {
+    pub container_port: u16,
+    pub host_port: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

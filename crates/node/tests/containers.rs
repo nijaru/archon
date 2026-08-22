@@ -1,13 +1,16 @@
 //! Container execution tests: a lease whose request carries an image runs
-//! as an OCI container with the lease's limits, and lease termination kills
-//! the container. Skipped when no container engine is reachable.
+//! as an OCI container with the lease's limits; volumes bind to the host,
+//! ports publish onto the host, and lease termination kills the container.
+//! Skipped when no container engine is reachable. One sequential test:
+//! containers share the engine's name space, so scenarios must not race.
 
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    Dimension, LeaseId, Need, NodeKind, OwnerId, PortPublish, Request, RequestClass, RequestId,
+    StorageMount, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::protocol::{read_request, write_response};
@@ -55,8 +58,15 @@ fn spawn_agent() -> String {
     addr
 }
 
-fn container_request(id: u64, image: &str) -> Request {
-    Request {
+fn submit_container(
+    service: &mut NodeService,
+    id: u64,
+    image: &str,
+    storage: Vec<StorageMount>,
+    ports: Vec<PortPublish>,
+    command: Vec<String>,
+) -> Option<RequestId> {
+    let request = Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
@@ -67,13 +77,46 @@ fn container_request(id: u64, image: &str) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec!["sleep".into(), "30".into()],
+        command,
         image: Some(image.into()),
         lifetime: 3_600,
-        keep_alive: false,
         priority: 1,
         machine_local: true,
-    }
+        keep_alive: false,
+        storage,
+        ports,
+    };
+    service.submit(request, OwnerId::from_u64(1));
+    service.cluster.set_now(1);
+    service.admit_one().expect("admit")
+}
+
+/// The namespaced container for a lease; names end in `-lease-<id>`.
+fn find_container(lease: LeaseId) -> Option<String> {
+    let suffix = format!("lease-{}", lease.as_u64());
+    let output = Command::new("docker")
+        .args([
+            "ps",
+            "--filter",
+            &format!("name={suffix}"),
+            "--format",
+            "{{.Names}}",
+        ])
+        .output()
+        .expect("docker ps");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find(|name| name.ends_with(&suffix))
+        .map(String::from)
+}
+
+fn wait_until_container(lease: LeaseId) -> Option<String> {
+    let mut name = None;
+    wait_until(Duration::from_secs(30), || {
+        name = find_container(lease);
+        name.is_some()
+    });
+    name
 }
 
 fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
@@ -88,54 +131,104 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 }
 
 #[test]
-fn image_request_runs_as_a_container_and_revoke_kills_it() {
+fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
     if !engine_available() {
         eprintln!("skipping: docker not reachable");
         return;
     }
+    // Remove containers left by earlier crashed runs so name discovery
+    // only sees this run's containers.
+    let stale = Command::new("docker")
+        .args(["ps", "-aq", "--filter", "name=archon-"])
+        .output()
+        .expect("list stale");
+    for id in String::from_utf8_lossy(&stale.stdout).lines() {
+        if !id.is_empty() {
+            let _ = Command::new("docker").arg("rm").arg("-f").arg(id).output();
+        }
+    }
+
+    // Part 1: lifecycle + limits.
     let addr = spawn_agent();
     let mut service = NodeService::new();
     service.register_remote(&addr).expect("register");
-
-    service.submit(
-        container_request(1, "busybox:latest"),
-        OwnerId::from_u64(1),
-        vec!["sleep".into(), "30".into()],
-    );
-    service.cluster.set_now(1);
-    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
-    let lease = LeaseId::from_u64(1);
-    let name = format!("archon-lease-{}", lease.as_u64());
-
-    let running = wait_until(Duration::from_secs(30), || {
-        let output = Command::new("docker")
-            .args(["inspect", "-f", "{{.State.Running}}", &name])
-            .output();
-        matches!(
-            output,
-            Ok(output) if String::from_utf8_lossy(&output.stdout).trim() == "true"
-        )
-    });
-    assert!(running, "the lease's container must be running");
-
-    // The container's limits carry the lease's claims.
-    let output = Command::new("docker")
-        .args(["inspect", "-f", "{{.HostConfig.NanoCpus}}", &name])
-        .output()
-        .expect("inspect cpus");
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
+        submit_container(
+            &mut service,
+            1,
+            "busybox:latest",
+            vec![],
+            vec![],
+            vec!["sleep".into(), "30".into()],
+        ),
+        Some(RequestId::from_u64(1))
+    );
+    let lease = LeaseId::from_u64(1);
+    let name = wait_until_container(lease);
+    let name = name.unwrap_or_else(|| format!("archon-lease-{}", lease.as_u64()));
+
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            docker_inspect("{{.State.Running}}", &name) == "true"
+        }),
+        "the lease's container must be running"
+    );
+    assert_eq!(
+        docker_inspect("{{.HostConfig.NanoCpus}}", &name),
         "1000000000",
         "1 cpu claim = 1.0 cpus"
     );
 
     service.revoke(lease).expect("revoke");
-    let gone = wait_until(Duration::from_secs(10), || {
-        !Command::new("docker")
-            .args(["inspect", &name])
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(true)
-    });
-    assert!(gone, "revoke must remove the container");
+    assert!(
+        wait_until(Duration::from_secs(10), || find_container(lease).is_none()),
+        "revoke must remove the container"
+    );
+
+    // Part 2: volumes round-trip and ports publish.
+    let host_dir = std::env::temp_dir().join(format!("archon-vol-{}", std::process::id()));
+    std::fs::create_dir_all(&host_dir).expect("create host dir");
+    assert_eq!(
+        submit_container(
+            &mut service,
+            2,
+            "busybox:latest",
+            vec![StorageMount {
+                host_path: host_dir.display().to_string(),
+                mount_path: "/data".into(),
+            }],
+            vec![PortPublish {
+                container_port: 8080,
+                host_port: None,
+            }],
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "echo stored > /data/proof && httpd -f -p 8080 && sleep 30".into(),
+            ],
+        ),
+        Some(RequestId::from_u64(2))
+    );
+    let lease2 = LeaseId::from_u64(2);
+    let name2 = wait_until_container(lease2).expect("container appears");
+
+    let wrote = wait_until(Duration::from_secs(30), || host_dir.join("proof").exists());
+    assert!(wrote, "the bind mount must reach the host directory");
+    let content = std::fs::read_to_string(host_dir.join("proof")).expect("read proof");
+    assert_eq!(content.trim(), "stored");
+    assert!(
+        docker_inspect("{{json .HostConfig.PortBindings}}", &name2).contains("8080/tcp"),
+        "port 8080 must be published"
+    );
+
+    service.revoke(lease2).expect("revoke");
+    let _ = std::fs::remove_dir_all(&host_dir);
+}
+
+fn docker_inspect(fmt: &str, name: &str) -> String {
+    Command::new("docker")
+        .args(["inspect", "-f", fmt, name])
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_default()
 }

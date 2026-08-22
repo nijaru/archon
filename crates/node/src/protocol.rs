@@ -7,6 +7,7 @@
 
 use std::io::{Read, Write};
 
+use archon_kernel::{PortPublish, StorageMount};
 use serde::{Deserialize, Serialize};
 
 /// Resource limits derived from a lease's claims. Zero means unlimited.
@@ -53,6 +54,12 @@ pub enum AgentRequest {
         /// OCI image reference; empty runs the command as a plain process.
         #[serde(default)]
         image: String,
+        /// Host directories bound into the container.
+        #[serde(default)]
+        storage: Vec<StorageMount>,
+        /// Container ports published to the host.
+        #[serde(default)]
+        ports: Vec<PortPublish>,
     },
     Release {
         binding: u64,

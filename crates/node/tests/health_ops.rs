@@ -66,16 +66,14 @@ fn keep_alive_submit(service: &mut NodeService, id: u64) -> Option<RequestId> {
         data: vec![],
         command: vec!["sleep".into(), "30".into()],
         image: None,
+        storage: vec![],
+        ports: vec![],
         lifetime: 3_600,
         priority: 1,
         machine_local: true,
         keep_alive: true,
     };
-    service.submit(
-        request,
-        OwnerId::from_u64(1),
-        vec!["sleep".into(), "30".into()],
-    );
+    service.submit(request, OwnerId::from_u64(1));
     service.cluster.set_now(1);
     service.admit_one().expect("admit")
 }
@@ -121,8 +119,7 @@ fn dead_agent_quarantines_and_keep_alive_work_replaces() {
     let restarts = service.take_restarts();
     assert!(!restarts.is_empty(), "keep-alive work must be restarted");
     for (request, owner) in restarts {
-        let command = request.command.clone();
-        service.submit(request, owner, command);
+        service.submit(request, owner);
         service.admit_one().unwrap();
     }
 
@@ -182,15 +179,13 @@ fn submit_run_once(service: &mut NodeService, id: u64) -> Option<RequestId> {
         data: vec![],
         command: vec!["sleep".into(), "30".into()],
         image: None,
+        storage: vec![],
+        ports: vec![],
         lifetime: 3_600,
         priority: 1,
         machine_local: true,
         keep_alive: false,
     };
-    service.submit(
-        request,
-        OwnerId::from_u64(2),
-        vec!["sleep".into(), "30".into()],
-    );
+    service.submit(request, OwnerId::from_u64(2));
     service.admit_one().expect("admit")
 }

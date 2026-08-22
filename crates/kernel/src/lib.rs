@@ -30,8 +30,8 @@ pub use preempt::preempt_victims;
 pub use select::select;
 pub use types::{
     Allocation, Attrs, Binding, BindingState, Claim, Dimension, Edge, EdgeKind, Endpoint,
-    EndpointPhase, Filter, Lease, LeaseState, Need, Node, NodeKind, Preference, Quantity, Queued,
-    Request, RequestClass, TopologyConstraint, qty, quantity_get,
+    EndpointPhase, Filter, Lease, LeaseState, Need, Node, NodeKind, PortPublish, Preference,
+    Quantity, Queued, Request, RequestClass, StorageMount, TopologyConstraint, qty, quantity_get,
 };
 
 impl Cluster {

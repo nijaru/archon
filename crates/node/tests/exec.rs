@@ -33,6 +33,8 @@ fn request(id: u64, command: Vec<String>) -> Request {
         priority: 1,
         machine_local: true,
         image: None,
+        storage: vec![],
+        ports: vec![],
     }
 }
 
@@ -42,7 +44,6 @@ fn lease_runs_a_real_process() {
     service.submit(
         request(1, vec!["sleep".into(), "10".into()]),
         OwnerId::from_u64(1),
-        vec!["sleep".into(), "10".into()],
     );
     service.tick().unwrap();
     assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
@@ -58,7 +59,6 @@ fn lease_expiry_kills_the_process() {
     service.submit(
         request(1, vec!["sleep".into(), "10".into()]),
         OwnerId::from_u64(1),
-        vec!["sleep".into(), "10".into()],
     );
     // Shorten the lease so expiry is due immediately: manual clock, since
     // tick() would jump to real wall-clock time.

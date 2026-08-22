@@ -318,15 +318,13 @@ fn demo(remote: Option<String>) {
         command: vec!["sleep".into(), "5".into()],
         machine_local: true,
         image: None,
+        storage: vec![],
+        ports: vec![],
         lifetime: 30,
         keep_alive: false,
         priority: 1,
     };
-    service.submit(
-        request,
-        archon_kernel::OwnerId::from_u64(1),
-        vec!["sleep".into(), "5".into()],
-    );
+    service.submit(request, archon_kernel::OwnerId::from_u64(1));
     service.tick().expect("tick");
     let admitted = service.admit_one().expect("admit");
     assert_eq!(admitted, Some(archon_kernel::RequestId::from_u64(1)));
@@ -419,6 +417,8 @@ fn submit_request(args: &[String]) -> ClientRequest {
     let mut mem_mib = 0;
     let mut lifetime = 60;
     let mut keep_alive = false;
+    let mut volumes: Vec<String> = Vec::new();
+    let mut ports: Vec<String> = Vec::new();
     let mut rest = args;
     while !rest.is_empty() && rest[0].starts_with("--") && rest[0] != "--" {
         let (flag, value) = (rest[0].as_str(), rest.get(1).expect("flag value"));
@@ -430,6 +430,16 @@ fn submit_request(args: &[String]) -> ClientRequest {
             "--keep-alive" => {
                 keep_alive = true;
                 rest = &rest[1..];
+                continue;
+            }
+            "--volume" => {
+                volumes.push(value.clone());
+                rest = &rest[2..];
+                continue;
+            }
+            "--publish" => {
+                ports.push(value.clone());
+                rest = &rest[2..];
                 continue;
             }
             other => {
@@ -453,6 +463,8 @@ fn submit_request(args: &[String]) -> ClientRequest {
         lifetime_secs: lifetime,
         command,
         keep_alive,
+        volumes,
+        ports,
     }
 }
 

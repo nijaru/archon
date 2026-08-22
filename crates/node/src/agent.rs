@@ -65,16 +65,20 @@ impl LeaseAgent {
                 command,
                 limits,
                 image,
+                storage,
+                ports,
             } => {
                 if self.check_session(session) {
                     return self.failed(binding, &format!("stale session {session}"));
                 }
                 let lease_id = LeaseId::from_u64(lease);
                 let result = if image.is_empty() {
+                    // Processes share the host filesystem and network;
+                    // mounts and ports are container-only concerns.
                     self.process.activate(lease_id, &command, &limits)
                 } else {
                     self.containers
-                        .activate(lease_id, &image, &command, &limits)
+                        .activate(lease_id, &image, &command, &limits, &storage, &ports)
                 };
                 match result {
                     Ok(()) => AgentResponse::Activated { binding },
