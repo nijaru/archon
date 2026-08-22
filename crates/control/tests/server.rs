@@ -22,7 +22,7 @@ fn spawn_server(name: &str) -> String {
     std::thread::spawn(move || {
         let link = archon_control::server::AgentLink::Local { cgroup_root: None };
         let plane = std::sync::Arc::new(std::sync::Mutex::new(
-            ControlPlane::boot(link, log).expect("boot"),
+            ControlPlane::boot(link, log, 0).expect("boot"),
         ));
         ControlPlane::serve(&plane, listener);
     });
@@ -108,7 +108,7 @@ fn wrong_token_is_rejected_before_any_work() {
     let server_token = token.clone();
     std::thread::spawn(move || {
         let link = archon_control::server::AgentLink::Local { cgroup_root: None };
-        let mut plane = ControlPlane::boot(link, log).expect("boot");
+        let mut plane = ControlPlane::boot(link, log, 0).expect("boot");
         plane.require_token(server_token);
         ControlPlane::serve(&std::sync::Arc::new(std::sync::Mutex::new(plane)), listener);
     });

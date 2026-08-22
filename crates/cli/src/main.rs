@@ -73,6 +73,7 @@ fn serve(args: &[String]) {
     let mut no_local = false;
     let mut token_file = None;
     let mut probe_secs: u64 = 5;
+    let mut compact_every: u64 = 10_000;
     let mut cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
     let mut index = 0;
     while index < args.len() {
@@ -91,6 +92,7 @@ fn serve(args: &[String]) {
             "--remote" => remote = Some(value.clone()),
             "--token-file" => token_file = Some(value.clone()),
             "--probe-secs" => probe_secs = value.parse().expect("probe-secs"),
+            "--compact-every" => compact_every = value.parse().expect("compact-every"),
             "--cgroup-root" => cgroup_root = Some(value.clone()),
             _ => usage(),
         }
@@ -104,7 +106,8 @@ fn serve(args: &[String]) {
         (None, false) => archon_control::server::AgentLink::Local { cgroup_root },
         (None, true) => archon_control::server::AgentLink::None,
     };
-    let mut plane = archon_control::server::ControlPlane::boot(link, log).expect("boot");
+    let mut plane =
+        archon_control::server::ControlPlane::boot(link, log, compact_every).expect("boot");
     match load_token(&token_file) {
         Some(token) => {
             plane.require_token(token);

@@ -5,6 +5,7 @@ use crate::ids::NodeId;
 use crate::types::{Edge, EdgeKind, Node, NodeKind};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Graph {
     pub revision: u64,
     nodes: BTreeMap<NodeId, Node>,

@@ -95,6 +95,19 @@ pub struct NodeService {
     history: Vec<Command>,
 }
 
+/// Restorable controller-side state that lives outside the kernel log.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct ServiceState {
+    pub lease_commands: BTreeMap<LeaseId, Vec<String>>,
+    pub lease_images: BTreeMap<LeaseId, Option<String>>,
+    pub requests: BTreeMap<LeaseId, (Request, OwnerId)>,
+    pub restart_handled: std::collections::BTreeSet<LeaseId>,
+    pub restart_counts: BTreeMap<RequestId, u32>,
+    pub next_request_id: u64,
+    pub next_session: u64,
+    pub next_binding: u64,
+}
+
 /// One registered machine's identity in the controller.
 #[derive(Clone, Debug)]
 pub struct MachineRegistration {
@@ -343,6 +356,41 @@ impl NodeService {
     /// Every command applied since construction, in order.
     pub fn command_history(&self) -> Vec<Command> {
         self.history.clone()
+    }
+
+    /// Capture the controller-side state that outlives restarts alongside
+    /// the cluster snapshot.
+    pub fn state_snapshot(&self) -> ServiceState {
+        ServiceState {
+            lease_commands: self.lease_commands.clone(),
+            lease_images: self.lease_images.clone(),
+            requests: self.requests.clone(),
+            restart_handled: self.restart_handled.clone(),
+            restart_counts: self.restart_counts.clone(),
+            next_request_id: self.next_request_id,
+            next_session: self.next_session,
+            next_binding: self.next_binding,
+        }
+    }
+
+    /// Restore a full controller from a snapshot: the cluster's decisions
+    /// plus the controller-side state that outlives restarts.
+    pub fn restore(&mut self, cluster: archon_kernel::Cluster, state: ServiceState) {
+        self.cluster = cluster;
+        self.pending.clear();
+        self.restore_state(state);
+    }
+
+    /// Restore controller-side state captured by [`NodeService::state_snapshot`].
+    pub fn restore_state(&mut self, state: ServiceState) {
+        self.next_request_id = state.next_request_id;
+        self.next_session = state.next_session;
+        self.next_binding = state.next_binding;
+        self.lease_commands = state.lease_commands;
+        self.lease_images = state.lease_images;
+        self.requests = state.requests;
+        self.restart_handled = state.restart_handled;
+        self.restart_counts = state.restart_counts;
     }
 
     /// Queue depth, for status reporting.

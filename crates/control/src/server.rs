@@ -37,7 +37,11 @@ use crate::log::CommandLog;
 
 pub struct ControlPlane {
     service: NodeService,
-    _log_path: PathBuf,
+    log_path: PathBuf,
+    /// Commands appended since the last compaction.
+    commands_since_compaction: u64,
+    /// Compact when the log exceeds this many commands (0 = never).
+    compact_every: u64,
     next_request: u64,
     /// When set, every connection must present this token in its Greeting.
     token: Option<String>,
@@ -49,64 +53,137 @@ impl ControlPlane {
     /// first boot (empty log) discovers the machine. Live leases are then
     /// revoked: a fresh agent holds no processes, so recovery restores
     /// decisions, it never re-executes work.
-    pub fn boot(link: AgentLink, log_path: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn boot(
+        link: AgentLink,
+        log_path: PathBuf,
+        compact_every: u64,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut service = NodeService::new();
-        match &link {
-            AgentLink::Local { cgroup_root } => {
-                service.register_local(cgroup_root.clone())?;
-            }
-            AgentLink::Remote { addr } => {
-                service.register_remote(addr)?;
-            }
-            AgentLink::None => {}
+
+        // A snapshot restores everything at compaction time; the log then
+        // replays only what happened since.
+        let snapshot_path = Self::snapshot_path(&log_path);
+        let state_path = Self::state_path(&log_path);
+        let restored = snapshot_path.exists() && state_path.exists();
+        if restored {
+            let cluster: archon_kernel::Cluster =
+                serde_json::from_reader(std::fs::File::open(&snapshot_path)?)?;
+            let state: archon_node::service::ServiceState =
+                serde_json::from_reader(std::fs::File::open(&state_path)?)?;
+            service.restore(cluster, state);
         }
+
         let commands = CommandLog::read(&log_path)?;
-        let first_boot = commands.is_empty();
-        fn make_sink(log_path: &std::path::Path) -> Box<dyn FnMut(&Command) + Send> {
-            let log_path = log_path.to_path_buf();
-            Box::new(move |command: &Command| {
-                let mut log = CommandLog::open(&log_path).expect("open command log");
-                log.append(command).expect("append command log");
-            })
-        }
+        let first_boot = !restored && commands.is_empty();
+
         if first_boot && !matches!(link, AgentLink::None) {
+            // The graph of record enters the log on first boot so restarts
+            // replay it instead of rediscovering.
+            service.set_command_sink(Some(Self::make_sink(&log_path)));
             match &link {
-                AgentLink::None => {}
                 AgentLink::Local { cgroup_root } => {
-                    // The graph of record enters the log on first boot so
-                    // restarts replay it instead of rediscovering.
-                    service.set_command_sink(Some(make_sink(&log_path)));
                     service.register_local(cgroup_root.clone())?;
-                    service.set_command_sink(None);
                 }
                 AgentLink::Remote { addr } => {
-                    service.set_command_sink(Some(make_sink(&log_path)));
                     service.register_remote(addr)?;
-                    service.set_command_sink(None);
                 }
+                AgentLink::None => {}
             }
+            service.set_command_sink(None);
         }
+
         let replayed = commands.len();
         service.replay(commands)?;
-        service.set_command_sink(Some(make_sink(&log_path)));
+
+        // Recovery policy: live leases do not survive a controller restart.
+        // A fresh controller holds no processes, so work is revoked, never
+        // silently re-executed.
+        service.set_command_sink(Some(Self::make_sink(&log_path)));
         let recovered = service.revoke_live_leases()?;
+
+        // Register this process's own execution path (local dev or the
+        // legacy connect-out agent); dial-in agents arrive via serve().
+        if !matches!(link, AgentLink::None) {
+            match &link {
+                AgentLink::Local { cgroup_root } => {
+                    service.register_local(cgroup_root.clone())?;
+                }
+                AgentLink::Remote { addr } => {
+                    service.register_remote(addr)?;
+                }
+                AgentLink::None => {}
+            }
+        }
+
         let next_request = service
             .cluster
             .leases
             .keys()
-            .max()
             .map(|id| id.as_u64() + 1)
+            .max()
             .unwrap_or(1);
         eprintln!(
-            "archon: {}boot, recovered {replayed} commands, revoked {recovered} live leases",
-            if first_boot { "first " } else { "" }
+            "archon: {}boot, replayed {replayed} commands, revoked {recovered} live leases",
+            if restored {
+                "snapshot "
+            } else if first_boot {
+                "first "
+            } else {
+                ""
+            }
         );
         Ok(Self {
             service,
             token: None,
-            _log_path: log_path,
+            log_path,
+            commands_since_compaction: 0,
+            compact_every,
             next_request,
         })
+    }
+
+    fn snapshot_path(log_path: &std::path::Path) -> PathBuf {
+        let mut path = log_path.as_os_str().to_owned();
+        path.push(".snapshot");
+        PathBuf::from(path)
+    }
+
+    fn state_path(log_path: &std::path::Path) -> PathBuf {
+        let mut path = log_path.as_os_str().to_owned();
+        path.push(".state");
+        PathBuf::from(path)
+    }
+
+    fn make_sink(log_path: &std::path::Path) -> Box<dyn FnMut(&Command) + Send> {
+        let log_path = log_path.to_path_buf();
+        Box::new(move |command: &Command| {
+            let mut log = CommandLog::open(&log_path).expect("open command log");
+            log.append(command).expect("append command log");
+        })
+    }
+
+    /// Write a snapshot of the cluster plus controller state, then truncate
+    /// the command log. Restarts load the snapshot and replay only what
+    /// came after it.
+    pub fn compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        fn write_atomic<T: serde::Serialize>(
+            path: &std::path::Path,
+            value: &T,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let tmp = path.with_extension("tmp");
+            serde_json::to_writer(std::fs::File::create(&tmp)?, value)?;
+            std::fs::rename(&tmp, path)?;
+            Ok(())
+        }
+        write_atomic(&Self::snapshot_path(&self.log_path), &self.service.cluster)?;
+        write_atomic(
+            &Self::state_path(&self.log_path),
+            &self.service.state_snapshot(),
+        )?;
+        std::fs::write(&self.log_path, b"")?;
+        self.commands_since_compaction = 0;
+        eprintln!("archon: compacted command log into snapshot");
+        Ok(())
     }
 
     /// Require a shared token on every connection.
@@ -115,7 +192,8 @@ impl ControlPlane {
     }
 
     /// Periodic maintenance: expire due leases, probe agents, quarantine
-    /// unreachable machines, and restart keep-alive workloads.
+    /// unreachable machines, restart keep-alive workloads, and compact the
+    /// log when it grows past the threshold.
     pub fn maintain(&mut self) {
         self.service.tick().ok();
         let unreachable = self.service.probe_agents();
@@ -132,6 +210,13 @@ impl ControlPlane {
                 Ok(None) => {} // queued until capacity returns
                 Err(err) => eprintln!("archon: restart admission failed: {err}"),
             }
+        }
+        self.commands_since_compaction = self.service.cluster.log.len() as u64;
+        if self.compact_every > 0
+            && self.commands_since_compaction >= self.compact_every
+            && let Err(err) = self.compact()
+        {
+            eprintln!("archon: compaction failed: {err}");
         }
     }
 
@@ -249,7 +334,7 @@ impl ControlPlane {
         self.handle(request)
     }
 
-    fn handle(&mut self, request: ClientRequest) -> ServerResponse {
+    pub fn handle(&mut self, request: ClientRequest) -> ServerResponse {
         match request {
             ClientRequest::Submit {
                 owner,

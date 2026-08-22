@@ -44,7 +44,33 @@ pub struct Digest {
     pub quarantine: BTreeSet<NodeId>,
 }
 
+/// (De)hydrate a tuple-keyed map as a sequence of pairs.
+#[cfg(feature = "serde")]
+mod tuple_key_map {
+    use crate::ids::NodeId;
+    use crate::ids::ProviderId;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<(ProviderId, NodeId), u64>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let pairs: Vec<((ProviderId, NodeId), u64)> =
+            map.iter().map(|(key, value)| (*key, *value)).collect();
+        pairs.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<(ProviderId, NodeId), u64>, D::Error> {
+        let pairs: Vec<((ProviderId, NodeId), u64)> = Vec::deserialize(deserializer)?;
+        Ok(pairs.into_iter().collect())
+    }
+}
+
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Cluster {
     pub epoch: u64,
     pub now: u64,
@@ -54,6 +80,16 @@ pub struct Cluster {
     pub leases: BTreeMap<LeaseId, Lease>,
     pub bindings: BTreeMap<BindingId, Binding>,
     pub sessions: BTreeMap<NodeId, u64>,
+    /// Serde JSON cannot use tuple keys in objects, so the map travels as
+    /// a vector of pairs.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            with = "tuple_key_map",
+            default,
+            skip_serializing_if = "BTreeMap::is_empty"
+        )
+    )]
     pub last_fence: BTreeMap<(crate::ids::ProviderId, NodeId), u64>,
     pub quarantine: BTreeSet<NodeId>,
 }

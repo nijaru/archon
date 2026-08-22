@@ -1,8 +1,11 @@
 //! Persistence tests: the command log reproduces cluster state exactly, and
 //! recovery expires live work instead of re-executing it.
 
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 
+use archon_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
+use archon_control::server::ControlPlane;
 use archon_kernel::{
     Command, Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass,
     RequestId, qty,
@@ -94,4 +97,110 @@ fn recovery_revokes_live_leases_without_reexecution() {
     assert_eq!(revoked, 1);
     assert_eq!(recovered.cluster.leases[&lease].state, LeaseState::Revoked);
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn snapshot_compaction_preserves_state_across_restarts() {
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let dir = std::env::temp_dir().join(format!("archon-snap-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let log = dir.join("cluster.jsonl");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap().to_string();
+    let link = archon_control::server::AgentLink::Local { cgroup_root: None };
+    let plane = Arc::new(Mutex::new(
+        ControlPlane::boot(link, log.clone(), 0).expect("boot"),
+    ));
+    {
+        let plane = plane.clone();
+        std::thread::spawn(move || ControlPlane::serve(&plane, listener));
+    }
+
+    // Operate: two workloads live, one already finished (revoked).
+    let mut stream = TcpStream::connect(&addr).expect("connect");
+    // Connections open with a Greeting before any requests.
+    write_frame(
+        &mut stream,
+        &archon_control::api::Greeting::Client { token: None },
+    )
+    .unwrap();
+    for _id in [1u64, 2] {
+        write_frame(
+            &mut stream,
+            &ClientRequest::Submit {
+                owner: 1,
+                cpus: 1,
+                memory_mib: 0,
+                lifetime_secs: 3_600,
+                command: vec!["sleep".into(), "30".into()],
+                keep_alive: false,
+                volumes: vec![],
+                ports: vec![],
+            },
+        )
+        .unwrap();
+        read_response(&mut stream).unwrap();
+    }
+    write_frame(&mut stream, &ClientRequest::Revoke { lease: 1 }).unwrap();
+    read_response(&mut stream).unwrap();
+
+    // Compact: snapshot + truncated log.
+    plane.lock().unwrap().compact().unwrap();
+    eprintln!(
+        "debug: dir={} exists={} entries={:?}",
+        dir.display(),
+        dir.exists(),
+        std::fs::read_dir(&dir)
+            .map(|entries| entries.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+    );
+    let commands_after_compact = log_len(&log);
+    assert_eq!(
+        commands_after_compact, 0,
+        "compaction must truncate the log"
+    );
+    assert!(log.with_added_extension("snapshot").exists());
+
+    // Restart from the snapshot alone.
+    drop(stream);
+    let link2 = archon_control::server::AgentLink::Local { cgroup_root: None };
+    let mut plane2 = ControlPlane::boot(link2, log.clone(), 0).expect("reboot");
+    let status = plane2.handle(ClientRequest::Status);
+    let ServerResponse::Status { leases, .. } = status else {
+        panic!("expected Status");
+    };
+    assert_eq!(leases.len(), 2, "both leases survive compaction");
+    let revoked = leases.iter().find(|l| l.id == 1).expect("lease 1");
+    assert_eq!(revoked.state, "Revoked");
+    // Recovery policy: a restarted controller revokes live work rather
+    // than re-executing it — both leases come back Revoked.
+    let survivor = leases.iter().find(|l| l.id == 2).expect("lease 2");
+    assert_eq!(survivor.state, "Revoked");
+
+    // The restored controller still operates: fresh work places normally.
+    let response = plane2.handle(ClientRequest::Submit {
+        owner: 1,
+        cpus: 1,
+        memory_mib: 0,
+        lifetime_secs: 3_600,
+        command: vec!["sleep".into(), "30".into()],
+        keep_alive: false,
+        volumes: vec![],
+        ports: vec![],
+    });
+    assert!(
+        matches!(response, ServerResponse::Submitted { lease: 3, .. }),
+        "fresh work must place after restore, got {response:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn log_len(path: &std::path::Path) -> usize {
+    std::fs::read_to_string(path)
+        .map(|content| content.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0)
 }
