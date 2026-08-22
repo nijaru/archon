@@ -55,6 +55,7 @@ fn spawn_agent() -> String {
                 name: "container-host".into(),
                 cpus: description.cpus,
                 memory_bytes: description.memory_bytes,
+                devices: Vec::new(),
             };
             if write_response(&mut stream, &welcome).is_err() {
                 return;

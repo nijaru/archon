@@ -143,6 +143,7 @@ fn snapshot_compaction_preserves_state_across_restarts() {
                 ports: vec![],
                 grace_secs: 0,
                 image: None,
+                gpus: 0,
             },
         )
         .unwrap();
@@ -195,6 +196,7 @@ fn snapshot_compaction_preserves_state_across_restarts() {
         ports: vec![],
         grace_secs: 0,
         image: None,
+        gpus: 0,
     });
     assert!(
         matches!(response, ServerResponse::Submitted { lease: 3, .. }),

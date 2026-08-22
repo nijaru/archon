@@ -22,6 +22,7 @@ struct SubmitSpec {
     ports: Vec<String>,
     grace_secs: u32,
     image: Option<String>,
+    gpus: u64,
 }
 
 /// How the control plane reaches its execution agents.
@@ -275,6 +276,7 @@ impl ControlPlane {
                 name,
                 cpus,
                 memory_bytes,
+                devices,
                 ..
             } => {
                 if let Err(err) = this.lock().unwrap().register_dial_in(
@@ -283,6 +285,7 @@ impl ControlPlane {
                     name,
                     cpus,
                     memory_bytes,
+                    devices,
                 ) {
                     eprintln!("archon: agent {peer} registration failed: {err}");
                 } else {
@@ -309,12 +312,14 @@ impl ControlPlane {
         name: String,
         cpus: u64,
         memory_bytes: u64,
+        devices: Vec<(archon_kernel::NodeKind, String)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let description = archon_node::discover::MachineDescription {
             instance_id,
             name,
             cpus,
             memory_bytes,
+            devices,
         };
         let executor = archon_node::service::RemoteExecutor::from_stream(stream);
         let machine = self
@@ -352,6 +357,7 @@ impl ControlPlane {
                 ports,
                 grace_secs,
                 image,
+                gpus,
             } => self.submit(SubmitSpec {
                 owner,
                 cpus,
@@ -363,6 +369,7 @@ impl ControlPlane {
                 ports,
                 grace_secs,
                 image,
+                gpus,
             }),
             ClientRequest::Status => self.status(),
             ClientRequest::Revoke { lease } => self.revoke(lease),
@@ -381,6 +388,7 @@ impl ControlPlane {
             ports,
             grace_secs,
             image,
+            gpus,
         } = spec;
         if command.is_empty() {
             return ServerResponse::Error {
@@ -398,6 +406,13 @@ impl ControlPlane {
             needs.push(Need {
                 kind: NodeKind::Memory,
                 quantity: qty(Dimension::Bytes, memory_mib * (1 << 20)),
+                filters: vec![],
+            });
+        }
+        if gpus > 0 {
+            needs.push(Need {
+                kind: NodeKind::Gpu,
+                quantity: qty(Dimension::Count, gpus),
                 filters: vec![],
             });
         }

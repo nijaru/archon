@@ -57,6 +57,7 @@ impl ContainerRuntime {
         limits: &LeaseLimits,
         storage: &[StorageMount],
         ports: &[PortPublish],
+        devices: &[String],
     ) -> Result<(), String> {
         if self.containers.contains_key(&lease) {
             return Ok(());
@@ -78,6 +79,9 @@ impl ContainerRuntime {
         }
         if limits.memory_bytes > 0 {
             cmd.arg(format!("--memory={}b", limits.memory_bytes));
+        }
+        for path in devices {
+            cmd.arg(format!("--device={path}:{path}"));
         }
         for mount in storage {
             let relabel = if self.relabels { ":Z" } else { "" };

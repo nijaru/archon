@@ -16,6 +16,8 @@ pub enum Greeting {
         name: String,
         cpus: u64,
         memory_bytes: u64,
+        #[serde(default)]
+        devices: Vec<(archon_kernel::NodeKind, String)>,
     },
     /// A CLI client.
     Client { token: Option<String> },
@@ -60,6 +62,9 @@ pub enum ClientRequest {
         /// OCI image reference; the command runs inside a container.
         #[serde(default)]
         image: Option<String>,
+        /// Device-count request (claims against declared Gpu nodes).
+        #[serde(default)]
+        gpus: u64,
     },
     Status,
     Revoke {

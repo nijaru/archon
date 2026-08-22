@@ -82,6 +82,7 @@ impl LeaseAgent {
                 storage,
                 ports,
                 grace_secs,
+                devices,
             } => {
                 self.grace.insert(LeaseId::from_u64(lease), grace_secs);
                 if self.check_session(session) {
@@ -93,8 +94,9 @@ impl LeaseAgent {
                     // mounts and ports are container-only concerns.
                     self.process.activate(lease_id, &command, &limits)
                 } else {
-                    self.containers
-                        .activate(lease_id, &image, &command, &limits, &storage, &ports)
+                    self.containers.activate(
+                        lease_id, &image, &command, &limits, &storage, &ports, &devices,
+                    )
                 };
                 match result {
                     Ok(()) => AgentResponse::Activated { binding },
@@ -139,6 +141,7 @@ impl LeaseAgent {
             name: description.name,
             cpus: description.cpus,
             memory_bytes: description.memory_bytes,
+            devices: description.devices,
         }
     }
 

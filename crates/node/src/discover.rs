@@ -35,6 +35,11 @@ pub struct MachineDescription {
     pub name: String,
     pub cpus: u64,
     pub memory_bytes: u64,
+    /// Devices this machine exposes, as (kind, host path). Declared via
+    /// ARCHON_DEVICES (`gpu:/dev/nvidia0,nic:...`); real discovery is a
+    /// later upgrade behind the same representation.
+    #[serde(default)]
+    pub devices: Vec<(archon_kernel::NodeKind, String)>,
 }
 
 pub fn describe() -> MachineDescription {
@@ -43,7 +48,32 @@ pub fn describe() -> MachineDescription {
         name: hostname(),
         cpus: std::thread::available_parallelism().map_or(1, |n| n.get()) as u64,
         memory_bytes: total_memory_bytes(),
+        devices: declared_devices(),
     }
+}
+
+/// Parse ARCHON_DEVICES (`gpu:/dev/nvidia0,nic:/dev/eth0`) into device
+/// entries; unparsable entries are skipped with a warning.
+fn declared_devices() -> Vec<(archon_kernel::NodeKind, String)> {
+    let Ok(spec) = std::env::var("ARCHON_DEVICES") else {
+        return Vec::new();
+    };
+    spec.split(',')
+        .filter(|entry| !entry.trim().is_empty())
+        .filter_map(|entry| {
+            let (kind, path) = entry.split_once(':')?;
+            let kind = match kind.trim().to_lowercase().as_str() {
+                "gpu" => archon_kernel::NodeKind::Gpu,
+                "nic" => archon_kernel::NodeKind::Nic,
+                "nvme" => archon_kernel::NodeKind::Nvme,
+                other => {
+                    eprintln!("archon: ignoring unknown device kind {other:?}");
+                    return None;
+                }
+            };
+            Some((kind, path.to_string()))
+        })
+        .collect()
 }
 
 fn total_memory_bytes() -> u64 {
@@ -119,6 +149,17 @@ pub fn build_graph(
             capacity: qty(Dimension::Bytes, description.memory_bytes),
         },
     ];
+    for (kind, path) in &description.devices {
+        let device = ids.node();
+        let mut attrs = Attrs::new();
+        attrs.insert("dev".into(), path.clone());
+        nodes.push(Node {
+            id: device,
+            kind: *kind,
+            attrs,
+            capacity: qty(Dimension::Count, 1),
+        });
+    }
     for cpu in &cpus {
         nodes.push(Node {
             id: *cpu,
@@ -140,6 +181,19 @@ pub fn build_graph(
             kind: EdgeKind::Contains,
             attrs: Attrs::new(),
         });
+    }
+    for (kind, path) in &description.devices {
+        if let Some(device) = nodes
+            .iter()
+            .find(|node| node.kind == *kind && node.attrs.get("dev").is_some_and(|dev| dev == path))
+        {
+            edges.push(Edge {
+                from: machine,
+                to: device.id,
+                kind: EdgeKind::Contains,
+                attrs: Attrs::new(),
+            });
+        }
     }
     (
         LocalMachine {

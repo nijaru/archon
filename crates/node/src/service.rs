@@ -189,11 +189,13 @@ impl NodeService {
                 name,
                 cpus,
                 memory_bytes,
+                devices,
             } => Ok(crate::discover::MachineDescription {
                 instance_id: String::new(),
                 name,
                 cpus,
                 memory_bytes,
+                devices,
             }),
             other => Err(Error::Refused {
                 explanation: format!("expected Welcome, got {other:?}"),
@@ -609,6 +611,31 @@ impl NodeService {
         self.cluster.graph.machine_of(claim.node)
     }
 
+    /// Host device paths bound by a lease's device-kind claims, resolved
+    /// through the graph's `dev` attributes.
+    pub fn lease_devices(&self, lease: LeaseId) -> Vec<String> {
+        use archon_kernel::NodeKind;
+        let Some(allocation_lease) = self.cluster.leases.get(&lease) else {
+            return Vec::new();
+        };
+        allocation_lease
+            .allocation
+            .claims
+            .iter()
+            .filter(|claim| {
+                self.cluster.graph.node(claim.node).is_some_and(|node| {
+                    matches!(node.kind, NodeKind::Gpu | NodeKind::Nic | NodeKind::Nvme)
+                })
+            })
+            .filter_map(|claim| {
+                self.cluster
+                    .graph
+                    .node(claim.node)
+                    .and_then(|node| node.attrs.get("dev").cloned())
+            })
+            .collect()
+    }
+
     pub fn revoke(&mut self, lease: LeaseId) -> Result<(), Error> {
         self.commit(Command::RevokeLease { lease })?;
         self.deliver_all()
@@ -837,6 +864,7 @@ impl NodeService {
                     .get(&lease)
                     .map(|(request, _)| request.grace_secs)
                     .unwrap_or(0),
+                devices: self.lease_devices(lease),
             },
             Effect::Release { .. } => AgentRequest::Release {
                 binding: binding_id.as_u64(),

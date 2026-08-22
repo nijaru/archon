@@ -37,6 +37,9 @@ pub enum AgentRequest {
         name: String,
         cpus: u64,
         memory_bytes: u64,
+        /// Devices this machine exposes, as (kind, host path).
+        #[serde(default)]
+        devices: Vec<(archon_kernel::NodeKind, String)>,
     },
     Prepare {
         binding: u64,
@@ -63,6 +66,9 @@ pub enum AgentRequest {
         /// Seconds between SIGTERM and SIGKILL on teardown.
         #[serde(default)]
         grace_secs: u32,
+        /// Host device paths the lease's claims bound.
+        #[serde(default)]
+        devices: Vec<String>,
     },
     Release {
         binding: u64,
@@ -87,6 +93,8 @@ pub enum AgentResponse {
         name: String,
         cpus: u64,
         memory_bytes: u64,
+        #[serde(default)]
+        devices: Vec<(archon_kernel::NodeKind, String)>,
     },
     Prepared {
         binding: u64,

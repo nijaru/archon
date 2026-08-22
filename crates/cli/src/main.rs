@@ -257,6 +257,7 @@ fn dial_in(
                     name: name.clone().unwrap_or(description.name),
                     cpus: description.cpus,
                     memory_bytes: description.memory_bytes,
+                    devices: description.devices.clone(),
                 };
                 if archon_node::protocol::write_frame(&mut stream, &greeting).is_err() {
                     std::thread::sleep(Duration::from_secs(2));
@@ -427,6 +428,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
     let mut ports: Vec<String> = Vec::new();
     let mut grace_secs: u32 = 0;
     let mut image: Option<String> = None;
+    let mut gpus: u64 = 0;
     let mut rest = args;
     while !rest.is_empty() && rest[0].starts_with("--") && rest[0] != "--" {
         let (flag, value) = (rest[0].as_str(), rest.get(1).expect("flag value"));
@@ -442,6 +444,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
             }
             "--grace-secs" => grace_secs = value.parse().expect("grace-secs"),
             "--image" => image = Some(value.clone()),
+            "--gpu" => gpus = value.parse().expect("gpu count"),
             "--volume" => {
                 volumes.push(value.clone());
                 rest = &rest[2..];
@@ -477,6 +480,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
         ports,
         grace_secs,
         image,
+        gpus,
     }
 }
 

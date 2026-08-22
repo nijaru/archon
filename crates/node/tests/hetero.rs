@@ -9,6 +9,7 @@ use archon_kernel::{
 use archon_node::agent::LeaseAgent;
 use archon_node::protocol::{read_request, write_response};
 use archon_node::runtime::ProcessRuntime;
+use archon_node::service::LocalExecutor;
 use archon_node::service::NodeService;
 
 /// An agent reporting a specific machine shape.
@@ -26,6 +27,7 @@ fn spawn_shaped_agent(instance: &'static str, name: &'static str, cpus: u64) -> 
                 name: name.to_string(),
                 cpus,
                 memory_bytes: description.memory_bytes,
+                devices: Vec::new(),
             };
             if write_response(&mut stream, &welcome).is_err() {
                 return;
@@ -150,4 +152,110 @@ fn small_machine_fills_first_only_when_it_fits() {
     for lease in [LeaseId::from_u64(1), LeaseId::from_u64(2)] {
         service.revoke(lease).expect("revoke");
     }
+}
+
+#[test]
+fn device_claims_resolve_to_host_paths() {
+    // A machine declaring two GPUs; a claim against one resolves to its
+    // host device path through the graph.
+    let mut service = NodeService::new();
+    let base = service
+        .cluster
+        .graph
+        .nodes()
+        .map(|n| n.id.as_u64())
+        .max()
+        .unwrap_or(0);
+    let (_local, nodes, edges) = archon_node::discover::build_graph(
+        &archon_node::discover::MachineDescription {
+            instance_id: "inst-gpu".into(),
+            name: "gpu-box".into(),
+            cpus: 2,
+            memory_bytes: 0,
+            devices: vec![
+                (archon_kernel::NodeKind::Gpu, "/dev/gpuA".into()),
+                (archon_kernel::NodeKind::Gpu, "/dev/gpuB".into()),
+            ],
+        },
+        base,
+    );
+    service
+        .cluster
+        .apply(archon_kernel::Command::ApplyGraph { nodes, edges })
+        .unwrap();
+
+    // Find the first GPU node and claim exactly it.
+    let gpu = service
+        .cluster
+        .graph
+        .nodes_of_kind(archon_kernel::NodeKind::Gpu)
+        .iter()
+        .copied()
+        .find(|id| {
+            service
+                .cluster
+                .graph
+                .node(*id)
+                .is_some_and(|n| n.attrs.get("dev").is_some_and(|d| d == "/dev/gpuA"))
+        })
+        .expect("declared gpu exists");
+    let machine = service
+        .cluster
+        .graph
+        .machine_of(gpu)
+        .expect("device sits under the machine");
+    service
+        .register_agent(
+            archon_node::discover::MachineDescription {
+                instance_id: "inst-gpu".into(),
+                name: "gpu-box".into(),
+                cpus: 2,
+                memory_bytes: 0,
+                devices: vec![
+                    (archon_kernel::NodeKind::Gpu, "/dev/gpuA".into()),
+                    (archon_kernel::NodeKind::Gpu, "/dev/gpuB".into()),
+                ],
+            },
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .unwrap();
+
+    let request = Request {
+        id: RequestId::from_u64(1),
+        class: RequestClass::Batch,
+        needs: vec![
+            Need {
+                kind: NodeKind::Cpu,
+                quantity: qty(Dimension::Count, 1),
+                filters: vec![],
+            },
+            Need {
+                kind: NodeKind::Gpu,
+                quantity: qty(Dimension::Count, 1),
+                filters: vec![],
+            },
+        ],
+        topology: vec![],
+        preferences: vec![],
+        data: vec![],
+        command: vec!["sleep".into(), "5".into()],
+        image: None,
+        storage: vec![],
+        ports: vec![],
+        lifetime: 3_600,
+        priority: 1,
+        machine_local: true,
+        grace_secs: 0,
+        keep_alive: false,
+    };
+    service.submit(request, OwnerId::from_u64(1));
+    let _ = machine;
+    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+    let devices = service.lease_devices(LeaseId::from_u64(1));
+    assert_eq!(devices.len(), 1, "one claimed gpu");
+    assert!(
+        devices[0].starts_with("/dev/gpu"),
+        "resolved host path, got {:?}",
+        devices[0]
+    );
 }
