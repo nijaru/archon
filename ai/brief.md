@@ -87,6 +87,9 @@ substrate to reuse.
 Durability (2026-08-22): atomic cluster snapshots + log compaction
   (--compact-every); boot restores from snapshot and replays only what
   followed. Kernel Cluster/Graph gained opt-in serde derives.
+Workload classes (2026-08-22): CompleteLease/Completed in the kernel,
+batch exit-code accounting via controller polls, drain-on-revoke
+(grace_secs), exponential restart backoff with working cap.
 Health-driven operation (2026-08-21): controller probes agents
   (--probe-secs); unreachable machines quarantine (no placements) and fail
   their live leases; keep-alive workloads re-queue onto survivors, capped
@@ -153,8 +156,7 @@ skeleton runs: additional providers, microVMs, volumes, networking.
 
 ## Next action
 
-Next: **workload classes** (PLAN item 7) — services vs batch vs run-once
-semantics beyond keep-alive: drain-on-revoke for services, batch completion
-accounting, restart backoff. After that, device claims are hardware-gated;
-then the system matches its designed v1 scope. Launch/commercial tasks
+Next: **device claims with real enforcement** (PLAN item 2) — design now,
+GPU proof hardware-gated. This is the last planned completion item; after
+it the system matches its designed v1 scope. Launch/commercial tasks
 (`tk-kwzc`, `tk-n8e9`) stay deferred until the system is complete.

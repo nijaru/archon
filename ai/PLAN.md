@@ -45,7 +45,7 @@ opt-out for multi-member groups, asymmetric-shape integration tests, and the
 session-poisoning fix for read-only probes. Kernel change; all nine sim
 scenarios re-verified against it.
 
-### 2. Device claims with real enforcement
+### 2. Device claims with real enforcement — the last open item
 
 GPU/NIC/NVMe are graph kinds today but only CPU/memory are enforced. Give each
 device kind an enforcement story: exclusive GPU access (NVIDIA MPS off,
@@ -83,11 +83,13 @@ log past a threshold (--compact-every); boot restores from snapshot and
 replays only what followed. Remaining: control-plane HA if single-process
 proves limiting; agents already re-dial automatically.
 
-### 7. Workload classes — next
+### 7. Workload classes — done 2026-08-22
 
-Services vs batch vs run-once semantics beyond keep-alive: drain-on-revoke
-for services, batch completion accounting, restart backoff. The last
-milestone testable without new hardware.
+Batch completion accounting (exit codes complete or fail leases; claims
+free when work finishes rather than at lifetime expiry), drain-on-revoke
+(Request.grace_secs: SIGTERM/docker stop -t before the kill path), and
+exponential restart backoff with a working 5-attempt cap (restart lineage
+fixes caps that never fired across generations).
 
 Services vs batch vs run-once semantics; checkpoint-aware restart; then the
 compatibility layer (Kubernetes, Slurm, Ray as nested/integrated systems) per
