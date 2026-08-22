@@ -106,21 +106,64 @@ impl ContainerRuntime {
     }
 
     pub fn is_running(&mut self, lease: LeaseId) -> bool {
+        matches!(self.status(lease), super::runtime::WorkStatus::Running)
+    }
+
+    /// Observe the container lifecycle via the engine's inspect state.
+    pub fn status(&mut self, lease: LeaseId) -> super::runtime::WorkStatus {
         let Some(name) = self.containers.get(&lease) else {
-            return false;
+            return super::runtime::WorkStatus::Gone;
         };
-        let output = Command::new(&self.engine)
-            .arg("inspect")
-            .arg("-f")
-            .arg("{{.State.Running}}")
-            .arg(name)
-            .output();
-        match output {
-            Ok(output) => {
-                output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
+        let inspect = |format: &str| {
+            Command::new(&self.engine)
+                .arg("inspect")
+                .arg("-f")
+                .arg(format)
+                .arg(name)
+                .output()
+        };
+        match inspect("{{.State.Running}}") {
+            Ok(output)
+                if output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim() == "true" =>
+            {
+                super::runtime::WorkStatus::Running
             }
-            Err(_) => false,
+            Ok(_) => {
+                let code = inspect("{{.State.ExitCode}}")
+                    .ok()
+                    .filter(|output| output.status.success())
+                    .and_then(|output| String::from_utf8_lossy(&output.stdout).trim().parse().ok())
+                    .unwrap_or(-1);
+                super::runtime::WorkStatus::Exited(code)
+            }
+            Err(_) => super::runtime::WorkStatus::Gone,
         }
+    }
+
+    /// Stop with a SIGTERM grace budget before removing the container.
+    pub fn terminate_with_grace(
+        &mut self,
+        lease: LeaseId,
+        grace_secs: u32,
+    ) -> Result<bool, String> {
+        let Some(name) = self.containers.remove(&lease) else {
+            return Ok(false);
+        };
+        Command::new(&self.engine)
+            .arg("stop")
+            .arg("-t")
+            .arg(grace_secs.to_string())
+            .arg(&name)
+            .output()
+            .map_err(|err| format!("{} stop: {err}", self.engine))?;
+        Command::new(&self.engine)
+            .arg("rm")
+            .arg("-f")
+            .arg(&name)
+            .output()
+            .map_err(|err| format!("{} rm: {err}", self.engine))?;
+        Ok(true)
     }
 }
 

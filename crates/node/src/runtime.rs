@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 use archon_kernel::LeaseId;
 
@@ -12,6 +13,17 @@ use crate::protocol::LeaseLimits;
 
 #[cfg(target_os = "linux")]
 use crate::cgroup::CgroupGroup;
+
+/// Lifecycle observation of a lease's workload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkStatus {
+    /// Nothing tracked under this lease.
+    Gone,
+    /// The workload is still running.
+    Running,
+    /// The workload exited on its own.
+    Exited(i32),
+}
 
 #[derive(Default)]
 pub struct ProcessRuntime {
@@ -113,10 +125,64 @@ impl ProcessRuntime {
 
     /// Whether the lease has a running child.
     pub fn is_running(&mut self, lease: LeaseId) -> bool {
-        match self.children.get_mut(&lease) {
-            Some(child) => matches!(child.try_wait(), Ok(None)),
-            None => false,
+        matches!(self.status(lease), WorkStatus::Running)
+    }
+
+    /// Observe the lease's workload lifecycle, reaping finished children.
+    pub fn status(&mut self, lease: LeaseId) -> WorkStatus {
+        let Some(child) = self.children.get_mut(&lease) else {
+            return WorkStatus::Gone;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                self.children.remove(&lease);
+                WorkStatus::Exited(status.code().unwrap_or(-1))
+            }
+            Ok(None) => WorkStatus::Running,
+            Err(_) => WorkStatus::Gone,
         }
+    }
+
+    /// Terminate the lease's workload, asking politely first: SIGTERM with
+    /// a grace budget before the existing kill path. Zero grace goes
+    /// straight to terminate.
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+    pub fn terminate_with_grace(
+        &mut self,
+        lease: LeaseId,
+        grace_secs: u32,
+    ) -> Result<bool, String> {
+        if grace_secs == 0 {
+            return self.terminate(lease);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(group) = self.groups.get(&lease) {
+            for pid in group.pids() {
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
+            }
+            wait_until(Duration::from_secs(grace_secs as u64), || {
+                group.pids().is_empty()
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        if let Some(child) = self.children.get_mut(&lease)
+            && matches!(child.try_wait(), Ok(None))
+        {
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGTERM);
+            }
+            let mut done = false;
+            wait_until(Duration::from_secs(grace_secs as u64), || {
+                if done {
+                    return true;
+                }
+                done = !matches!(child.try_wait(), Ok(None));
+                done
+            });
+        }
+        self.terminate(lease)
     }
 
     #[cfg(target_os = "linux")]
@@ -130,6 +196,18 @@ impl ProcessRuntime {
             .map_err(|err| format!("reap lease {lease}: {err}"))?;
         Ok(was_live)
     }
+}
+
+/// Poll `check` every 100 ms until it returns true or `budget` elapses.
+fn wait_until(budget: std::time::Duration, mut check: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    while !check() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    true
 }
 
 #[cfg(target_os = "linux")]

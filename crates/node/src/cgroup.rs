@@ -51,6 +51,17 @@ impl CgroupGroup {
         self.write("cgroup.kill", "1")
     }
 
+    /// Process ids currently in the group.
+    pub fn pids(&self) -> Vec<i32> {
+        fs::read_to_string(self.path.join("cgroup.procs"))
+            .map(|text| {
+                text.lines()
+                    .filter_map(|line| line.trim().parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Remove the group once its process list is empty.
     pub fn destroy(self) -> Result<(), String> {
         fs::remove_dir(&self.path).map_err(|err| format!("remove {}: {err}", self.path.display()))

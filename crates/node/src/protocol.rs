@@ -60,6 +60,9 @@ pub enum AgentRequest {
         /// Container ports published to the host.
         #[serde(default)]
         ports: Vec<PortPublish>,
+        /// Seconds between SIGTERM and SIGKILL on teardown.
+        #[serde(default)]
+        grace_secs: u32,
     },
     Release {
         binding: u64,
@@ -107,6 +110,8 @@ pub enum AgentResponse {
     Running {
         lease: u64,
         running: bool,
+        /// Set once the workload has exited; None while running or unknown.
+        exit_code: Option<i32>,
     },
 }
 

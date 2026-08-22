@@ -320,6 +320,7 @@ fn demo(remote: Option<String>) {
         data: vec![],
         command: vec!["sleep".into(), "5".into()],
         machine_local: true,
+        grace_secs: 0,
         image: None,
         storage: vec![],
         ports: vec![],
@@ -422,6 +423,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
     let mut keep_alive = false;
     let mut volumes: Vec<String> = Vec::new();
     let mut ports: Vec<String> = Vec::new();
+    let mut grace_secs: u32 = 0;
     let mut rest = args;
     while !rest.is_empty() && rest[0].starts_with("--") && rest[0] != "--" {
         let (flag, value) = (rest[0].as_str(), rest.get(1).expect("flag value"));
@@ -435,6 +437,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
                 rest = &rest[1..];
                 continue;
             }
+            "--grace-secs" => grace_secs = value.parse().expect("grace-secs"),
             "--volume" => {
                 volumes.push(value.clone());
                 rest = &rest[2..];
@@ -468,6 +471,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
         keep_alive,
         volumes,
         ports,
+        grace_secs,
     }
 }
 

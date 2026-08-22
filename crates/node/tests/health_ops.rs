@@ -71,6 +71,7 @@ fn keep_alive_submit(service: &mut NodeService, id: u64) -> Option<RequestId> {
         lifetime: 3_600,
         priority: 1,
         machine_local: true,
+        grace_secs: 0,
         keep_alive: true,
     };
     service.submit(request, OwnerId::from_u64(1));
@@ -184,8 +185,139 @@ fn submit_run_once(service: &mut NodeService, id: u64) -> Option<RequestId> {
         lifetime: 3_600,
         priority: 1,
         machine_local: true,
+        grace_secs: 0,
         keep_alive: false,
     };
     service.submit(request, OwnerId::from_u64(2));
     service.admit_one().expect("admit")
+}
+
+#[test]
+fn restarts_back_off_exponentially() {
+    let mut service = NodeService::new();
+    service
+        .register_local(None)
+        .expect("register local machine");
+
+    // A keep-alive workload whose command always fails.
+    let mut request = Request {
+        id: RequestId::from_u64(1),
+        class: RequestClass::Batch,
+        needs: vec![Need {
+            kind: NodeKind::Cpu,
+            quantity: qty(Dimension::Count, 1),
+            filters: vec![],
+        }],
+        topology: vec![],
+        preferences: vec![],
+        data: vec![],
+        command: vec!["sh".into(), "-c".into(), "exit 1".into()],
+        image: None,
+        storage: vec![],
+        ports: vec![],
+        lifetime: 3_600,
+        priority: 1,
+        machine_local: true,
+        grace_secs: 0,
+        keep_alive: true,
+    };
+    service.submit(request.clone(), OwnerId::from_u64(1));
+    service.cluster.set_now(10);
+    service.admit_one().unwrap();
+
+    // First failure restarts immediately (first attempt has no backoff debt).
+    let mut finished = Vec::new();
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(20));
+        finished = service.collect_completions().unwrap();
+        if !finished.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(finished, vec![LeaseId::from_u64(1)]);
+    let restarts = service.take_restarts();
+    assert_eq!(restarts.len(), 1, "first restart must be immediate");
+    request.id = restarts[0].0.id;
+    service.submit(restarts[0].0.clone(), restarts[0].1);
+    service.admit_one().unwrap();
+
+    // Second failure: backoff of 2s since the last restart at t=10.
+    let mut finished = Vec::new();
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(20));
+        finished = service.collect_completions().unwrap();
+        if !finished.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(finished, vec![LeaseId::from_u64(2)]);
+    service.cluster.set_now(11);
+    assert!(
+        service.take_restarts().is_empty(),
+        "backoff must hold the restart until the delay elapses"
+    );
+    service.cluster.set_now(12);
+    let restarts = service.take_restarts();
+    assert_eq!(restarts.len(), 1, "backoff must release when due");
+}
+
+#[test]
+fn restart_cap_survives_generations() {
+    let mut service = NodeService::new();
+    service
+        .register_local(None)
+        .expect("register local machine");
+
+    let request = Request {
+        id: RequestId::from_u64(1),
+        class: RequestClass::Batch,
+        needs: vec![Need {
+            kind: NodeKind::Cpu,
+            quantity: qty(Dimension::Count, 1),
+            filters: vec![],
+        }],
+        topology: vec![],
+        preferences: vec![],
+        data: vec![],
+        command: vec!["sh".into(), "-c".into(), "exit 1".into()],
+        image: None,
+        storage: vec![],
+        ports: vec![],
+        lifetime: 3_600,
+        priority: 1,
+        machine_local: true,
+        grace_secs: 0,
+        keep_alive: true,
+    };
+    service.submit(request, OwnerId::from_u64(1));
+    service.admit_one().unwrap();
+
+    // Fail, restart, admit; jump the clock past any backoff. After five
+    // restarts the lineage must stop, even though every attempt has a
+    // fresh request id.
+    for (attempt, admitted) in (0..10u64).map(|attempt| (attempt, attempt + 1)) {
+        let lease = LeaseId::from_u64(admitted);
+        let mut finished = Vec::new();
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(20));
+            finished = service.collect_completions().unwrap();
+            if !finished.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(finished, vec![lease], "attempt {attempt} must fail");
+        service.cluster.set_now(1_000 + attempt * 120);
+        let restarts = service.take_restarts();
+        if restarts.is_empty() {
+            assert!(
+                attempt >= 5,
+                "the cap must hold at 5, stopped early at {attempt}"
+            );
+            return;
+        }
+        assert_eq!(restarts.len(), 1);
+        service.submit(restarts[0].0.clone(), restarts[0].1);
+        service.admit_one().unwrap();
+    }
+    panic!("ten attempts should have exhausted the cap");
 }

@@ -37,6 +37,7 @@ fn cpu_request_local(
         data: vec![],
         command: vec![],
         machine_local,
+        grace_secs: 0,
         lifetime: 100,
         keep_alive: false,
         priority,

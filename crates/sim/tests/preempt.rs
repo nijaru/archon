@@ -35,6 +35,7 @@ fn gpu_request_local(id: u64, count: u64, priority: u32, machine_local: bool) ->
         data: vec![],
         command: vec![],
         machine_local,
+        grace_secs: 0,
         lifetime: 100,
         keep_alive: false,
         priority,

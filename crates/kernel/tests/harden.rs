@@ -661,6 +661,7 @@ fn backfill_honors_the_fair_share_ceiling() {
             data: vec![],
             command: vec![],
             machine_local: true,
+            grace_secs: 0,
             image: None,
             storage: vec![],
             ports: vec![],
@@ -913,4 +914,91 @@ fn digest_distinguishes_capacity_and_edge_changes() {
         })
         .unwrap();
     assert_ne!(cluster.digest(), after_capacity, "edge change must show");
+}
+
+#[test]
+fn completion_records_success_and_failure() {
+    let mut cluster = graph();
+    active_root(&mut cluster, 1, 2, 1);
+    assert!(cluster.occupancy().is_used(NodeId::from_u64(2)));
+
+    // A zero exit completes the lease and frees its claims.
+    let effects = cluster
+        .apply(Command::CompleteLease {
+            lease: LeaseId::from_u64(1),
+            exit_code: 0,
+        })
+        .unwrap();
+    assert_eq!(
+        cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Completed
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Fence { .. })),
+        "completion must fence enforcement"
+    );
+    // Capacity frees when enforcement acknowledges the release.
+    cluster
+        .apply(Command::RecordBindingReleased {
+            binding: BindingId::from_u64(1),
+            session: 1,
+            fence: 1,
+        })
+        .unwrap();
+
+    // Completion is terminal: repeating it changes nothing.
+    cluster
+        .apply(Command::CompleteLease {
+            lease: LeaseId::from_u64(1),
+            exit_code: 0,
+        })
+        .unwrap();
+    assert_eq!(
+        cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Completed
+    );
+
+    // A non-zero exit fails the lease instead.
+    active_root(&mut cluster, 2, 3, 2);
+    cluster
+        .apply(Command::CompleteLease {
+            lease: LeaseId::from_u64(2),
+            exit_code: 3,
+        })
+        .unwrap();
+    assert_eq!(
+        cluster.leases[&LeaseId::from_u64(2)].state,
+        LeaseState::Failed
+    );
+    cluster
+        .apply(Command::RecordBindingReleased {
+            binding: BindingId::from_u64(2),
+            session: 1,
+            fence: 1,
+        })
+        .unwrap();
+    assert!(!cluster.occupancy().is_used(NodeId::from_u64(3)));
+
+    // Completing an unknown or dead-state lease is rejected, not ignored.
+    let mut fresh = graph();
+    fresh
+        .apply(Command::CompleteLease {
+            lease: LeaseId::from_u64(9),
+            exit_code: 0,
+        })
+        .unwrap_err();
+    open(&mut fresh, 4, 2, None, 1_000);
+    fresh
+        .apply(Command::RevokeLease {
+            lease: LeaseId::from_u64(4),
+        })
+        .unwrap();
+    fresh
+        .apply(Command::CompleteLease {
+            lease: LeaseId::from_u64(4),
+            exit_code: 0,
+        })
+        .unwrap_err();
 }

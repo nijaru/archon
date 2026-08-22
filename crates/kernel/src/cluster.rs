@@ -357,6 +357,7 @@ impl Cluster {
             Command::ReleaseLease { lease } => self.release_lease(*lease),
             Command::RevokeLease { lease } => self.revoke_lease(*lease),
             Command::ExpireLease { lease } => self.expire_lease(*lease),
+            Command::CompleteLease { lease, exit_code } => self.complete_lease(*lease, *exit_code),
             Command::RenewLease {
                 lease,
                 new_expires_at,
@@ -882,6 +883,49 @@ impl Cluster {
         }
         let lease = self.leases.get_mut(&id).ok_or(Error::UnknownLease(id))?;
         lease.state = LeaseState::Expired;
+        effects.extend(self.fence_effects(id));
+        Ok(effects)
+    }
+
+    /// A workload exited on its own. Success completes the lease; failure
+    /// fails it. Either way authority ends and bindings fence.
+    fn complete_lease(&mut self, id: LeaseId, exit_code: i32) -> Result<Vec<Effect>, Error> {
+        let final_state = if exit_code == 0 {
+            LeaseState::Completed
+        } else {
+            LeaseState::Failed
+        };
+        let state = {
+            let lease = self.leases.get(&id).ok_or(Error::UnknownLease(id))?;
+            lease.state
+        };
+        if matches!(state, LeaseState::Completed | LeaseState::Failed) {
+            return Ok(self.fence_effects(id));
+        }
+        if !matches!(
+            state,
+            LeaseState::Preparing | LeaseState::Active | LeaseState::Reserved
+        ) {
+            return Err(Error::LeaseState { lease: id, state });
+        }
+        let mut effects = Vec::new();
+        for descendant in self.descendants_postorder(id) {
+            if let Some(lease) = self.leases.get_mut(&descendant)
+                && !matches!(
+                    lease.state,
+                    LeaseState::Revoked
+                        | LeaseState::Released
+                        | LeaseState::Expired
+                        | LeaseState::Failed
+                        | LeaseState::Completed
+                )
+            {
+                lease.state = final_state;
+            }
+            effects.extend(self.fence_effects(descendant));
+        }
+        let lease = self.leases.get_mut(&id).ok_or(Error::UnknownLease(id))?;
+        lease.state = final_state;
         effects.extend(self.fence_effects(id));
         Ok(effects)
     }

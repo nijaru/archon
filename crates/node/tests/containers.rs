@@ -17,15 +17,28 @@ use archon_node::protocol::{read_request, write_response};
 use archon_node::runtime::ProcessRuntime;
 use archon_node::service::NodeService;
 
+/// True when a real Docker engine answers. Rootless podman behind the
+/// docker CLI is excluded: its user-namespace mapping makes simple bind
+/// mounts read-only inside the container, which is an engine quirk these
+/// tests do not model.
 fn engine_available() -> bool {
-    Command::new("docker")
+    let ok = Command::new("docker")
         .arg("info")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|status| status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if !ok {
+        return false;
+    }
+    let version = Command::new("docker")
+        .args(["version", "--format", "{{.Server.Version}}"])
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_lowercase())
+        .unwrap_or_default();
+    !version.contains("podman")
 }
 
 fn spawn_agent() -> String {
@@ -82,6 +95,7 @@ fn submit_container(
         lifetime: 3_600,
         priority: 1,
         machine_local: true,
+        grace_secs: 0,
         keep_alive: false,
         storage,
         ports,
@@ -231,4 +245,72 @@ fn docker_inspect(fmt: &str, name: &str) -> String {
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .unwrap_or_default()
+}
+
+fn busybox_drain_command() -> Vec<String> {
+    vec![
+        "sh".into(),
+        "-c".into(),
+        "trap 'echo drained > /marker/done; exit 0' TERM; sleep 60 & wait".into(),
+    ]
+}
+
+/// A container submission template with storage mounted at /marker.
+fn submit_request_template(id: u64, command: Vec<String>, dir: &std::path::Path) -> Request {
+    Request {
+        id: RequestId::from_u64(id),
+        class: RequestClass::Batch,
+        needs: vec![Need {
+            kind: NodeKind::Cpu,
+            quantity: qty(Dimension::Count, 1),
+            filters: vec![],
+        }],
+        topology: vec![],
+        preferences: vec![],
+        data: vec![],
+        command,
+        image: Some("busybox:latest".into()),
+        lifetime: 3_600,
+        priority: 1,
+        machine_local: true,
+        grace_secs: 0,
+        keep_alive: false,
+        storage: vec![StorageMount {
+            host_path: dir.display().to_string(),
+            mount_path: "/marker".into(),
+        }],
+        ports: vec![],
+    }
+}
+
+#[test]
+fn container_revoke_drains_within_grace() {
+    if !engine_available() {
+        eprintln!("skipping: docker not reachable");
+        return;
+    }
+    let addr = spawn_agent();
+    let mut service = NodeService::new();
+    service.register_remote(&addr).expect("register");
+
+    // A container trapping TERM and writing a marker on drain; grace must
+    // give it time to finish cleanly.
+    let dir = std::env::temp_dir().join(format!("archon-drain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let request = Request {
+        grace_secs: 10,
+        ..submit_request_template(1, busybox_drain_command(), &dir)
+    };
+    service.submit(request, OwnerId::from_u64(1));
+    service.cluster.set_now(1);
+    service.admit_one().expect("admit");
+    let lease = LeaseId::from_u64(1);
+    assert!(wait_until_container(lease).is_some(), "container must run");
+
+    // Revoke with drain budget; the trap writes the marker before exit.
+    service.revoke(lease).unwrap();
+    let drained = wait_until(Duration::from_secs(20), || dir.join("done").exists());
+    assert!(drained, "graceful TERM must reach the container workload");
+    let _ = std::fs::remove_dir_all(&dir);
 }

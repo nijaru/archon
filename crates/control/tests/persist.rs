@@ -49,6 +49,7 @@ fn submit_sleep(service: &mut NodeService, id: u64, lifetime: u64) {
         lifetime,
         priority: 1,
         machine_local: true,
+        grace_secs: 0,
         image: None,
         storage: vec![],
         ports: vec![],
@@ -140,6 +141,7 @@ fn snapshot_compaction_preserves_state_across_restarts() {
                 keep_alive: false,
                 volumes: vec![],
                 ports: vec![],
+                grace_secs: 0,
             },
         )
         .unwrap();
@@ -190,6 +192,7 @@ fn snapshot_compaction_preserves_state_across_restarts() {
         keep_alive: false,
         volumes: vec![],
         ports: vec![],
+        grace_secs: 0,
     });
     assert!(
         matches!(response, ServerResponse::Submitted { lease: 3, .. }),

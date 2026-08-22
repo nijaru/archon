@@ -46,6 +46,7 @@ fn spread_request(
         storage: vec![],
         ports: vec![],
         machine_local,
+        grace_secs: 0,
         keep_alive: false,
     }
 }

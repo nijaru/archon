@@ -37,6 +37,7 @@ fn gpu_request(id: u64, count: u64, priority: u32) -> Request {
         storage: vec![],
         ports: vec![],
         machine_local,
+        grace_secs: 0,
     }
 }
 
@@ -60,6 +61,7 @@ fn cpu_request(id: u64, priority: u32) -> Request {
         storage: vec![],
         ports: vec![],
         machine_local: true,
+        grace_secs: 0,
     }
 }
 

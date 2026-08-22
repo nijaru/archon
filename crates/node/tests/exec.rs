@@ -32,6 +32,7 @@ fn request(id: u64, command: Vec<String>) -> Request {
         keep_alive: false,
         priority: 1,
         machine_local: true,
+        grace_secs: 0,
         image: None,
         storage: vec![],
         ports: vec![],
@@ -70,4 +71,97 @@ fn lease_expiry_kills_the_process() {
     let expired = service.expire_due().unwrap();
     assert_eq!(expired, vec![lease]);
     assert!(!service.is_running(lease), "expiry must kill the process");
+}
+
+#[test]
+fn batch_completion_completes_the_lease_and_frees_claims() {
+    let mut service = boot();
+    service.submit(
+        request(1, vec!["sleep".into(), "0".into()]),
+        OwnerId::from_u64(1),
+    );
+    service.tick().unwrap();
+    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+    let lease = LeaseId::from_u64(1);
+
+    // The workload finishes on its own; the controller notices and records
+    // completion.
+    let mut finished = Vec::new();
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        finished = service.collect_completions().unwrap();
+        if !finished.is_empty() {
+            break;
+        }
+        service.tick().ok(); // refresh clock for backoff bookkeeping
+    }
+    assert_eq!(finished, vec![lease], "sleep 0 must be observed exiting");
+    let lease_record = &service.cluster.leases[&lease];
+    assert_eq!(lease_record.state, archon_kernel::LeaseState::Completed);
+    assert!(
+        !service
+            .cluster
+            .occupancy()
+            .is_used(archon_kernel::NodeId::from_u64(1)),
+        "completed claims must be freed"
+    );
+
+    // Idempotent: a second pass changes nothing.
+    let again = service.collect_completions().unwrap();
+    assert!(again.is_empty());
+}
+
+#[test]
+fn failed_batch_exit_fails_the_lease() {
+    let mut service = boot();
+    service.submit(
+        request(1, vec!["sh".into(), "-c".into(), "exit 3".into()]),
+        OwnerId::from_u64(1),
+    );
+    service.tick().unwrap();
+    service.admit_one().unwrap();
+    let lease = LeaseId::from_u64(1);
+    let mut finished = Vec::new();
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        finished = service.collect_completions().unwrap();
+        if !finished.is_empty() {
+            break;
+        }
+        service.tick().ok();
+    }
+    assert_eq!(finished, vec![lease]);
+    assert_eq!(
+        service.cluster.leases[&lease].state,
+        archon_kernel::LeaseState::Failed
+    );
+}
+
+#[test]
+fn drain_grace_lets_a_workload_finish_cleanly() {
+    let mut service = boot();
+    let mut req = request(
+        1,
+        vec![
+            "sh".into(),
+            "-c".into(),
+            "trap 'exit 0' TERM; sleep 30".into(),
+        ],
+    );
+    req.grace_secs = 5;
+    service.submit(req, OwnerId::from_u64(1));
+    service.tick().unwrap();
+    service.admit_one().unwrap();
+    let lease = LeaseId::from_u64(1);
+    assert!(service.is_running(lease));
+
+    // Revocation drains: TERM arrives, the trap exits 0 well within budget.
+    let started = std::time::Instant::now();
+    service.revoke(lease).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "drain must return as soon as the workload exits, took {:?}",
+        started.elapsed()
+    );
+    assert!(!service.is_running(lease));
 }

@@ -11,3 +11,6 @@ serde_json = "1.0.151"
 
 [lib]
 path = "src/lib.rs"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

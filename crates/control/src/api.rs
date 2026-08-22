@@ -54,6 +54,9 @@ pub enum ClientRequest {
         /// Ports to publish; "container" or "host:container".
         #[serde(default)]
         ports: Vec<String>,
+        /// Seconds between SIGTERM and SIGKILL on teardown (drain).
+        #[serde(default)]
+        grace_secs: u32,
     },
     Status,
     Revoke {

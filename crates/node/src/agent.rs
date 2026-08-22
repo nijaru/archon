@@ -2,14 +2,18 @@
 //! requests. Shared by the in-process path and the TCP daemon, so local and
 //! remote enforcement are literally the same code.
 
+use std::collections::BTreeMap;
+
 use archon_kernel::LeaseId;
 
 use crate::protocol::{AgentRequest, AgentResponse};
-use crate::runtime::ProcessRuntime;
+use crate::runtime::{ProcessRuntime, WorkStatus};
 
 pub struct LeaseAgent {
     process: ProcessRuntime,
     containers: crate::container::ContainerRuntime,
+    /// Drain budget per lease, captured at activation for teardown.
+    grace: BTreeMap<LeaseId, u32>,
     /// Highest session seen; older generations are rejected. Sessions are
     /// process generations — an older hello never reinstates.
     session: u64,
@@ -23,6 +27,7 @@ impl LeaseAgent {
             containers: crate::container::ContainerRuntime::new(
                 std::env::var("ARCHON_CONTAINER_ENGINE").unwrap_or_else(|_| "docker".to_string()),
             ),
+            grace: BTreeMap::new(),
             session: 0,
             next_handle: 1,
         }
@@ -38,10 +43,19 @@ impl LeaseAgent {
             }
             AgentRequest::Status { lease } => {
                 let lease_id = LeaseId::from_u64(lease);
-                let running = self.containers.is_tracked(lease_id)
-                    && self.containers.is_running(lease_id)
-                    || !self.containers.is_tracked(lease_id) && self.process.is_running(lease_id);
-                AgentResponse::Running { lease, running }
+                let status = if self.containers.is_tracked(lease_id) {
+                    self.containers.status(lease_id)
+                } else {
+                    self.process.status(lease_id)
+                };
+                AgentResponse::Running {
+                    lease,
+                    running: status == WorkStatus::Running,
+                    exit_code: match status {
+                        WorkStatus::Exited(code) => Some(code),
+                        _ => None,
+                    },
+                }
             }
             AgentRequest::Prepare {
                 binding,
@@ -67,7 +81,9 @@ impl LeaseAgent {
                 image,
                 storage,
                 ports,
+                grace_secs,
             } => {
+                self.grace.insert(LeaseId::from_u64(lease), grace_secs);
                 if self.check_session(session) {
                     return self.failed(binding, &format!("stale session {session}"));
                 }
@@ -87,10 +103,11 @@ impl LeaseAgent {
             }
             AgentRequest::Release { binding, lease, .. } => {
                 let lease_id = LeaseId::from_u64(lease);
+                let grace = self.grace.remove(&lease_id).unwrap_or(0);
                 let terminated = if self.containers.is_tracked(lease_id) {
-                    self.containers.terminate(lease_id)
+                    self.containers.terminate_with_grace(lease_id, grace)
                 } else {
-                    self.process.terminate(lease_id)
+                    self.process.terminate_with_grace(lease_id, grace)
                 };
                 match terminated {
                     Ok(_) => AgentResponse::Released { binding },
@@ -99,10 +116,14 @@ impl LeaseAgent {
             }
             AgentRequest::Fence { binding, lease, .. } => {
                 let lease_id = LeaseId::from_u64(lease);
+                // Authoritative teardown of the current generation drains
+                // like release does; stale generations are rejected by the
+                // session check before effects ever reach here.
+                let grace = self.grace.remove(&lease_id).unwrap_or(0);
                 let terminated = if self.containers.is_tracked(lease_id) {
-                    self.containers.terminate(lease_id)
+                    self.containers.terminate_with_grace(lease_id, grace)
                 } else {
-                    self.process.terminate(lease_id)
+                    self.process.terminate_with_grace(lease_id, grace)
                 };
                 match terminated {
                     Ok(_) => AgentResponse::Fenced { binding },

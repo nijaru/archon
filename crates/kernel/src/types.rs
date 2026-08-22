@@ -192,6 +192,9 @@ pub struct Request {
     /// false allows a need's claims to spread across machines for explicit
     /// multi-member groups.
     pub machine_local: bool,
+    /// Seconds between SIGTERM and SIGKILL when this lease is torn down
+    /// (drain-on-revoke). Zero tears down immediately.
+    pub grace_secs: u32,
 }
 
 /// A queued request carries the owner that submitted it and the submit time,
@@ -242,6 +245,8 @@ pub enum LeaseState {
     Expired,
     Revoked,
     Failed,
+    /// Batch workload finished on its own with a zero exit code.
+    Completed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

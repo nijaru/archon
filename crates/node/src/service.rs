@@ -83,6 +83,10 @@ pub struct NodeService {
     restart_handled: std::collections::BTreeSet<LeaseId>,
     /// Restart attempts per original request id.
     restart_counts: BTreeMap<RequestId, u32>,
+    /// Cluster time of each request's last restart (backoff anchor).
+    restart_last_at: BTreeMap<RequestId, u64>,
+    /// Restarted request id -> original request id.
+    restart_root: BTreeMap<RequestId, RequestId>,
     next_request_id: u64,
     pending: VecDeque<Effect>,
     next_session: u64,
@@ -103,6 +107,12 @@ pub struct ServiceState {
     pub requests: BTreeMap<LeaseId, (Request, OwnerId)>,
     pub restart_handled: std::collections::BTreeSet<LeaseId>,
     pub restart_counts: BTreeMap<RequestId, u32>,
+    /// Cluster time of each request's last restart, backing exponential
+    /// backoff between attempts.
+    pub restart_last_at: BTreeMap<RequestId, u64>,
+    /// Restart lineage: each restarted request id points at the original,
+    /// so caps and backoff survive id churn across generations.
+    pub restart_root: BTreeMap<RequestId, RequestId>,
     pub next_request_id: u64,
     pub next_session: u64,
     pub next_binding: u64,
@@ -264,6 +274,8 @@ impl NodeService {
             requests: BTreeMap::new(),
             restart_handled: std::collections::BTreeSet::new(),
             restart_counts: BTreeMap::new(),
+            restart_last_at: BTreeMap::new(),
+            restart_root: BTreeMap::new(),
             next_request_id: 1,
             pending: VecDeque::new(),
             next_session: 1,
@@ -367,6 +379,8 @@ impl NodeService {
             requests: self.requests.clone(),
             restart_handled: self.restart_handled.clone(),
             restart_counts: self.restart_counts.clone(),
+            restart_last_at: self.restart_last_at.clone(),
+            restart_root: self.restart_root.clone(),
             next_request_id: self.next_request_id,
             next_session: self.next_session,
             next_binding: self.next_binding,
@@ -391,6 +405,8 @@ impl NodeService {
         self.requests = state.requests;
         self.restart_handled = state.restart_handled;
         self.restart_counts = state.restart_counts;
+        self.restart_last_at = state.restart_last_at;
+        self.restart_root = state.restart_root;
     }
 
     /// Queue depth, for status reporting.
@@ -488,16 +504,20 @@ impl NodeService {
 
     /// Collect failed/expired keep-alive leases as fresh re-submissions,
     /// capped per original request so a permanently-broken workload cannot
-    /// spin. Run-once workloads are never restarted.
+    /// spin, with exponential backoff between attempts (1s doubling to a
+    /// 60s ceiling). Run-once workloads are never restarted. Leases whose
+    /// backoff has not elapsed stay pending for a later tick.
     pub fn take_restarts(&mut self) -> Vec<(Request, OwnerId)> {
         const MAX_RESTARTS: u32 = 5;
+        const BACKOFF_CAP_SECS: u64 = 60;
+        let now = self.cluster.now;
         let mut out = Vec::new();
         for (id, lease) in self.cluster.leases.iter() {
             let dead = matches!(
                 lease.state,
                 archon_kernel::LeaseState::Failed | archon_kernel::LeaseState::Expired
             );
-            if !dead || !self.restart_handled.insert(*id) {
+            if !dead || self.restart_handled.contains(id) {
                 continue;
             }
             let Some((request, owner)) = self.requests.get(id) else {
@@ -506,18 +526,87 @@ impl NodeService {
             if !request.keep_alive {
                 continue;
             }
-            let count = self.restart_counts.entry(request.id).or_insert(0);
+            // Caps and backoff attach to the original workload, not the
+            // per-attempt ids.
+            let root = self
+                .restart_root
+                .get(&request.id)
+                .copied()
+                .unwrap_or(request.id);
+            let count = self.restart_counts.entry(root).or_insert(0);
             if *count >= MAX_RESTARTS {
-                eprintln!("archon: request {} exceeded restart cap", request.id);
+                eprintln!("archon: request {root} exceeded restart cap");
+                self.restart_handled.insert(*id);
                 continue;
             }
+            let last_at = self.restart_last_at.get(&root).copied().unwrap_or(0);
+            let delay = (1u64 << (*count).min(6)).min(BACKOFF_CAP_SECS);
+            if now < last_at.saturating_add(delay) {
+                continue; // backoff: retry on a later tick
+            }
             *count += 1;
+            self.restart_last_at.insert(root, now);
+            self.restart_handled.insert(*id);
             let mut fresh = request.clone();
             fresh.id = RequestId::from_u64(self.next_request_id);
             self.next_request_id += 1;
+            self.restart_root.insert(fresh.id, root);
             out.push((fresh, *owner));
         }
         out
+    }
+
+    /// Poll every executing workload and record natural exits: zero exit
+    /// codes complete the lease (claims released), failures fail it.
+    /// Returns the leases whose workload finished this tick.
+    pub fn collect_completions(&mut self) -> Result<Vec<LeaseId>, Error> {
+        let mut finished = Vec::new();
+        for lease in self.executing_leases() {
+            let Some(machine) = self.lease_machine(lease) else {
+                continue;
+            };
+            let Some(executor) = self.agents.get_mut(&machine) else {
+                continue;
+            };
+            let Ok(response) = executor.execute(crate::protocol::AgentRequest::Status {
+                lease: lease.as_u64(),
+            }) else {
+                continue; // probe_agents handles unreachable machines
+            };
+            let crate::protocol::AgentResponse::Running { exit_code, .. } = response else {
+                continue;
+            };
+            let Some(code) = exit_code else { continue };
+            self.commit(Command::CompleteLease {
+                lease,
+                exit_code: code,
+            })?;
+            finished.push(lease);
+        }
+        if !finished.is_empty() {
+            self.deliver_all()?;
+        }
+        Ok(finished)
+    }
+
+    /// Active leases with an executable payload (pure claims never finish).
+    fn executing_leases(&self) -> Vec<LeaseId> {
+        self.cluster
+            .leases
+            .values()
+            .filter(|lease| {
+                matches!(lease.state, archon_kernel::LeaseState::Active)
+                    && self.lease_commands.contains_key(&lease.id)
+            })
+            .map(|lease| lease.id)
+            .collect()
+    }
+
+    /// The machine executing a lease's first claim, if any.
+    fn lease_machine(&self, lease: LeaseId) -> Option<NodeId> {
+        let allocation_lease = self.cluster.leases.get(&lease)?;
+        let claim = allocation_lease.allocation.claims.first()?;
+        self.cluster.graph.machine_of(claim.node)
     }
 
     pub fn revoke(&mut self, lease: LeaseId) -> Result<(), Error> {
@@ -743,6 +832,11 @@ impl NodeService {
                     .get(&lease)
                     .map(|(request, _)| request.ports.clone())
                     .unwrap_or_default(),
+                grace_secs: self
+                    .requests
+                    .get(&lease)
+                    .map(|(request, _)| request.grace_secs)
+                    .unwrap_or(0),
             },
             Effect::Release { .. } => AgentRequest::Release {
                 binding: binding_id.as_u64(),

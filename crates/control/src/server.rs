@@ -20,6 +20,7 @@ struct SubmitSpec {
     keep_alive: bool,
     volumes: Vec<String>,
     ports: Vec<String>,
+    grace_secs: u32,
 }
 
 /// How the control plane reaches its execution agents.
@@ -196,6 +197,9 @@ impl ControlPlane {
     /// log when it grows past the threshold.
     pub fn maintain(&mut self) {
         self.service.tick().ok();
+        if let Err(err) = self.service.collect_completions() {
+            eprintln!("archon: completion collection failed: {err}");
+        }
         let unreachable = self.service.probe_agents();
         for machine in unreachable {
             if self.service.mark_machine_unhealthy(machine).is_err() {
@@ -345,6 +349,7 @@ impl ControlPlane {
                 keep_alive,
                 volumes,
                 ports,
+                grace_secs,
             } => self.submit(SubmitSpec {
                 owner,
                 cpus,
@@ -354,6 +359,7 @@ impl ControlPlane {
                 keep_alive,
                 volumes,
                 ports,
+                grace_secs,
             }),
             ClientRequest::Status => self.status(),
             ClientRequest::Revoke { lease } => self.revoke(lease),
@@ -370,6 +376,7 @@ impl ControlPlane {
             keep_alive,
             volumes,
             ports,
+            grace_secs,
         } = spec;
         if command.is_empty() {
             return ServerResponse::Error {
@@ -402,6 +409,7 @@ impl ControlPlane {
             keep_alive,
             priority: 1,
             machine_local: true,
+            grace_secs,
             image: None,
             storage: volumes
                 .iter()

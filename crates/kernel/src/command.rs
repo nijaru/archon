@@ -38,6 +38,12 @@ pub enum Command {
     ReleaseLease {
         lease: LeaseId,
     },
+    /// A workload exited on its own; zero means success (Completed),
+    /// anything else fails the lease.
+    CompleteLease {
+        lease: LeaseId,
+        exit_code: i32,
+    },
     RevokeLease {
         lease: LeaseId,
     },
