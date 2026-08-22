@@ -89,7 +89,6 @@ fn lease_claims_become_kernel_limits() {
     service.submit(
         request(1, vec!["sleep".into(), "30".into()], 64),
         OwnerId::from_u64(1),
-        vec!["sleep".into(), "30".into()],
     );
     service.cluster.set_now(1);
     service.admit_one().unwrap();
@@ -120,7 +119,6 @@ fn memory_limit_kills_an_overallocating_process() {
     service.submit(
         request(1, vec!["tail".into(), "/dev/zero".into()], 16),
         OwnerId::from_u64(1),
-        vec!["tail".into(), "/dev/zero".into()],
     );
     service.cluster.set_now(1);
     service.admit_one().unwrap();
