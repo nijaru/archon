@@ -25,7 +25,7 @@ impl CgroupGroup {
         // Controllers must be enabled in the parent's subtree_control before
         // children can use them.
         enable_controllers(&root)?;
-        let path = root.join(format!("lease-{lease}"));
+        let path = root.join(format!("lease-{}", lease.as_u64()));
         fs::create_dir(&path).map_err(|err| format!("create {}: {err}", path.display()))?;
         let group = Self { path };
         if limits.cpu_count > 0 {

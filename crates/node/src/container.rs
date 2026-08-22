@@ -16,6 +16,8 @@ pub struct ContainerRuntime {
     /// Per-runtime prefix so concurrent agents never fight over names.
     namespace: String,
     containers: BTreeMap<LeaseId, String>,
+    /// Engine is podman: volume mounts need the SELinux relabel suffix.
+    relabels: bool,
 }
 
 static CONTAINER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -23,10 +25,23 @@ static CONTAINER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 impl ContainerRuntime {
     pub fn new(engine: String) -> Self {
         let seq = CONTAINER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Podman under SELinux mounts host paths read-only for the
+        // container user unless they are relabeled; `:Z` is a no-op where
+        // SELinux is off.
+        let relabels = Command::new(&engine)
+            .arg("--version")
+            .output()
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .to_lowercase()
+                    .contains("podman")
+            })
+            .unwrap_or(false);
         Self {
             engine,
             namespace: format!("{}-{}-{seq}", std::process::id(), lease_namespace_salt()),
             containers: BTreeMap::new(),
+            relabels,
         }
     }
 
@@ -63,7 +78,9 @@ impl ContainerRuntime {
             cmd.arg(format!("--memory={}b", limits.memory_bytes));
         }
         for mount in storage {
-            cmd.arg(format!("--volume={}:{}", mount.host_path, mount.mount_path));
+            let relabel = if self.relabels { ":Z" } else { "" };
+            let suffix = format!("{}{}", mount.mount_path, relabel);
+            cmd.arg(format!("--volume={}:{}", mount.host_path, suffix));
         }
         for port in ports {
             match port.host_port {
