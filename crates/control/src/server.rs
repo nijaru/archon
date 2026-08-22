@@ -21,6 +21,7 @@ struct SubmitSpec {
     volumes: Vec<String>,
     ports: Vec<String>,
     grace_secs: u32,
+    image: Option<String>,
 }
 
 /// How the control plane reaches its execution agents.
@@ -350,6 +351,7 @@ impl ControlPlane {
                 volumes,
                 ports,
                 grace_secs,
+                image,
             } => self.submit(SubmitSpec {
                 owner,
                 cpus,
@@ -360,6 +362,7 @@ impl ControlPlane {
                 volumes,
                 ports,
                 grace_secs,
+                image,
             }),
             ClientRequest::Status => self.status(),
             ClientRequest::Revoke { lease } => self.revoke(lease),
@@ -377,6 +380,7 @@ impl ControlPlane {
             volumes,
             ports,
             grace_secs,
+            image,
         } = spec;
         if command.is_empty() {
             return ServerResponse::Error {
@@ -410,7 +414,7 @@ impl ControlPlane {
             priority: 1,
             machine_local: true,
             grace_secs,
-            image: None,
+            image,
             storage: volumes
                 .iter()
                 .filter_map(|spec| spec.split_once(':'))

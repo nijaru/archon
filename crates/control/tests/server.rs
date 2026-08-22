@@ -72,6 +72,7 @@ fn submit_status_revoke_over_the_wire() {
             volumes: vec![],
             ports: vec![],
             grace_secs: 0,
+            image: None,
         },
     );
     let ServerResponse::Submitted { lease, .. } = response else {
@@ -151,6 +152,7 @@ fn empty_command_is_rejected() {
             volumes: vec![],
             ports: vec![],
             grace_secs: 0,
+            image: None,
         },
     );
     assert!(matches!(response, ServerResponse::Error { .. }));

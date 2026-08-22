@@ -57,6 +57,9 @@ pub enum ClientRequest {
         /// Seconds between SIGTERM and SIGKILL on teardown (drain).
         #[serde(default)]
         grace_secs: u32,
+        /// OCI image reference; the command runs inside a container.
+        #[serde(default)]
+        image: Option<String>,
     },
     Status,
     Revoke {
