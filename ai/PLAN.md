@@ -74,11 +74,13 @@ through the seam to the container adapter; proven against real Docker
 (volume round-trip + PortBindings). Deeper network policy and managed
 volumes remain future — the enforcement hook now exists.
 
-### 6. Durability depth
+### 6. Durability depth — snapshots/compaction done 2026-08-22
 
-Log compaction/snapshots (the JSONL log grows unboundedly), control-plane
-restart while agents stay connected (today they must re-dial), control-plane
-HA if single-process proves limiting.
+Snapshot + compaction shipped: the controller writes an atomic snapshot
+(cluster via kernel serde, plus controller-side state) and truncates the
+log past a threshold (--compact-every); boot restores from snapshot and
+replays only what followed. Remaining: control-plane HA if single-process
+proves limiting; agents already re-dial automatically.
 
 ### 7. Workload classes
 

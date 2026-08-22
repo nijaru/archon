@@ -84,6 +84,9 @@ substrate to reuse.
   2+2 across machines). Requests that intentionally span machines set
   `machine_local: false`. Status probes no longer touch session
   generations.
+Durability (2026-08-22): atomic cluster snapshots + log compaction
+  (--compact-every); boot restores from snapshot and replays only what
+  followed. Kernel Cluster/Graph gained opt-in serde derives.
 Health-driven operation (2026-08-21): controller probes agents
   (--probe-secs); unreachable machines quarantine (no placements) and fail
   their live leases; keep-alive workloads re-queue onto survivors, capped
