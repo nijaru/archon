@@ -90,6 +90,11 @@ Durability (2026-08-22): atomic cluster snapshots + log compaction
 Workload classes (2026-08-22): CompleteLease/Completed in the kernel,
 batch exit-code accounting via controller polls, drain-on-revoke
 (grace_secs), exponential restart backoff with working cap.
+Desktop verified end-to-end (2026-08-22): cgroup limits, containers
+with volumes, drain-on-revoke, and batch completion all proven live on
+the Linux desktop. Launch agents under `systemd-run --user --scope -p
+Delegate=true` so children can migrate into the delegated cgroup
+subtree; ssh-session processes cannot (EACCES on cgroup.procs).
 Health-driven operation (2026-08-21): controller probes agents
   (--probe-secs); unreachable machines quarantine (no placements) and fail
   their live leases; keep-alive workloads re-queue onto survivors, capped
