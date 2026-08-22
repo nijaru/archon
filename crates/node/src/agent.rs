@@ -95,7 +95,15 @@ impl LeaseAgent {
                     self.process.activate(lease_id, &command, &limits)
                 } else {
                     self.containers.activate(
-                        lease_id, &image, &command, &limits, &storage, &ports, &devices,
+                        lease_id,
+                        crate::container::ContainerConfig {
+                            image: &image,
+                            command: &command,
+                            limits: &limits,
+                            storage: &storage,
+                            ports: &ports,
+                            devices: &devices,
+                        },
                     )
                 };
                 match result {

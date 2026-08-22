@@ -10,6 +10,17 @@ use archon_kernel::{LeaseId, PortPublish, StorageMount};
 
 use crate::protocol::LeaseLimits;
 
+/// Everything one activation needs, bundled so the executor seam stays
+/// two arguments wide.
+pub struct ContainerConfig<'a> {
+    pub image: &'a str,
+    pub command: &'a [String],
+    pub limits: &'a LeaseLimits,
+    pub storage: &'a [StorageMount],
+    pub ports: &'a [PortPublish],
+    pub devices: &'a [String],
+}
+
 pub struct ContainerRuntime {
     /// Engine binary; "docker" and "podman" share the CLI surface.
     engine: String,
@@ -49,21 +60,12 @@ impl ContainerRuntime {
         format!("archon-{}-lease-{}", self.namespace, lease.as_u64())
     }
 
-    pub fn activate(
-        &mut self,
-        lease: LeaseId,
-        image: &str,
-        command: &[String],
-        limits: &LeaseLimits,
-        storage: &[StorageMount],
-        ports: &[PortPublish],
-        devices: &[String],
-    ) -> Result<(), String> {
+    pub fn activate(&mut self, lease: LeaseId, cfg: ContainerConfig) -> Result<(), String> {
         if self.containers.contains_key(&lease) {
             return Ok(());
         }
         let name = self.name(lease);
-        let count = limits.cpu_count;
+        let count = cfg.limits.cpu_count;
         let mut cmd = Command::new(&self.engine);
         cmd.arg("run")
             // No --rm: the adapter removes containers on teardown, and a
@@ -77,24 +79,24 @@ impl ContainerRuntime {
         if count > 0 {
             cmd.arg(format!("--cpus={count}"));
         }
-        if limits.memory_bytes > 0 {
-            cmd.arg(format!("--memory={}b", limits.memory_bytes));
+        if cfg.limits.memory_bytes > 0 {
+            cmd.arg(format!("--memory={}b", cfg.limits.memory_bytes));
         }
-        for path in devices {
+        for path in cfg.devices {
             cmd.arg(format!("--device={path}:{path}"));
         }
-        for mount in storage {
+        for mount in cfg.storage {
             let relabel = if self.relabels { ":Z" } else { "" };
             let suffix = format!("{}{}", mount.mount_path, relabel);
             cmd.arg(format!("--volume={}:{}", mount.host_path, suffix));
         }
-        for port in ports {
+        for port in cfg.ports {
             match port.host_port {
                 Some(host) => cmd.arg(format!("-p={host}:{}", port.container_port)),
                 None => cmd.arg(format!("-p={}", port.container_port)),
             };
         }
-        cmd.arg(image).args(command);
+        cmd.arg(cfg.image).args(cfg.command);
         let output = cmd
             .stdin(Stdio::null())
             .output()
