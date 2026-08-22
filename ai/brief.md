@@ -161,7 +161,8 @@ skeleton runs: additional providers, microVMs, volumes, networking.
 
 ## Next action
 
-Next: **device claims with real enforcement** (PLAN item 2) — design now,
-GPU proof hardware-gated. This is the last planned completion item; after
-it the system matches its designed v1 scope. Launch/commercial tasks
-(`tk-kwzc`, `tk-n8e9`) stay deferred until the system is complete.
+The designed v1 scope is complete (2026-08-22): all seven PLAN items done.
+Remaining work is conditional or future: control-plane HA if single-process
+proves limiting, managed volumes/network policy, GPU hardware proofs
+(CDI/MPS/SR-IOV), process-side eBPF device filters. Launch/commercial tasks
+(`tk-kwzc`, `tk-n8e9`) now unblock.

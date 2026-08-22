@@ -45,13 +45,18 @@ opt-out for multi-member groups, asymmetric-shape integration tests, and the
 session-poisoning fix for read-only probes. Kernel change; all nine sim
 scenarios re-verified against it.
 
-### 2. Device claims with real enforcement — the last open item
+### 2. Device claims with real enforcement — done 2026-08-22
 
-GPU/NIC/NVMe are graph kinds today but only CPU/memory are enforced. Give each
-device kind an enforcement story: exclusive GPU access (NVIDIA MPS off,
-device cgroups/CDI), NIC/NVMe via whatever the kernel exposes. Requires GPU
-hardware to prove; design now, prove when hardware is available. **Hardware-
-gated: work item 7 first.**
+Enforceable core shipped and desktop-proven: devices declared at
+registration (ARCHON_DEVICES) become capacity-1 graph nodes with a `dev`
+attr; claims pin them exclusively (second claimer queues); activation
+resolves claimed nodes to host paths and containers get --device
+passthrough. Proven with /dev/net/tun incl. negative control.
+Hardware-gated remainder: GPU-specific handling (CDI/MPS/MIG), SR-IOV,
+process-side eBPF device filters (rootful only). Design:
+ai/design/device-enforcement.md.
+
+**The planned v1 scope is complete.**
 
 ### 3. Container execution adapter — done 2026-08-21
 
