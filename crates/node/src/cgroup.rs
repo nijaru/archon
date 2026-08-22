@@ -26,7 +26,14 @@ impl CgroupGroup {
         // children can use them.
         enable_controllers(&root)?;
         let path = root.join(format!("lease-{}", lease.as_u64()));
-        fs::create_dir(&path).map_err(|err| format!("create {}: {err}", path.display()))?;
+        if let Err(err) = fs::create_dir(&path) {
+            if err.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(format!("create {}: {err}", path.display()));
+            }
+            // A previous controller run left the group behind (lease ids
+            // restart at 1); kill its stragglers and reuse it.
+            Self { path: path.clone() }.kill()?;
+        }
         let group = Self { path };
         if limits.cpu_count > 0 {
             // quota/period: cpu_count cores worth of every 100 ms window.
@@ -43,7 +50,17 @@ impl CgroupGroup {
     }
 
     pub fn attach(&self, pid: i32) -> Result<(), String> {
-        self.write("cgroup.procs", &pid.to_string())
+        // A just-created group can briefly reject migrations; retry within
+        // a short window before giving up.
+        let mut last = Ok(());
+        for _ in 0..10 {
+            match self.write("cgroup.procs", &pid.to_string()) {
+                Ok(()) => return Ok(()),
+                Err(err) => last = Err(err),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        last
     }
 
     /// Kill every process in the group atomically (kernel 5.14+).
