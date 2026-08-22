@@ -18,10 +18,12 @@ use archon_node::service::NodeService;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // Extract `-c ADDR` (client mode) from anywhere in the argument list.
+    // Extract `-c ADDR` from the argument list, stopping at `--`: beyond
+    // it everything belongs to the workload's command, including any
+    // flags of its own.
     let mut connect = None;
     let mut index = 0;
-    while index < args.len() {
+    while index < args.len() && args[index] != "--" {
         if args[index] == "-c" {
             connect = Some(args.get(index + 1).expect("-c ADDR").clone());
             args.drain(index..=(index + 1).min(args.len() - 1));
