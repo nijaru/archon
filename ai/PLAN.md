@@ -67,10 +67,12 @@ marked unhealthy and quarantined (no new placements), live leases fail.
 at 5 restarts per request. Agent re-registration clears quarantine and
 health marks. Integration test proves the full loop.
 
-### 5. Network and storage providers
+### 5. Network and storage providers — v0 done 2026-08-21
 
-Network policy foundations and persistent volumes per the spec. Not started;
-builds on the container adapter (volumes/networking attach to containers).
+`Request.storage` (bind mounts) and `Request.ports` (host publishing) flow
+through the seam to the container adapter; proven against real Docker
+(volume round-trip + PortBindings). Deeper network policy and managed
+volumes remain future — the enforcement hook now exists.
 
 ### 6. Durability depth
 

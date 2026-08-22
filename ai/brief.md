@@ -88,6 +88,10 @@ Health-driven operation (2026-08-21): controller probes agents
   (--probe-secs); unreachable machines quarantine (no placements) and fail
   their live leases; keep-alive workloads re-queue onto survivors, capped
   restarts; re-registration clears quarantine.
+Storage/network v0 (2026-08-21): Request.storage bind-mounts and
+  Request.ports publish host ports for container workloads; enforced by
+  the container adapter, proven against real Docker. Deeper policy and
+  managed volumes are future.
 Container adapter (2026-08-21): `Request.image` runs the workload as an
   OCI container (Docker/Podman CLI, engine via ARCHON_CONTAINER_ENGINE)
   with lease claims as `--cpus`/`--memory`; same seam, same kill-on-revoke.
