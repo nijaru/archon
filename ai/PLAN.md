@@ -50,7 +50,8 @@ scenarios re-verified against it.
 GPU/NIC/NVMe are graph kinds today but only CPU/memory are enforced. Give each
 device kind an enforcement story: exclusive GPU access (NVIDIA MPS off,
 device cgroups/CDI), NIC/NVMe via whatever the kernel exposes. Requires GPU
-hardware to prove; design now, prove when hardware is available.
+hardware to prove; design now, prove when hardware is available. **Hardware-
+gated: work item 7 first.**
 
 ### 3. Container execution adapter — done 2026-08-21
 
@@ -82,7 +83,11 @@ log past a threshold (--compact-every); boot restores from snapshot and
 replays only what followed. Remaining: control-plane HA if single-process
 proves limiting; agents already re-dial automatically.
 
-### 7. Workload classes
+### 7. Workload classes — next
+
+Services vs batch vs run-once semantics beyond keep-alive: drain-on-revoke
+for services, batch completion accounting, restart backoff. The last
+milestone testable without new hardware.
 
 Services vs batch vs run-once semantics; checkpoint-aware restart; then the
 compatibility layer (Kubernetes, Slurm, Ray as nested/integrated systems) per

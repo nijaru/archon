@@ -153,9 +153,8 @@ skeleton runs: additional providers, microVMs, volumes, networking.
 
 ## Next action
 
-v1 execution track, next: multi-node scheduling — route Effects to
-per-machine agents so one control plane drives several machines (the
-AgentLink seam and protocol are ready; node-to-agent routing is the new
-work). Then: reconciliation of agent-reported state after agent restarts.
-Launch/commercial tasks (`tk-kwzc`, `tk-n8e9`) stay deferred until release
-work starts.
+Next: **workload classes** (PLAN item 7) — services vs batch vs run-once
+semantics beyond keep-alive: drain-on-revoke for services, batch completion
+accounting, restart backoff. After that, device claims are hardware-gated;
+then the system matches its designed v1 scope. Launch/commercial tasks
+(`tk-kwzc`, `tk-n8e9`) stay deferred until the system is complete.
