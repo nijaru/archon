@@ -106,7 +106,7 @@ impl ProcessRuntime {
             .stderr(Stdio::from(log_file));
 
         #[cfg(target_os = "linux")]
-        let group = match (&self.cgroup_root, limits.is_empty()) {
+        let mut group = match (&self.cgroup_root, limits.is_empty()) {
             (Some(root), false) => {
                 let group = CgroupGroup::create(root, lease, limits)?;
                 Some(group)
