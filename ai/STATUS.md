@@ -4,6 +4,15 @@
 
 ## Direction
 
+## Shipped
+
+- Job results (2026-08-22): Lease.exit_code in kernel state; per-lease
+  output files (ARCHON_LOG_DIR) + container engine logs; status shows
+  command and exit code; `archon -c ADDR logs LEASE` retrieves output.
+- Device claims (2026-08-22): ARCHON_DEVICES declaration, --gpu N,
+  exclusive placement, container --device passthrough; desktop-proven
+  with negative control. Design: ai/design/device-enforcement.md.
+
 The goal is **completing the system** per `PLAN.md`: heterogeneous placement,
 device claims with real enforcement, container execution, health-driven
 operation, network/storage providers, durability depth, workload classes.
