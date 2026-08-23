@@ -8,6 +8,15 @@ use archon_kernel::{
 use archon_node::service::NodeService;
 
 fn boot() -> NodeService {
+    // Isolate per-run output files from other binaries and prior runs.
+    // Safe here: the env is read by this same test process's runtime.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var(
+            "ARCHON_LOG_DIR",
+            std::env::temp_dir().join(format!("archon-exec-logs-{}", std::process::id())),
+        );
+    }
     let mut service = NodeService::new();
     service
         .register_local(None)
@@ -164,4 +173,67 @@ fn drain_grace_lets_a_workload_finish_cleanly() {
         started.elapsed()
     );
     assert!(!service.is_running(lease));
+}
+
+#[test]
+fn finished_work_reports_exit_code_and_output() {
+    let mut service = boot();
+    service.submit(
+        request(
+            1,
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "echo hello-from-job; echo err-line >&2; exit 0".into(),
+            ],
+        ),
+        OwnerId::from_u64(1),
+    );
+    service.tick().unwrap();
+    service.admit_one().unwrap();
+    let lease = LeaseId::from_u64(1);
+
+    let mut finished = Vec::new();
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        finished = service.collect_completions().unwrap();
+        if !finished.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(finished, vec![lease]);
+
+    // The kernel records the outcome.
+    assert_eq!(service.cluster.leases[&lease].exit_code, Some(0));
+
+    // The agent returns the workload's output, stdout and stderr.
+    let logs = service.lease_logs(lease).unwrap();
+    assert!(
+        logs.contains("hello-from-job") && logs.contains("err-line"),
+        "logs must capture both streams, got {logs:?}"
+    );
+}
+
+#[test]
+fn failed_work_records_its_exit_code() {
+    let mut service = boot();
+    service.submit(
+        request(
+            1,
+            vec!["sh".into(), "-c".into(), "echo before; exit 3".into()],
+        ),
+        OwnerId::from_u64(1),
+    );
+    service.tick().unwrap();
+    service.admit_one().unwrap();
+    let lease = LeaseId::from_u64(1);
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if !service.collect_completions().unwrap().is_empty() {
+            break;
+        }
+    }
+    assert_eq!(service.cluster.leases[&lease].exit_code, Some(3));
+    let logs = service.lease_logs(lease).unwrap();
+    assert!(logs.contains("before"), "output survives failure");
 }

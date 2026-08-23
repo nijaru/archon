@@ -57,6 +57,15 @@ impl LeaseAgent {
                     },
                 }
             }
+            AgentRequest::Logs { lease } => {
+                let lease_id = LeaseId::from_u64(lease);
+                let output = if self.containers.is_tracked(lease_id) {
+                    self.containers.logs(lease_id)
+                } else {
+                    ProcessRuntime::read_log(lease_id)
+                };
+                AgentResponse::Logs { lease, output }
+            }
             AgentRequest::Prepare {
                 binding,
                 lease,

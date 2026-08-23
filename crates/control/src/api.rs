@@ -70,6 +70,10 @@ pub enum ClientRequest {
     Revoke {
         lease: u64,
     },
+    /// Fetch a lease's captured output.
+    Logs {
+        lease: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,6 +82,12 @@ pub struct LeaseInfo {
     pub owner: u64,
     pub state: String,
     pub expires_at: u64,
+    /// Outcome of a workload that finished on its own.
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    /// What ran under this lease.
+    #[serde(default)]
+    pub command: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,6 +101,10 @@ pub enum ServerResponse {
         leases: Vec<LeaseInfo>,
     },
     Revoked,
+    Logs {
+        lease: u64,
+        output: String,
+    },
     Error {
         reason: String,
     },

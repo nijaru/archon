@@ -85,6 +85,8 @@ pub enum AgentRequest {
     /// Liveness probe for a lease's process. Read-only: carries no
     /// session, so probing never touches fencing generations.
     Status { lease: u64 },
+    /// A lease's captured output. Read-only like Status.
+    Logs { lease: u64 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,6 +122,10 @@ pub enum AgentResponse {
         running: bool,
         /// Set once the workload has exited; None while running or unknown.
         exit_code: Option<i32>,
+    },
+    Logs {
+        lease: u64,
+        output: String,
     },
 }
 

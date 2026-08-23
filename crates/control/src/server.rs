@@ -385,6 +385,14 @@ impl ControlPlane {
             }),
             ClientRequest::Status => self.status(),
             ClientRequest::Revoke { lease } => self.revoke(lease),
+            ClientRequest::Logs { lease } => {
+                match self.service.lease_logs(LeaseId::from_u64(lease)) {
+                    Ok(output) => ServerResponse::Logs { lease, output },
+                    Err(err) => ServerResponse::Error {
+                        reason: err.to_string(),
+                    },
+                }
+            }
         }
     }
 
@@ -502,6 +510,8 @@ impl ControlPlane {
                 owner: lease.owner.as_u64(),
                 state: format!("{:?}", lease.state),
                 expires_at: lease.expires_at,
+                exit_code: lease.exit_code,
+                command: self.service.lease_command_of(lease.id).unwrap_or_default(),
             })
             .collect();
         ServerResponse::Status {

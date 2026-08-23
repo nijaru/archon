@@ -10,6 +10,7 @@ use crate::types::{Binding, BindingState, Lease, LeaseState, Quantity};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaseDigest {
     pub state: LeaseState,
+    pub exit_code: Option<i32>,
     pub owner: crate::ids::OwnerId,
     pub parent: Option<LeaseId>,
     pub priority: u32,
@@ -176,6 +177,7 @@ impl Cluster {
                         *id,
                         LeaseDigest {
                             state: lease.state,
+                            exit_code: lease.exit_code,
                             owner: lease.owner,
                             parent: lease.parent,
                             priority: lease.priority,
@@ -497,6 +499,7 @@ impl Cluster {
                 prepare_deadline: 0,
                 priority,
                 state: LeaseState::Reserved,
+                exit_code: None,
             },
         );
         Ok(Vec::new())
@@ -656,6 +659,7 @@ impl Cluster {
                 prepare_deadline,
                 priority,
                 state: LeaseState::Preparing,
+                exit_code: None,
             },
         );
         Ok(Vec::new())
@@ -926,6 +930,7 @@ impl Cluster {
         }
         let lease = self.leases.get_mut(&id).ok_or(Error::UnknownLease(id))?;
         lease.state = final_state;
+        lease.exit_code = Some(exit_code);
         effects.extend(self.fence_effects(id));
         Ok(effects)
     }

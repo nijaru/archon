@@ -39,9 +39,10 @@ fn main() {
                 .and_then(|arg| arg.strip_prefix("--remote="))
                 .map(String::from),
         ),
-        (Some("submit"), connect) | (Some("status"), connect) | (Some("revoke"), connect) => {
-            client(connect, &args)
-        }
+        (Some("submit"), connect)
+        | (Some("status"), connect)
+        | (Some("revoke"), connect)
+        | (Some("logs"), connect) => client(connect, &args),
         _ => usage(),
     }
 }
@@ -61,7 +62,7 @@ fn load_token(token_file: &Option<String>) -> Option<String> {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon demo [--remote ADDR]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR status\n  archon -c ADDR revoke LEASE"
+        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon demo [--remote ADDR]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR status | logs LEASE\n  archon -c ADDR revoke LEASE"
     );
     exit(2);
 }
@@ -408,6 +409,9 @@ fn client(connect: Option<String>, args: &[String]) {
         "revoke" => ClientRequest::Revoke {
             lease: rest.get(1).expect("lease id").parse().expect("lease id"),
         },
+        "logs" => ClientRequest::Logs {
+            lease: rest.get(1).expect("lease id").parse().expect("lease id"),
+        },
         _ => usage(),
     };
     write_frame(&mut stream, &response).expect("send");
@@ -499,13 +503,19 @@ fn print_response(response: ServerResponse) {
                 println!("no leases");
             }
             for lease in leases {
+                let exit = lease
+                    .exit_code
+                    .map(|code| format!(" exit={code}"))
+                    .unwrap_or_default();
+                let command = lease.command.join(" ");
                 println!(
-                    "lease {} owner={} state={} expires_at={}",
-                    lease.id, lease.owner, lease.state, lease.expires_at
+                    "lease {} owner={} state={}{} [{}]",
+                    lease.id, lease.owner, lease.state, exit, command
                 );
             }
         }
         ServerResponse::Revoked => println!("revoked"),
+        ServerResponse::Logs { output, .. } => print!("{output}"),
         ServerResponse::Error { reason } => {
             eprintln!("error: {reason}");
             exit(1);

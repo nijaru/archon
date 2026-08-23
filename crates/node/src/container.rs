@@ -166,6 +166,24 @@ impl ContainerRuntime {
         }
     }
 
+    /// The container's captured output via the engine's logs command;
+    /// works for exited containers too since the adapter owns removal.
+    pub fn logs(&self, lease: LeaseId) -> String {
+        let Some(name) = self.containers.get(&lease) else {
+            return String::new();
+        };
+        Command::new(&self.engine)
+            .arg("logs")
+            .arg(name)
+            .output()
+            .map(|output| {
+                let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+                text.push_str(&String::from_utf8_lossy(&output.stderr));
+                text
+            })
+            .unwrap_or_default()
+    }
+
     /// Stop with a SIGTERM grace budget before removing the container.
     pub fn terminate_with_grace(
         &mut self,

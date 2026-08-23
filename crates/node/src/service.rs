@@ -611,6 +611,32 @@ impl NodeService {
         self.cluster.graph.machine_of(claim.node)
     }
 
+    /// The command executing under a lease, for status reporting.
+    pub fn lease_command_of(&self, lease: LeaseId) -> Option<Vec<String>> {
+        self.lease_commands.get(&lease).cloned()
+    }
+
+    /// A lease's captured output, fetched from its executing agent.
+    pub fn lease_logs(&mut self, lease: LeaseId) -> Result<String, Error> {
+        let Some(machine) = self.lease_machine(lease) else {
+            return Ok(ProcessRuntime::read_log(lease));
+        };
+        let Some(executor) = self.agents.get_mut(&machine) else {
+            return Ok(ProcessRuntime::read_log(lease));
+        };
+        match executor.execute(crate::protocol::AgentRequest::Logs {
+            lease: lease.as_u64(),
+        }) {
+            Ok(crate::protocol::AgentResponse::Logs { output, .. }) => Ok(output),
+            Ok(other) => Err(Error::Refused {
+                explanation: format!("expected Logs, got {other:?}"),
+            }),
+            Err(reason) => Err(Error::Refused {
+                explanation: reason,
+            }),
+        }
+    }
+
     /// Host device paths bound by a lease's device-kind claims, resolved
     /// through the graph's `dev` attributes.
     pub fn lease_devices(&self, lease: LeaseId) -> Vec<String> {

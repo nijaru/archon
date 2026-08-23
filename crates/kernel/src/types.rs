@@ -260,6 +260,8 @@ pub struct Lease {
     pub prepare_deadline: u64,
     pub priority: u32,
     pub state: LeaseState,
+    /// Outcome of a workload that finished on its own; None until then.
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

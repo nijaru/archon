@@ -41,6 +41,26 @@ impl ProcessRuntime {
         Self::default()
     }
 
+    /// Directory holding per-lease output files; ARCHON_LOG_DIR overrides
+    /// the default temporary location.
+    pub fn log_dir() -> std::path::PathBuf {
+        std::env::var_os("ARCHON_LOG_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("archon-logs"))
+    }
+
+    /// A lease's captured output; the tail when the file grew large.
+    pub fn read_log(lease: LeaseId) -> String {
+        let path = Self::log_dir().join(format!("lease-{}.log", lease.as_u64()));
+        match std::fs::read(&path) {
+            Ok(bytes) if bytes.len() > 64 * 1024 => {
+                String::from_utf8_lossy(&bytes[bytes.len() - 64 * 1024..]).into_owned()
+            }
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(_) => String::new(),
+        }
+    }
+
     /// Enable cgroup v2 enforcement under `root` (e.g.
     /// `/sys/fs/cgroup/archon`). Requires root or a delegated subtree.
     #[cfg(target_os = "linux")]
@@ -65,17 +85,30 @@ impl ProcessRuntime {
             return Err(format!("lease {lease} has no command to execute"));
         };
         let mut child_command = Command::new(program);
+        // Output goes to a per-lease file so results survive the process.
+        let log_path = Self::log_dir().join(format!("lease-{}.log", lease.as_u64()));
+        if let Some(parent) = log_path.parent()
+            && let Err(err) = std::fs::create_dir_all(parent)
+        {
+            return Err(format!("create {}: {err}", parent.display()));
+        }
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|err| format!("open {}: {err}", log_path.display()))?;
         child_command
             .args(args)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(Stdio::from(
+                log_file.try_clone().map_err(|err| err.to_string())?,
+            ))
+            .stderr(Stdio::from(log_file));
 
         #[cfg(target_os = "linux")]
-        let mut group = match (&self.cgroup_root, limits.is_empty()) {
+        let group = match (&self.cgroup_root, limits.is_empty()) {
             (Some(root), false) => {
                 let group = CgroupGroup::create(root, lease, limits)?;
-                child_command.stdout(Stdio::null()).stderr(Stdio::null());
                 Some(group)
             }
             _ => None,
