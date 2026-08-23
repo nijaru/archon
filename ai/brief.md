@@ -90,6 +90,10 @@ Durability (2026-08-22): atomic cluster snapshots + log compaction
 Workload classes (2026-08-22): CompleteLease/Completed in the kernel,
 batch exit-code accounting via controller polls, drain-on-revoke
 (grace_secs), exponential restart backoff with working cap.
+Review campaign complete (2026-08-22): gpt-5.6-sol full review found
+  11 issues (1 critical RCE on agent --listen, 8 major); all fixed and
+  CI-green through 8f4a44c. Follow-up documented: control-plane mutex
+  still held across agent round-trips (timeouts bound it).
 Desktop verified end-to-end (2026-08-22): cgroup limits, containers
 with volumes, drain-on-revoke, and batch completion all proven live on
 the Linux desktop. Launch agents under `systemd-run --user --scope -p

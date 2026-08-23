@@ -9,6 +9,11 @@
 - Job results (2026-08-22): Lease.exit_code in kernel state; per-lease
   output files (ARCHON_LOG_DIR) + container engine logs; status shows
   command and exit code; `archon -c ADDR logs LEASE` retrieves output.
+- Review fixes (2026-08-22): agent listener auth (Greeting), endpoint
+  stale-generation rejection, replay id high-water marks, stale-binding
+  rebind on recovery, whole-machine machine_local placement, atomic
+  snapshot envelope, 16 MiB frame caps + 60 s deadlines, no mutex-
+  poisoning panics, teardown acks only after confirmed cleanup.
 - Device claims (2026-08-22): ARCHON_DEVICES declaration, --gpu N,
   exclusive placement, container --device passthrough; desktop-proven
   with negative control. Design: ai/design/device-enforcement.md.
