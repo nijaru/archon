@@ -7,15 +7,23 @@ and MPI are optional integrations or nested workloads.
 > A datacenter is a graph of leaseable capabilities. A workload is a set of
 > constraints and objectives over that graph.
 
+## Persistent project context
+
+Archon's private project context is centralized outside this repository at
+`~/github/nijaru/agent-context/projects/github.com/omendb/archon/ai/`.
+Use the `ai-context` skill to retrieve it. Read `brief.md` first, and never
+recreate a repository-local `ai/` directory.
+
 ## Session start
 
-1. Read `ai/brief.md`.
+1. Read the centralized `brief.md`.
 2. Run `tk ready`.
 3. Check `git status` before editing.
 
-Load `ai/design/DISTRIBUTED_RESOURCE_OS.md` only when changing architecture or
-kernel contracts. Load `ai/design/mvp-scope.md` only when implementing the
-initial kernel. Do not load `ai/review/` on ordinary startup.
+Load the centralized `design/DISTRIBUTED_RESOURCE_OS.md` only when changing
+architecture or kernel contracts. Load `design/mvp-scope.md` only when
+implementing the initial kernel. Do not load `archive/review/` on ordinary
+startup.
 
 ## Implementation order
 
@@ -47,14 +55,14 @@ and keep that first tree to kernel plus simulator.
 
 | Trigger | Read |
 |---|---|
-| Current work | `ai/brief.md`, then `ai/STATUS.md` if needed |
-| Product contract | `ai/spec.md` |
-| Architecture | `ai/design/DISTRIBUTED_RESOURCE_OS.md` |
-| Kernel design | `ai/design/kernel-primitives.md` |
-| Initial kernel scope | `ai/design/mvp-scope.md` |
-| Rationale | `ai/DECISIONS.md` |
-| Implementation stages | `ai/PLAN.md` |
-| License claims | `ai/design/LICENSE_BOUNDARY.md` |
+| Current work | centralized `brief.md`, then `STATUS.md` if needed |
+| Product contract | centralized `spec.md` |
+| Architecture | centralized `design/DISTRIBUTED_RESOURCE_OS.md` |
+| Kernel design | centralized `design/kernel-primitives.md` |
+| Initial kernel scope | centralized `design/mvp-scope.md` |
+| Rationale | centralized `DECISIONS.md` |
+| Implementation stages | centralized `PLAN.md` |
+| License claims | centralized `design/LICENSE_BOUNDARY.md` |
 
 Planned public license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
 provider/extension interfaces. Do not claim third-party or generated-artifact
