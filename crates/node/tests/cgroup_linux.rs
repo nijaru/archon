@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use archon_kernel::{
     Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
 };
+use archon_node::protocol::LeaseLimits;
+use archon_node::runtime::{ProcessRuntime, WorkStatus};
 use archon_node::service::NodeService;
 
 const ROOT: &str = "/sys/fs/cgroup/archon-test";
@@ -78,6 +80,71 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(20));
     }
     check()
+}
+
+#[test]
+fn first_instruction_runs_inside_the_lease_cgroup() {
+    if !require_cgroup_writable() {
+        return;
+    }
+    cleanup_root();
+    let mut runtime = ProcessRuntime::new().with_cgroup_root(ROOT.into());
+    let lease = LeaseId::from_u64(1);
+    runtime
+        .activate(
+            lease,
+            &[
+                "sh".into(),
+                "-c".into(),
+                "grep -qx '0::/archon-test/lease-1' /proc/self/cgroup".into(),
+            ],
+            &LeaseLimits {
+                cpu_count: 1,
+                memory_bytes: 64 * (1 << 20),
+            },
+        )
+        .unwrap();
+
+    let mut exit_code = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match runtime.status(lease) {
+            WorkStatus::Exited(code) => {
+                exit_code = Some(code);
+                break;
+            }
+            WorkStatus::Running => std::thread::sleep(Duration::from_millis(20)),
+            WorkStatus::Gone => break,
+        }
+    }
+    assert_eq!(
+        exit_code,
+        Some(0),
+        "the first command must see its lease cgroup"
+    );
+    runtime.terminate(lease).unwrap();
+    cleanup_root();
+}
+
+#[test]
+fn failed_launch_removes_the_lease_cgroup() {
+    if !require_cgroup_writable() {
+        return;
+    }
+    cleanup_root();
+    let mut runtime = ProcessRuntime::new().with_cgroup_root(ROOT.into());
+    let lease = LeaseId::from_u64(1);
+    let error = runtime.activate(
+        lease,
+        &["archon-command-that-does-not-exist".into()],
+        &LeaseLimits {
+            cpu_count: 1,
+            memory_bytes: 64 * (1 << 20),
+        },
+    );
+    assert!(error.is_err());
+    assert!(!fs::exists(format!("{ROOT}/lease-{lease}")).unwrap());
+    cleanup_root();
 }
 
 #[test]

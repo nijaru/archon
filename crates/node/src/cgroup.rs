@@ -8,6 +8,11 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
+
 use archon_kernel::LeaseId;
 
 use crate::protocol::LeaseLimits;
@@ -49,18 +54,14 @@ impl CgroupGroup {
         Ok(group)
     }
 
-    pub fn attach(&self, pid: i32) -> Result<(), String> {
-        // A just-created group can briefly reject migrations; retry within
-        // a short window before giving up.
-        let mut last = Ok(());
-        for _ in 0..10 {
-            match self.write("cgroup.procs", &pid.to_string()) {
-                Ok(()) => return Ok(()),
-                Err(err) => last = Err(err),
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        last
+    /// Open the cgroup directory for `clone3(CLONE_INTO_CGROUP)`.
+    #[cfg(target_os = "linux")]
+    pub fn open_fd(&self) -> Result<File, String> {
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(&self.path)
+            .map_err(|err| format!("open {}: {err}", self.path.display()))
     }
 
     /// Kill every process in the group atomically (kernel 5.14+).

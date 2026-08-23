@@ -4,7 +4,8 @@
 //! kernel limits. On macOS only lifecycle enforcement exists.
 
 use std::collections::BTreeMap;
-use std::process::{Child, Command, Stdio};
+use std::io;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
 use archon_kernel::LeaseId;
@@ -13,6 +14,47 @@ use crate::protocol::LeaseLimits;
 
 #[cfg(target_os = "linux")]
 use crate::cgroup::CgroupGroup;
+#[cfg(target_os = "linux")]
+use crate::linux_process::{self, LinuxChild};
+
+enum TrackedChild {
+    Standard(Child),
+    #[cfg(target_os = "linux")]
+    Cgroup(LinuxChild),
+}
+
+impl TrackedChild {
+    #[cfg(not(target_os = "linux"))]
+    fn id(&self) -> u32 {
+        match self {
+            Self::Standard(child) => child.id(),
+        }
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        match self {
+            Self::Standard(child) => child.try_wait(),
+            #[cfg(target_os = "linux")]
+            Self::Cgroup(child) => child.try_wait(),
+        }
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        match self {
+            Self::Standard(child) => child.wait(),
+            #[cfg(target_os = "linux")]
+            Self::Cgroup(child) => child.wait(),
+        }
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        match self {
+            Self::Standard(child) => child.kill(),
+            #[cfg(target_os = "linux")]
+            Self::Cgroup(child) => child.kill(),
+        }
+    }
+}
 
 /// Lifecycle observation of a lease's workload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,7 +69,7 @@ pub enum WorkStatus {
 
 #[derive(Default)]
 pub struct ProcessRuntime {
-    children: BTreeMap<LeaseId, Child>,
+    children: BTreeMap<LeaseId, TrackedChild>,
     /// Per-lease cgroup groups when enforcement is enabled.
     #[cfg(target_os = "linux")]
     groups: BTreeMap<LeaseId, CgroupGroup>,
@@ -84,7 +126,6 @@ impl ProcessRuntime {
         let [program, args @ ..] = command else {
             return Err(format!("lease {lease} has no command to execute"));
         };
-        let mut child_command = Command::new(program);
         // Output goes to a per-lease file so results survive the process.
         let log_path = Self::log_dir().join(format!("lease-{}.log", lease.as_u64()));
         if let Some(parent) = log_path.parent()
@@ -97,6 +138,37 @@ impl ProcessRuntime {
             .append(true)
             .open(&log_path)
             .map_err(|err| format!("open {}: {err}", log_path.display()))?;
+
+        #[cfg(target_os = "linux")]
+        let mut group = match (&self.cgroup_root, limits.is_empty()) {
+            (Some(root), false) => Some(CgroupGroup::create(root, lease, limits)?),
+            _ => None,
+        };
+
+        #[cfg(target_os = "linux")]
+        if group.is_some() {
+            let child = {
+                let created = group.as_ref().expect("group checked above");
+                linux_process::spawn(created, program, args, &log_file)
+            };
+            match child {
+                Ok(child) => {
+                    let created = group.take().expect("group remains after launch");
+                    self.groups.insert(lease, created);
+                    self.children.insert(lease, TrackedChild::Cgroup(child));
+                    return Ok(());
+                }
+                Err(err) => {
+                    if let Some(created) = group.take() {
+                        let _ = created.kill();
+                        let _ = created.destroy();
+                    }
+                    return Err(format!("spawn {program}: {err}"));
+                }
+            }
+        }
+
+        let mut child_command = Command::new(program);
         child_command
             .args(args)
             .stdin(Stdio::null())
@@ -104,33 +176,10 @@ impl ProcessRuntime {
                 log_file.try_clone().map_err(|err| err.to_string())?,
             ))
             .stderr(Stdio::from(log_file));
-
-        #[cfg(target_os = "linux")]
-        let mut group = match (&self.cgroup_root, limits.is_empty()) {
-            (Some(root), false) => {
-                let group = CgroupGroup::create(root, lease, limits)?;
-                Some(group)
-            }
-            _ => None,
-        };
-
-        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
-        let mut child = child_command
+        let child = child_command
             .spawn()
             .map_err(|err| format!("spawn {program}: {err}"))?;
-
-        #[cfg(target_os = "linux")]
-        if let Some(created) = group.take() {
-            // Attach failure must not leak an untracked child.
-            if let Err(err) = created.attach(child.id() as i32) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(err);
-            }
-            self.groups.insert(lease, created);
-        }
-
-        self.children.insert(lease, child);
+        self.children.insert(lease, TrackedChild::Standard(child));
         Ok(())
     }
 
