@@ -179,6 +179,7 @@ fn agent(args: &[String]) {
             Ok(stream) => stream,
             Err(_) => continue,
         };
+        archon_control::api::set_stream_limits(&stream);
         let peer = stream
             .peer_addr()
             .map(|addr| addr.to_string())

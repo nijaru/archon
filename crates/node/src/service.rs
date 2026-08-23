@@ -48,6 +48,8 @@ pub struct RemoteExecutor {
 impl RemoteExecutor {
     pub fn connect(addr: &str) -> std::io::Result<Self> {
         let mut stream = TcpStream::connect(addr)?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(60)))?;
         // Secured listeners refuse requests before the Greeting.
         let token = std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty());
         let greeting = crate::protocol::Greeting::Agent {
@@ -64,6 +66,8 @@ impl RemoteExecutor {
 
     /// Wrap an already-connected socket (dial-in agents).
     pub fn from_stream(stream: TcpStream) -> Self {
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(60)));
+        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(60)));
         Self { stream }
     }
 }

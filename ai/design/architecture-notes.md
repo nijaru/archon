@@ -2,7 +2,7 @@
 
 **Updated:** 2026-08-17
 
-These notes explain the boundaries behind Fleet's distributed resource OS
+These notes explain the boundaries behind Archon's distributed resource OS
 design. The accepted kernel contract is
 [`kernel-primitives.md`](kernel-primitives.md). Long-term architecture is in
 [`DISTRIBUTED_RESOURCE_OS.md`](DISTRIBUTED_RESOURCE_OS.md).
@@ -36,7 +36,7 @@ and recovery after node or control-plane failure.
 
 ## Hierarchical scheduling
 
-Fleet uses separate policy and timing domains:
+Archon uses separate policy and timing domains:
 
 ```text
 Global planner       region/cell, capacity, cost, energy, data
@@ -84,14 +84,14 @@ Process, OCI container, sandbox, microVM, VM, and WASM are workload properties.
 The node agent provides a common lifecycle while runtime adapters handle
 execution-specific preparation and health.
 
-Fleet should reuse OCI, containerd where useful, Cloud Hypervisor, Firecracker,
+Archon should reuse OCI, containerd where useful, Cloud Hypervisor, Firecracker,
 Wasmtime, KVM, CDI, VFIO, and vendor drivers. A first vLLM workload is useful
 for validating the model, but the node agent should receive generic workload
 intent rather than an inference-only API.
 
 ## Network, storage, and data
 
-Networking and storage are provider boundaries. Fleet exposes identity, policy,
+Networking and storage are provider boundaries. Archon exposes identity, policy,
 QoS, topology, and lifecycle semantics while reusing Linux networking, eBPF,
 WireGuard, SR-IOV, RDMA, Ceph, NVMe-oF, NFS, cloud block storage, and object
 stores.
@@ -106,7 +106,7 @@ OCI, CDI, OpenTelemetry, Linux/KVM, and standard storage/network protocols are
 native interoperability boundaries. Kubernetes, Helm, Slurm, Flux, Ray, MPI,
 and other systems are adapters or nested schedulers.
 
-Fleet must not import their internal abstractions into the core. A virtual
+Archon must not import their internal abstractions into the core. A virtual
 cluster is a lease with explicit network, storage, identity, and resource
 limits.
 

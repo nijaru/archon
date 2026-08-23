@@ -119,6 +119,13 @@ pub fn read_response(stream: &mut impl Read) -> std::io::Result<ServerResponse> 
 /// this path, before authentication).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
+/// Bound how long one frame read/write may stall. Without this a silent
+/// peer blocks its handler thread forever.
+pub fn set_stream_limits(stream: &std::net::TcpStream) {
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(60)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(60)));
+}
+
 pub fn read_payload(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
     let mut length = [0u8; 4];
     stream.read_exact(&mut length)?;

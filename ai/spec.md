@@ -32,10 +32,11 @@ scheduling, and execution system for its supported workload classes. It reuses
 Linux, KVM, OCI, accelerator drivers, storage systems, network stacks, and
 workload runtimes as lower-level substrate or explicit integrations.
 
-The target core is Rust-first. There is no implementation in this repository
-yet; the former Go model-serving scaffold was removed. Inference and
-accelerator fleets remain a first workload and operator experience, not
-Archon's product boundary.
+The core is Rust-first; the former Go model-serving scaffold was removed.
+A working v1 implementation exists (kernel, simulator, node agents, control
+plane, CLI — see `PLAN.md` and `STATUS.md`); it is lab-proven but not yet
+production-scale. Inference and accelerator fleets remain a first workload
+and operator experience, not Archon's product boundary.
 
 Detailed architecture: [`design/DISTRIBUTED_RESOURCE_OS.md`](design/DISTRIBUTED_RESOURCE_OS.md).
 

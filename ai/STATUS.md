@@ -87,7 +87,7 @@ explanations, deterministic replay, stale ownership, and simulated node failure.
 - Accepted v0 kernel contract: `design/kernel-primitives.md`.
 - Accepted v0 fencing protocol: `design/lease-fencing.md`.
 - First Rust workspace: `crates/kernel` and `crates/sim`.
-- All nine required v0 scenarios pass (`cargo test --workspace`: 40 tests).
+- The full suite passes (`cargo test --workspace`: 113+ tests across five crates).
 - Fair-share admission (`admit_fair`) is a per-owner, per-kind budget
   ceiling (TRES-style `KindUsage`) on top of the priority queue; kinds
   without a ceiling are unconstrained, and an empty map matches `admit`.

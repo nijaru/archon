@@ -11,6 +11,15 @@ use archon_kernel::{
 use archon_node::service::NodeService;
 
 /// A parsed client submission.
+/// One versioned snapshot generation: the cluster's decisions plus the
+/// controller-side state that outlives restarts.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SnapshotEnvelope {
+    version: u32,
+    cluster: archon_kernel::Cluster,
+    state: archon_node::service::ServiceState,
+}
+
 struct SubmitSpec {
     owner: u64,
     cpus: u64,
@@ -41,8 +50,9 @@ use crate::log::CommandLog;
 pub struct ControlPlane {
     service: NodeService,
     log_path: PathBuf,
-    /// Commands appended since the last compaction.
-    commands_since_compaction: u64,
+    /// Commands appended since the last compaction; shared with the sink
+    /// closure that persists them.
+    commands_since_compaction: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Compact when the log exceeds this many commands (0 = never).
     compact_every: u64,
     next_request: u64,
@@ -64,25 +74,25 @@ impl ControlPlane {
         let mut service = NodeService::new();
 
         // A snapshot restores everything at compaction time; the log then
-        // replays only what happened since.
+        // replays only what happened since. One envelope file holds both
+        // parts, published atomically, so a crash mid-compaction leaves
+        // either the old complete generation or the new one.
         let snapshot_path = Self::snapshot_path(&log_path);
-        let state_path = Self::state_path(&log_path);
-        let restored = snapshot_path.exists() && state_path.exists();
+        let restored = snapshot_path.exists();
         if restored {
-            let cluster: archon_kernel::Cluster =
+            let envelope: SnapshotEnvelope =
                 serde_json::from_reader(std::fs::File::open(&snapshot_path)?)?;
-            let state: archon_node::service::ServiceState =
-                serde_json::from_reader(std::fs::File::open(&state_path)?)?;
-            service.restore(cluster, state);
+            service.restore(envelope.cluster, envelope.state);
         }
 
+        let self_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let commands = CommandLog::read(&log_path)?;
         let first_boot = !restored && commands.is_empty();
 
         if first_boot && !matches!(link, AgentLink::None) {
             // The graph of record enters the log on first boot so restarts
             // replay it instead of rediscovering.
-            service.set_command_sink(Some(Self::make_sink(&log_path)));
+            service.set_command_sink(Some(Self::make_sink(&log_path, self_counter.clone())));
             match &link {
                 AgentLink::Local { cgroup_root } => {
                     service.register_local(cgroup_root.clone())?;
@@ -101,7 +111,7 @@ impl ControlPlane {
         // Recovery policy: live leases do not survive a controller restart.
         // A fresh controller holds no processes, so work is revoked, never
         // silently re-executed.
-        service.set_command_sink(Some(Self::make_sink(&log_path)));
+        service.set_command_sink(Some(Self::make_sink(&log_path, self_counter.clone())));
         let recovered = service.revoke_live_leases()?;
 
         // Register this process's own execution path (local dev or the
@@ -139,7 +149,7 @@ impl ControlPlane {
             service,
             token: None,
             log_path,
-            commands_since_compaction: 0,
+            commands_since_compaction: self_counter,
             compact_every,
             next_request,
         })
@@ -151,40 +161,41 @@ impl ControlPlane {
         PathBuf::from(path)
     }
 
-    fn state_path(log_path: &std::path::Path) -> PathBuf {
-        let mut path = log_path.as_os_str().to_owned();
-        path.push(".state");
-        PathBuf::from(path)
-    }
-
-    fn make_sink(log_path: &std::path::Path) -> Box<dyn FnMut(&Command) + Send> {
+    fn make_sink(
+        log_path: &std::path::Path,
+        counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Box<dyn FnMut(&Command) + Send> {
         let log_path = log_path.to_path_buf();
         Box::new(move |command: &Command| {
             let mut log = CommandLog::open(&log_path).expect("open command log");
             log.append(command).expect("append command log");
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })
     }
 
-    /// Write a snapshot of the cluster plus controller state, then truncate
-    /// the command log. Restarts load the snapshot and replay only what
-    /// came after it.
+    /// Write one versioned snapshot envelope (cluster + controller state),
+    /// then truncate the command log. Restarts load the snapshot and replay
+    /// only what came after it.
     pub fn compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        fn write_atomic<T: serde::Serialize>(
-            path: &std::path::Path,
-            value: &T,
-        ) -> Result<(), Box<dyn std::error::Error>> {
-            let tmp = path.with_extension("tmp");
-            serde_json::to_writer(std::fs::File::create(&tmp)?, value)?;
-            std::fs::rename(&tmp, path)?;
-            Ok(())
+        let envelope = SnapshotEnvelope {
+            version: 1,
+            cluster: self.service.cluster.clone(),
+            state: self.service.state_snapshot(),
+        };
+        let path = Self::snapshot_path(&self.log_path);
+        let tmp = path.with_extension("snapshot.tmp");
+        serde_json::to_writer(std::fs::File::create(&tmp)?, &envelope)?;
+        let file = std::fs::File::open(&tmp)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, &path)?;
+        if let Some(dir) = path.parent()
+            && let Ok(dir) = std::fs::File::open(dir)
+        {
+            let _ = dir.sync_all();
         }
-        write_atomic(&Self::snapshot_path(&self.log_path), &self.service.cluster)?;
-        write_atomic(
-            &Self::state_path(&self.log_path),
-            &self.service.state_snapshot(),
-        )?;
         std::fs::write(&self.log_path, b"")?;
-        self.commands_since_compaction = 0;
+        self.commands_since_compaction
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         eprintln!("archon: compacted command log into snapshot");
         Ok(())
     }
@@ -229,9 +240,11 @@ impl ControlPlane {
                 Err(err) => eprintln!("archon: restart admission failed: {err}"),
             }
         }
-        self.commands_since_compaction = self.service.cluster.log.len() as u64;
+        let since = self
+            .commands_since_compaction
+            .load(std::sync::atomic::Ordering::Relaxed);
         if self.compact_every > 0
-            && self.commands_since_compaction >= self.compact_every
+            && since >= self.compact_every
             && let Err(err) = self.compact()
         {
             eprintln!("archon: compaction failed: {err}");
@@ -252,6 +265,7 @@ impl ControlPlane {
     }
 
     fn accept(this: &std::sync::Arc<std::sync::Mutex<Self>>, mut stream: TcpStream) {
+        crate::api::set_stream_limits(&stream);
         let peer = stream
             .peer_addr()
             .map(|addr| addr.to_string())

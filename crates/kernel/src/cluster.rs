@@ -77,6 +77,9 @@ pub struct Cluster {
     pub now: u64,
     pub agreed: bool,
     pub graph: Graph,
+    /// In-process history of applied commands. Recovery replays the
+    /// durable JSONL log instead, so this never enters snapshots.
+    #[cfg_attr(feature = "serde", serde(skip_serializing, default))]
     pub log: Vec<Command>,
     pub leases: BTreeMap<LeaseId, Lease>,
     pub bindings: BTreeMap<BindingId, Binding>,

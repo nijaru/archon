@@ -1,6 +1,6 @@
 # Distributed Resource OS Architecture
 
-**Status:** Fleet's current long-term architecture
+**Status:** Archon's long-term architecture
 **Updated:** 2026-08-17
 
 The accepted v0 kernel contract is [`kernel-primitives.md`](kernel-primitives.md).
@@ -9,7 +9,7 @@ The fencing protocol is [`lease-fencing.md`](lease-fencing.md). Implement
 selected claims and `Lease` as committed authority. Older cell/host wording
 in this document is planning language for that contract.
 
-Fleet is a Rust-first distributed resource operating system. It represents a
+Archon is a Rust-first distributed resource operating system. It represents a
 datacenter as a graph of leaseable capabilities and places workloads against
 that graph using constraints, objectives, policy, and failure state.
 
@@ -22,15 +22,15 @@ inference, native processes, OCI containers, microVMs, VMs, WASM, and future
 composable resources such as CXL memory. It is not a Kubernetes reimplementation
 and it does not replace mature workload runtimes or device software.
 
-The deleted Go Fleet scaffold and its model-serving terminology are not an
+The deleted Go scaffold and its model-serving terminology are not an
 implementation starting point. The target core is Rust-first. Inference and
 private accelerator fleets remain important first workloads because they
 exercise topology, cache, health, cost, and runtime interoperability, but
-Fleet is not limited to inference or GPUs.
+Archon is not limited to inference or GPUs.
 
 ## 1. Product boundary
 
-Fleet owns the resource operating-system layer:
+Archon owns the resource operating-system layer:
 
 - resource discovery and a typed resource graph;
 - identity, authorization, leases, allocation, fencing, and reclamation;
@@ -41,7 +41,7 @@ Fleet owns the resource operating-system layer:
 - stable compatibility adapters for OCI, CDI, CSI/CNI, Slurm, Flux,
   Kubernetes, Ray, MPI, and other workload systems.
 
-Fleet reuses mature lower-level substrate rather than replacing it:
+Archon reuses mature lower-level substrate rather than replacing it:
 
 - Linux, KVM, cgroups, namespaces, eBPF, and WireGuard;
 - OCI runtimes, containerd where useful, Cloud Hypervisor, Firecracker, and
@@ -49,11 +49,11 @@ Fleet reuses mature lower-level substrate rather than replacing it:
 - GPU and accelerator drivers, CDI, NCCL/RCCL, MPI, and RDMA stacks;
 - Ceph, NVMe-oF, object stores, SPDK, and vendor storage/network systems.
 
-Fleet itself is the primary resource-control and scheduling system for native
+Archon itself is the primary resource-control and scheduling system for native
 workloads. Existing workload runtimes such as vLLM, SGLang, Ray, PyTorch
 distributed, JAX, MPI, and Slurm are execution integrations or explicitly
-nested compatibility workloads—not authorities that Fleet delegates its core
-scheduling model to. A nested runtime receives only its Fleet allocation and
+nested compatibility workloads—not authorities that Archon delegates its core
+scheduling model to. A nested runtime receives only its Archon allocation and
 cannot claim resources outside it.
 
 ## 2. Design principles
@@ -78,7 +78,7 @@ cannot claim resources outside it.
    require a distributed service stack.
 9. **Compatibility does not define the core.** Adapters ease migration without
    importing Kubernetes, Slurm, or cloud-IaaS internal abstractions.
-10. **Reuse mature infrastructure.** Fleet should only replace a subsystem when
+10. **Reuse mature infrastructure.** Archon should only replace a subsystem when
     a measured workload or correctness requirement justifies it.
 
 ## 3. Workload model
@@ -123,7 +123,7 @@ vendor, and placement policy change.
 
 ## 4. Resource graph
 
-Fleet uses a typed property graph as the logical representation of capability.
+Archon uses a typed property graph as the logical representation of capability.
 The graph need not be a general-purpose graph database. Persisted control state,
 materialized indexes, topology snapshots, and dynamic telemetry may use
 separate representations while preserving one graph contract.
@@ -242,7 +242,7 @@ receives only its parent allocation and cannot allocate outside it.
 
 ## 6. Scheduling hierarchy
 
-Fleet does not require one monolithic scheduler.
+Archon does not require one monolithic scheduler.
 
 ```text
 GLOBAL PLANNER       seconds → hours
@@ -273,9 +273,9 @@ preemption.
 
 ### Workload-local scheduler
 
-A workload-local scheduler is optional and runs inside a Fleet lease when a
+A workload-local scheduler is optional and runs inside a Archon lease when a
 workload requires it. Examples include Slurm, Flux, Ray, MPI, PyTorch/JAX
-distributed runtimes, and application-specific schedulers. Native Fleet
+distributed runtimes, and application-specific schedulers. Native Archon
 scheduling remains the primary control path for workloads it supports directly;
 nesting is an interoperability and composition feature.
 
@@ -392,7 +392,7 @@ SR-IOV, vendor APIs, and device-specific control paths belong in providers.
 
 ## 9. Network, storage, and data locality
 
-Fleet should expose one native networking control surface over Linux networking,
+Archon should expose one native networking control surface over Linux networking,
 eBPF/XDP, WireGuard, BGP, SR-IOV, and RDMA-aware policy. It should not require
 service-mesh sidecars for the core workload path.
 
@@ -412,11 +412,11 @@ replication, cache hotness, and checkpoint movement.
 Native contracts should support OCI, CDI, OpenTelemetry, Linux/KVM, standard
 storage/network protocols, and agent-initiated node connectivity.
 
-Fleet natively schedules and controls its supported workload classes. Migration
+Archon natively schedules and controls its supported workload classes. Migration
 adapters may import Kubernetes manifests and Helm workloads, or run Slurm,
 Flux, Kubernetes, Ray, or MPI inside a virtual-cluster lease. Compatibility is
 an adoption and composition path; it does not make an incumbent scheduler the
-internal authority or reduce Fleet to a wrapper around it.
+internal authority or reduce Archon to a wrapper around it.
 
 Policy and scheduler extensions should preferably be capability-limited WASM
 components. An extension may receive permissions such as:
@@ -539,7 +539,7 @@ The architecture is succeeding when:
 - a single VPS can run a useful local profile without a service stack;
 - a small bare-metal cluster does not require Kubernetes-like operational
   overhead;
-- Fleet directly controls services, batch/HPC, and AI workloads through one
+- Archon directly controls services, batch/HPC, and AI workloads through one
   resource model, while nested schedulers compose inside explicit leases;
 - heterogeneous accelerator topology influences placement;
 - leases and failure recovery remain correct during node and control-plane loss;
@@ -549,7 +549,7 @@ The architecture is succeeding when:
 
 ## 15. Product and licensing direction
 
-Fleet is planned as an open-source infrastructure product. The core value is
+Archon is planned as an open-source infrastructure product. The core value is
 the resource authority, lease, scheduling, node, and compatibility system;
 commercial value may come from enterprise governance, certified providers,
 offline and signed releases, operational support, managed control planes, and

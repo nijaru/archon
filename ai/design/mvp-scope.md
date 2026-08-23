@@ -51,10 +51,16 @@ replacement and not an inference-only product.
 
 ## v1: operational substrate
 
-Add:
+Status (2026-08-22): much of this shipped in the working system — single
+control plane with snapshot/compaction, node registration, process and OCI
+execution, cgroups, devices, queues/reservations/fair share/backfill,
+health/fencing/reconciliation. Still open: replicated control-plane state
+(HA), microVMs, virtual-cluster leases, CDI providers beyond device
+passthrough, artifact staging, the Slurm/Flux compatibility experiment.
+
+Remaining from the original list:
 
 - cell control plane and replicated state;
-- node registration and heartbeats;
 - native process and OCI execution;
 - cgroups/cpusets, NUMA policy, and device attachment;
 - CDI and accelerator providers;

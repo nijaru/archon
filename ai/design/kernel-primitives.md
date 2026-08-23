@@ -1,4 +1,4 @@
-# Fleet Kernel Vocabulary and Model
+# Archon Kernel Vocabulary and Model
 
 **Status:** accepted v0 kernel contract for `tk-byam`
 **Updated:** 2026-08-20
@@ -49,7 +49,7 @@ Example:
 | `Binding` | One Lease enforced on one Node by one Provider |
 | `Agent` | Long-running process on a machine Node that discovers and enforces |
 
-`resource` remains the domain word for anything Fleet can consume or use for
+`resource` remains the domain word for anything Archon can consume or use for
 placement. In the kernel data model, those things are `Node`s. There is no
 second `Resource` struct competing with `Node`.
 
@@ -82,7 +82,7 @@ These names borrow conventional systems language where the semantics match:
   at a target/provider.
 - `Agent` names the process role. `daemon` describes how Linux supervises it.
 
-The names are not copied as architecture. Fleet's distinctive contract is the
+The names are not copied as architecture. Archon's distinctive contract is the
 combination of graph selection, enforceable leases, provider bindings, and
 hierarchical authority.
 
