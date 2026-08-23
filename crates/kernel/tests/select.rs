@@ -214,3 +214,91 @@ fn child_cannot_escape_parent() {
         archon_kernel::Error::ChildEscapesParent { .. }
     ));
 }
+
+#[test]
+fn machine_local_multi_need_stays_on_one_machine() {
+    // Two machines, asymmetric: machine 1 has 1 CPU + 2 GiB, machine 2 has
+    // 2 CPUs + 1 GiB. A request wanting 1 CPU + 2 GiB fits only machine 1;
+    // the old per-need selection could split CPU and memory across hosts.
+    let mut cluster = Cluster::new();
+    let cpu1 = NodeId::from_u64(10);
+    let mem1 = NodeId::from_u64(11);
+    let m1 = NodeId::from_u64(1);
+    let cpu2 = NodeId::from_u64(20);
+    let mem2 = NodeId::from_u64(21);
+    let m2 = NodeId::from_u64(2);
+    cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![
+                node(1, NodeKind::Machine, Quantity::new()),
+                node(10, NodeKind::Cpu, qty(Dimension::Count, 1)),
+                node(11, NodeKind::Memory, qty(Dimension::Bytes, 2 << 30)),
+                node(2, NodeKind::Machine, Quantity::new()),
+                node(20, NodeKind::Cpu, qty(Dimension::Count, 2)),
+                node(21, NodeKind::Memory, qty(Dimension::Bytes, 1 << 30)),
+            ],
+            edges: vec![
+                edge(m1, cpu1),
+                edge(m1, mem1),
+                edge(m2, cpu2),
+                edge(m2, mem2),
+            ],
+        })
+        .unwrap();
+    cluster.set_now(1);
+
+    let request = Request {
+        id: RequestId::from_u64(1),
+        class: RequestClass::Batch,
+        needs: vec![
+            Need {
+                kind: NodeKind::Cpu,
+                quantity: qty(Dimension::Count, 1),
+                filters: vec![],
+            },
+            Need {
+                kind: NodeKind::Memory,
+                quantity: qty(Dimension::Bytes, (2 << 30) - 1),
+                filters: vec![],
+            },
+        ],
+        topology: vec![],
+        preferences: vec![],
+        data: vec![],
+        command: vec!["sleep".into(), "5".into()],
+        image: None,
+        storage: vec![],
+        ports: vec![],
+        lifetime: 100,
+        priority: 1,
+        machine_local: true,
+        grace_secs: 0,
+        keep_alive: false,
+    };
+    let allocation = archon_kernel::select(
+        &cluster.graph,
+        &cluster.occupancy(),
+        &request,
+        &Default::default(),
+    )
+    .expect("must place on the one machine that fits");
+    let machines: std::collections::BTreeSet<NodeId> = allocation
+        .claims
+        .iter()
+        .filter_map(|claim| cluster.graph.machine_of(claim.node))
+        .collect();
+    assert_eq!(
+        machines.len(),
+        1,
+        "machine_local claims must share one machine, got {machines:?}"
+    );
+}
+
+fn edge(from: NodeId, to: NodeId) -> archon_kernel::Edge {
+    archon_kernel::Edge {
+        from,
+        to,
+        kind: archon_kernel::EdgeKind::Contains,
+        attrs: Default::default(),
+    }
+}

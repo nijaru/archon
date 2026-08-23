@@ -30,7 +30,22 @@ pub fn select(
     request: &Request,
     quarantine: &BTreeSet<NodeId>,
 ) -> Result<Allocation, Error> {
+    // Malformed constraints can never be satisfied; refuse them up front
+    // rather than silently placing as if they held.
+    if request.topology.iter().any(|constraint| {
+        constraint.left >= request.needs.len() || constraint.right >= request.needs.len()
+    }) {
+        return Err(Error::Refused {
+            explanation: "topology constraint names a nonexistent need".into(),
+        });
+    }
     let mode = pack_mode(request);
+    // A machine-local request must land entirely on one machine: pick the
+    // anchor once, then satisfy every need within its subtree. Single-need
+    // requests already localize per need.
+    if request.machine_local && request.needs.len() > 1 {
+        return select_one_machine(graph, occupancy, request, mode, quarantine);
+    }
     let mut picked: Vec<Vec<Claim>> = Vec::new();
     let mut notes = Vec::new();
     for need in &request.needs {
@@ -65,6 +80,78 @@ pub fn select(
     })
 }
 
+/// Whole-machine placement: pick one anchor machine able to host every
+/// need, then satisfy each need strictly within its subtree. Deterministic
+/// machine order (ascending id); the first machine that fits all needs
+/// wins.
+fn select_one_machine(
+    graph: &Graph,
+    occupancy: &Occupancy,
+    request: &Request,
+    mode: PackMode,
+    quarantine: &BTreeSet<NodeId>,
+) -> Result<Allocation, Error> {
+    let machines = graph.nodes_of_kind(NodeKind::Machine);
+    for &machine in machines {
+        if quarantine.contains(&machine)
+            || graph
+                .ancestors(machine)
+                .iter()
+                .any(|ancestor| quarantine.contains(ancestor))
+        {
+            continue;
+        }
+        let mut allowed = std::collections::BTreeSet::new();
+        allowed.insert(machine);
+        allowed.extend(graph.descendants(machine));
+        let mut picked: Vec<Vec<Claim>> = Vec::new();
+        let mut notes = Vec::new();
+        let mut fits = true;
+        for need in &request.needs {
+            match select_need_in(
+                graph,
+                occupancy,
+                need,
+                &picked,
+                request,
+                mode,
+                quarantine,
+                Some(&allowed),
+            ) {
+                Ok((claims, need_notes)) => {
+                    picked.push(claims);
+                    notes.extend(need_notes);
+                }
+                Err(err) => {
+                    let _ = &err;
+                    fits = false;
+                    break;
+                }
+            }
+        }
+        if !fits || !topology_holds(graph, &picked, request) {
+            continue;
+        }
+        let mut claims = Vec::new();
+        for group in &picked {
+            claims.extend(group.iter().cloned());
+        }
+        return Ok(Allocation {
+            claims,
+            graph_revision: graph.revision,
+            explanation: format!(
+                "{:?} {:?} selected {} claims on {machine}",
+                request.class,
+                mode,
+                notes.len()
+            ),
+        });
+    }
+    Err(Error::Refused {
+        explanation: "no single machine hosts every need of this workload".into(),
+    })
+}
+
 fn pack_mode(request: &Request) -> PackMode {
     let mut mode = match request.class {
         RequestClass::Service | RequestClass::Batch => PackMode::Pack,
@@ -88,7 +175,31 @@ fn select_need(
     mode: PackMode,
     quarantine: &BTreeSet<NodeId>,
 ) -> Result<(Vec<Claim>, Vec<String>), Error> {
-    let candidates = candidates(graph, occupancy, need, quarantine)?;
+    select_need_in(
+        graph, occupancy, need, already, request, mode, quarantine, None,
+    )
+}
+
+/// `allowed` restricts the candidate nodes (whole-machine placement).
+fn select_need_in(
+    graph: &Graph,
+    occupancy: &Occupancy,
+    need: &Need,
+    already: &[Vec<Claim>],
+    request: &Request,
+    mode: PackMode,
+    quarantine: &BTreeSet<NodeId>,
+    allowed: Option<&std::collections::BTreeSet<NodeId>>,
+) -> Result<(Vec<Claim>, Vec<String>), Error> {
+    let candidates: Vec<NodeId> = candidates(graph, occupancy, need, quarantine)?
+        .into_iter()
+        .filter(|node| allowed.is_none_or(|set| set.contains(node)))
+        .collect();
+    if candidates.is_empty() {
+        return Err(Error::Refused {
+            explanation: format!("no {:?} node within the allowed set", need.kind),
+        });
+    }
     if need.kind == NodeKind::Memory {
         let want = quantity_get(&need.quantity, Dimension::Bytes);
         if want == 0 {
@@ -397,6 +508,8 @@ fn machine_load(graph: &Graph, occupancy: &Occupancy, machine: NodeId, extra: &[
 }
 
 fn topology_holds(graph: &Graph, picked: &[Vec<Claim>], request: &Request) -> bool {
+    // Constraints referencing needs not yet selected cannot be evaluated
+    // mid-placement; select() refuses malformed requests up front.
     for constraint in &request.topology {
         if constraint.left >= picked.len() || constraint.right >= picked.len() {
             continue;

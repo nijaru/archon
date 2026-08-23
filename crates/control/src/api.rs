@@ -114,10 +114,21 @@ pub fn read_response(stream: &mut impl Read) -> std::io::Result<ServerResponse> 
         .map(|payload| serde_json::from_slice(&payload).map_err(std::io::Error::other))?
 }
 
+/// Upper bound on one frame; refused before any allocation so a hostile
+/// length prefix cannot force a huge buffer (the Greeting arrives through
+/// this path, before authentication).
+pub const MAX_FRAME: usize = 16 * 1024 * 1024;
+
 pub fn read_payload(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
     let mut length = [0u8; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_le_bytes(length) as usize;
+    if length > MAX_FRAME {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame exceeds maximum size",
+        ));
+    }
     let mut payload = vec![0u8; length];
     stream.read_exact(&mut payload)?;
     Ok(payload)

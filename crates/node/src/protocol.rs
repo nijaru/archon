@@ -165,12 +165,26 @@ pub fn write_frame<T: serde::Serialize>(
     stream.write_all(&payload)
 }
 
-pub fn read_frame(stream: &mut impl Read) -> std::io::Result<AgentResponse> {
+/// Upper bound on one frame; refused before any allocation.
+pub const MAX_FRAME: usize = 16 * 1024 * 1024;
+
+fn read_payload(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
     let mut length = [0u8; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_le_bytes(length) as usize;
+    if length > MAX_FRAME {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame exceeds maximum size",
+        ));
+    }
     let mut payload = vec![0u8; length];
     stream.read_exact(&mut payload)?;
+    Ok(payload)
+}
+
+pub fn read_frame(stream: &mut impl Read) -> std::io::Result<AgentResponse> {
+    let payload = read_payload(stream)?;
     serde_json::from_slice(&payload).map_err(std::io::Error::other)
 }
 
@@ -181,19 +195,11 @@ pub fn write_response(stream: &mut impl Write, response: &AgentResponse) -> std:
 }
 
 pub fn read_greeting(stream: &mut impl Read) -> std::io::Result<Greeting> {
-    let mut length = [0u8; 4];
-    stream.read_exact(&mut length)?;
-    let length = u32::from_le_bytes(length) as usize;
-    let mut payload = vec![0u8; length];
-    stream.read_exact(&mut payload)?;
+    let payload = read_payload(stream)?;
     serde_json::from_slice(&payload).map_err(std::io::Error::other)
 }
 
 pub fn read_request(stream: &mut impl Read) -> std::io::Result<AgentRequest> {
-    let mut length = [0u8; 4];
-    stream.read_exact(&mut length)?;
-    let length = u32::from_le_bytes(length) as usize;
-    let mut payload = vec![0u8; length];
-    stream.read_exact(&mut payload)?;
+    let payload = read_payload(stream)?;
     serde_json::from_slice(&payload).map_err(std::io::Error::other)
 }

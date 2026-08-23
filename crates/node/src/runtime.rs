@@ -114,13 +114,19 @@ impl ProcessRuntime {
             _ => None,
         };
 
-        let child = child_command
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut child = child_command
             .spawn()
             .map_err(|err| format!("spawn {program}: {err}"))?;
 
         #[cfg(target_os = "linux")]
         if let Some(created) = group.take() {
-            created.attach(child.id() as i32)?;
+            // Attach failure must not leak an untracked child.
+            if let Err(err) = created.attach(child.id() as i32) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(err);
+            }
             self.groups.insert(lease, created);
         }
 
@@ -132,10 +138,18 @@ impl ProcessRuntime {
     /// cgroup, the whole group dies atomically and the group is removed.
     pub fn terminate(&mut self, lease: LeaseId) -> Result<bool, String> {
         #[cfg(target_os = "linux")]
-        if let Some(group) = self.groups.remove(&lease) {
+        if let Some(group) = self.groups.get(&lease) {
+            // Kill before dropping the handle: an error keeps the group
+            // tracked for a later retry.
             group.kill()?;
+        }
+        #[cfg(target_os = "linux")]
+        if self.groups.contains_key(&lease) {
             let killed = self.reap(lease)?;
-            group.destroy()?;
+            // Destroy may race a still-exiting process; tolerate failure.
+            if let Some(group) = self.groups.remove(&lease) {
+                let _ = group.destroy();
+            }
             return Ok(killed);
         }
         let Some(mut child) = self.children.remove(&lease) else {

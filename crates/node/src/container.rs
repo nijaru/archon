@@ -185,27 +185,50 @@ impl ContainerRuntime {
     }
 
     /// Stop with a SIGTERM grace budget before removing the container.
+    /// Stop with a SIGTERM grace budget, then remove. The container stays
+    /// tracked until cleanup is positively confirmed: a failed engine
+    /// command returns an error (an uncertain failure the controller
+    /// treats as lease failure) instead of acknowledging teardown while
+    /// the workload may still run.
     pub fn terminate_with_grace(
         &mut self,
         lease: LeaseId,
         grace_secs: u32,
     ) -> Result<bool, String> {
-        let Some(name) = self.containers.remove(&lease) else {
+        let Some(name) = self.containers.get(&lease) else {
             return Ok(false);
         };
-        Command::new(&self.engine)
+        let name = name.clone();
+        let stop = Command::new(&self.engine)
             .arg("stop")
             .arg("-t")
             .arg(grace_secs.to_string())
             .arg(&name)
             .output()
             .map_err(|err| format!("{} stop: {err}", self.engine))?;
-        Command::new(&self.engine)
+        if !stop.status.success() {
+            return Err(format!(
+                "{} stop {}: {}",
+                self.engine,
+                name,
+                String::from_utf8_lossy(&stop.stderr).trim()
+            ));
+        }
+        let rm = Command::new(&self.engine)
             .arg("rm")
             .arg("-f")
             .arg(&name)
             .output()
             .map_err(|err| format!("{} rm: {err}", self.engine))?;
+        if !rm.status.success() {
+            return Err(format!(
+                "{} rm {}: {}",
+                self.engine,
+                name,
+                String::from_utf8_lossy(&rm.stderr).trim()
+            ));
+        }
+        self.containers.remove(&lease);
         Ok(true)
     }
 }
