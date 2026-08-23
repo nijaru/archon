@@ -58,7 +58,7 @@ impl RemoteExecutor {
             memory_bytes: 0,
             devices: Vec::new(),
         };
-        write_frame(&mut stream, &greeting).map_err(|err| std::io::Error::other(err))?;
+        write_frame(&mut stream, &greeting).map_err(std::io::Error::other)?;
         Ok(Self { stream })
     }
 
