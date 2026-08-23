@@ -46,11 +46,17 @@ pub fn select(
     if request.machine_local && request.needs.len() > 1 {
         return select_one_machine(graph, occupancy, request, mode, quarantine);
     }
+    let ctx = SelectCtx {
+        graph,
+        occupancy,
+        request,
+        mode,
+        quarantine,
+    };
     let mut picked: Vec<Vec<Claim>> = Vec::new();
     let mut notes = Vec::new();
     for need in &request.needs {
-        let (claims, need_notes) =
-            select_need(graph, occupancy, need, &picked, request, mode, quarantine)?;
+        let (claims, need_notes) = select_need(&ctx, need, &picked)?;
         notes.extend(need_notes);
         picked.push(claims);
     }
@@ -104,26 +110,23 @@ fn select_one_machine(
         let mut allowed = std::collections::BTreeSet::new();
         allowed.insert(machine);
         allowed.extend(graph.descendants(machine));
+        let ctx = SelectCtx {
+            graph,
+            occupancy,
+            request,
+            mode,
+            quarantine,
+        };
         let mut picked: Vec<Vec<Claim>> = Vec::new();
         let mut notes = Vec::new();
         let mut fits = true;
         for need in &request.needs {
-            match select_need_in(
-                graph,
-                occupancy,
-                need,
-                &picked,
-                request,
-                mode,
-                quarantine,
-                Some(&allowed),
-            ) {
+            match select_need_in(&ctx, need, &picked, Some(&allowed)) {
                 Ok((claims, need_notes)) => {
                     picked.push(claims);
                     notes.extend(need_notes);
                 }
-                Err(err) => {
-                    let _ = &err;
+                Err(_) => {
                     fits = false;
                     break;
                 }
@@ -166,31 +169,37 @@ fn pack_mode(request: &Request) -> PackMode {
     mode
 }
 
+struct SelectCtx<'a> {
+    graph: &'a Graph,
+    occupancy: &'a Occupancy,
+    request: &'a Request,
+    mode: PackMode,
+    quarantine: &'a BTreeSet<NodeId>,
+}
+
 fn select_need(
-    graph: &Graph,
-    occupancy: &Occupancy,
+    ctx: &SelectCtx<'_>,
     need: &Need,
     already: &[Vec<Claim>],
-    request: &Request,
-    mode: PackMode,
-    quarantine: &BTreeSet<NodeId>,
 ) -> Result<(Vec<Claim>, Vec<String>), Error> {
-    select_need_in(
-        graph, occupancy, need, already, request, mode, quarantine, None,
-    )
+    select_need_in(ctx, need, already, None)
 }
 
 /// `allowed` restricts the candidate nodes (whole-machine placement).
 fn select_need_in(
-    graph: &Graph,
-    occupancy: &Occupancy,
+    ctx: &SelectCtx<'_>,
     need: &Need,
     already: &[Vec<Claim>],
-    request: &Request,
-    mode: PackMode,
-    quarantine: &BTreeSet<NodeId>,
     allowed: Option<&std::collections::BTreeSet<NodeId>>,
 ) -> Result<(Vec<Claim>, Vec<String>), Error> {
+    let SelectCtx {
+        graph,
+        occupancy,
+        request,
+        mode,
+        quarantine,
+    } = *ctx;
+    let quarantine: &BTreeSet<NodeId> = quarantine;
     let candidates: Vec<NodeId> = candidates(graph, occupancy, need, quarantine)?
         .into_iter()
         .filter(|node| allowed.is_none_or(|set| set.contains(node)))
