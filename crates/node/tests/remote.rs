@@ -21,6 +21,8 @@ fn spawn_agent() -> String {
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
             let mut agent = LeaseAgent::new(ProcessRuntime::new());
+            // The controller greets before driving requests.
+            let _ = archon_node::protocol::read_greeting(&mut stream);
             while let Ok(request) = read_request(&mut stream) {
                 let response = agent.handle(request);
                 if write_response(&mut stream, &response).is_err() {

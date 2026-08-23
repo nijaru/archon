@@ -47,9 +47,19 @@ pub struct RemoteExecutor {
 
 impl RemoteExecutor {
     pub fn connect(addr: &str) -> std::io::Result<Self> {
-        Ok(Self {
-            stream: TcpStream::connect(addr)?,
-        })
+        let mut stream = TcpStream::connect(addr)?;
+        // Secured listeners refuse requests before the Greeting.
+        let token = std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty());
+        let greeting = crate::protocol::Greeting::Agent {
+            token,
+            instance_id: String::new(),
+            name: String::new(),
+            cpus: 0,
+            memory_bytes: 0,
+            devices: Vec::new(),
+        };
+        write_frame(&mut stream, &greeting).map_err(|err| std::io::Error::other(err))?;
+        Ok(Self { stream })
     }
 
     /// Wrap an already-connected socket (dial-in agents).
@@ -88,6 +98,8 @@ pub struct NodeService {
     /// Restarted request id -> original request id.
     restart_root: BTreeMap<RequestId, RequestId>,
     next_request_id: u64,
+    /// Next lease id; recovered from the log on replay.
+    next_lease: u64,
     pending: VecDeque<Effect>,
     next_session: u64,
     next_binding: u64,
@@ -113,6 +125,7 @@ pub struct ServiceState {
     /// Restart lineage: each restarted request id points at the original,
     /// so caps and backoff survive id churn across generations.
     pub restart_root: BTreeMap<RequestId, RequestId>,
+    pub next_lease: u64,
     pub next_request_id: u64,
     pub next_session: u64,
     pub next_binding: u64,
@@ -279,6 +292,7 @@ impl NodeService {
             restart_last_at: BTreeMap::new(),
             restart_root: BTreeMap::new(),
             next_request_id: 1,
+            next_lease: 1,
             pending: VecDeque::new(),
             next_session: 1,
             next_binding: 1,
@@ -300,8 +314,21 @@ impl NodeService {
     /// restarted controller must never hand out an old generation.
     pub fn replay(&mut self, commands: impl IntoIterator<Item = Command>) -> Result<(), Error> {
         for command in commands {
-            if let Command::SetAgentSession { session, .. } = &command {
-                self.next_session = self.next_session.max(*session + 1);
+            // Recover every id high-water mark from the log before new
+            // work allocates colliding ids.
+            match &command {
+                Command::SetAgentSession { session, .. } => {
+                    self.next_session = self.next_session.max(*session + 1);
+                }
+                Command::OpenBinding { binding, .. } => {
+                    self.next_binding = self.next_binding.max(binding.as_u64() + 1);
+                }
+                Command::ReserveLease { lease, .. }
+                | Command::PromoteLease { lease, .. }
+                | Command::OpenLease { lease, .. } => {
+                    self.next_lease = self.next_lease.max(lease.as_u64() + 1);
+                }
+                _ => {}
             }
             self.commit(command)?;
         }
@@ -337,7 +364,8 @@ impl NodeService {
             return Ok(None);
         };
         let request_id = admission.request.id;
-        let lease = LeaseId::from_u64(self.cluster.leases.len() as u64 + 1);
+        let lease = LeaseId::from_u64(self.next_lease);
+        self.next_lease += 1;
         self.commands.remove(&request_id);
         let command = admission.request.command.clone();
         self.lease_commands.insert(lease, command);
@@ -383,6 +411,7 @@ impl NodeService {
             restart_counts: self.restart_counts.clone(),
             restart_last_at: self.restart_last_at.clone(),
             restart_root: self.restart_root.clone(),
+            next_lease: self.next_lease,
             next_request_id: self.next_request_id,
             next_session: self.next_session,
             next_binding: self.next_binding,
@@ -409,6 +438,7 @@ impl NodeService {
         self.restart_counts = state.restart_counts;
         self.restart_last_at = state.restart_last_at;
         self.restart_root = state.restart_root;
+        self.next_lease = state.next_lease;
     }
 
     /// Queue depth, for status reporting.
@@ -841,16 +871,45 @@ impl NodeService {
             | Effect::Fence { binding, .. } => *binding,
             Effect::Reconcile { .. } => unreachable!(),
         };
-        let record = self
-            .cluster
-            .bindings
-            .get(&binding_id)
-            .ok_or(Error::UnknownBinding(binding_id))?;
-        let (lease, session, fence) = (record.lease, record.agent_session, record.fence);
+        let (lease, mut session, mut fence, record_node) = {
+            let record = self
+                .cluster
+                .bindings
+                .get(&binding_id)
+                .ok_or(Error::UnknownBinding(binding_id))?;
+            (
+                record.lease,
+                record.agent_session,
+                record.fence,
+                record.node,
+            )
+        };
+
+        // A restart leaves bindings attached to a dead generation. Move a
+        // stale binding onto the machine's live session before driving its
+        // effect — including teardown effects of terminal leases, whose
+        // open bindings would otherwise strand capacity forever.
+        let machine_for_rebind = self.cluster.graph.machine_of(record_node);
+        if let Some(machine) = machine_for_rebind
+            && let Some(&current) = self.cluster.sessions.get(&machine)
+            && current != session
+        {
+            self.commit(Command::RebindSession {
+                binding: binding_id,
+                session: current,
+            })?;
+            let refreshed = self
+                .cluster
+                .bindings
+                .get(&binding_id)
+                .ok_or(Error::UnknownBinding(binding_id))?;
+            session = refreshed.agent_session;
+            fence = refreshed.fence;
+        }
         let machine = self
             .cluster
             .graph
-            .machine_of(record.node)
+            .machine_of(record_node)
             .ok_or(Error::Refused {
                 explanation: format!("binding {binding_id} node has no machine ancestor"),
             })?;

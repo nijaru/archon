@@ -47,6 +47,7 @@ fn spawn_agent() -> String {
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
             use archon_node::protocol::AgentRequest;
+            let _ = archon_node::protocol::read_greeting(&mut stream);
             let Ok(AgentRequest::Hello) = read_request(&mut stream) else {
                 return;
             };

@@ -166,6 +166,12 @@ fn agent(args: &[String]) {
     let Some(listen) = listen else {
         usage();
     };
+    let token = load_token(&token_file);
+    if token.is_none() {
+        eprintln!(
+            "archon: warning: no auth token configured; this agent executes              commands for anyone who can reach {listen} (--token-file to secure)"
+        );
+    }
     let listener = TcpListener::bind(&listen).expect("bind");
     eprintln!("archon: agent listening on {listen}");
     for stream in listener.incoming() {
@@ -177,6 +183,26 @@ fn agent(args: &[String]) {
             .peer_addr()
             .map(|addr| addr.to_string())
             .unwrap_or_default();
+        // Connections open with the same Greeting the control plane uses;
+        // anything else is refused before a single request is served.
+        let authorized = match archon_control::api::read_greeting(&mut stream) {
+            Ok(archon_control::api::Greeting::Agent {
+                token: presented, ..
+            }) => {
+                match (&token, presented) {
+                    (Some(expected), Some(presented)) => {
+                        archon_control::api::token_matches(expected, &presented)
+                    }
+                    (None, _) => true, // open mode, warned at startup
+                    (Some(_), None) => false,
+                }
+            }
+            _ => false,
+        };
+        if !authorized {
+            eprintln!("archon: {peer} failed agent authentication");
+            continue;
+        }
         eprintln!("archon: controller connected from {peer}");
         let runtime = build_runtime(&cgroup_root);
         let mut agent = archon_node::agent::LeaseAgent::new(runtime);

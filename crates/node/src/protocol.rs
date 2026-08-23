@@ -10,6 +10,33 @@ use std::io::{Read, Write};
 use archon_kernel::{PortPublish, StorageMount};
 use serde::{Deserialize, Serialize};
 
+/// Connection handshake: role plus optional shared token, sent before
+/// any request on either direction of the wire.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Greeting {
+    /// A dial-in agent announcing its machine.
+    Agent {
+        token: Option<String>,
+        instance_id: String,
+        name: String,
+        cpus: u64,
+        memory_bytes: u64,
+        /// Devices this machine exposes, as (kind, host path).
+        #[serde(default)]
+        devices: Vec<(archon_kernel::NodeKind, String)>,
+    },
+    /// A CLI client.
+    Client { token: Option<String> },
+}
+
+impl Greeting {
+    pub fn token(&self) -> Option<&str> {
+        match self {
+            Greeting::Agent { token, .. } | Greeting::Client { token } => token.as_deref(),
+        }
+    }
+}
+
 /// Resource limits derived from a lease's claims. Zero means unlimited.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseLimits {
@@ -151,6 +178,15 @@ pub fn write_response(stream: &mut impl Write, response: &AgentResponse) -> std:
     let payload = serde_json::to_vec(response).expect("serialize response");
     stream.write_all(&(payload.len() as u32).to_le_bytes())?;
     stream.write_all(&payload)
+}
+
+pub fn read_greeting(stream: &mut impl Read) -> std::io::Result<Greeting> {
+    let mut length = [0u8; 4];
+    stream.read_exact(&mut length)?;
+    let length = u32::from_le_bytes(length) as usize;
+    let mut payload = vec![0u8; length];
+    stream.read_exact(&mut payload)?;
+    serde_json::from_slice(&payload).map_err(std::io::Error::other)
 }
 
 pub fn read_request(stream: &mut impl Read) -> std::io::Result<AgentRequest> {

@@ -19,6 +19,7 @@ fn spawn_shaped_agent(instance: &'static str, name: &'static str, cpus: u64) -> 
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
             use archon_node::protocol::{AgentRequest, AgentResponse};
+            let _ = archon_node::protocol::read_greeting(&mut stream);
             let Ok(AgentRequest::Hello) = read_request(&mut stream) else {
                 return;
             };

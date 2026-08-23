@@ -211,3 +211,25 @@ fn log_len(path: &std::path::Path) -> usize {
         .map(|content| content.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0)
 }
+
+#[test]
+fn replay_recovers_id_high_water_marks() {
+    let path = temp_log("highwater");
+    {
+        let mut service = logged_service(&path);
+        submit_sleep(&mut service, 1, 60);
+        service.admit_one().expect("first admission opens bindings");
+        // Lease 1 ran; its log holds OpenLease(1) and OpenBinding(1).
+    }
+
+    // A fresh controller replays and admits new work: ids must continue,
+    // not restart at 1.
+    let commands = archon_control::log::CommandLog::read(&path).expect("read log");
+    let mut recovered = NodeService::new();
+    recovered.replay(commands).expect("replay");
+    recovered.register_local(None).expect("register");
+    submit_sleep(&mut recovered, 2, 60);
+    recovered
+        .admit_one()
+        .expect("post-replay admission must not collide with reused binding ids");
+}

@@ -5,31 +5,10 @@ use std::io::{Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-/// The first frame on any control-plane connection: declares the role and
-/// presents the shared token when the server requires one.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Greeting {
-    /// A dial-in agent announcing its machine.
-    Agent {
-        token: Option<String>,
-        instance_id: String,
-        name: String,
-        cpus: u64,
-        memory_bytes: u64,
-        #[serde(default)]
-        devices: Vec<(archon_kernel::NodeKind, String)>,
-    },
-    /// A CLI client.
-    Client { token: Option<String> },
-}
-
-impl Greeting {
-    pub fn token(&self) -> Option<&str> {
-        match self {
-            Greeting::Agent { token, .. } | Greeting::Client { token } => token.as_deref(),
-        }
-    }
-}
+/// The first frame on any control-plane connection: role and optional
+/// shared token. Defined in the node protocol so both directions of the
+/// wire share one type.
+pub use archon_node::protocol::Greeting;
 
 /// Constant-time equality; a length mismatch leaks only the length.
 pub fn token_matches(expected: &str, presented: &str) -> bool {
@@ -114,6 +93,11 @@ pub fn write_frame(stream: &mut impl Write, message: &impl Serialize) -> std::io
     let payload = serde_json::to_vec(message).expect("serialize frame");
     stream.write_all(&(payload.len() as u32).to_le_bytes())?;
     stream.write_all(&payload)
+}
+
+pub fn read_greeting(stream: &mut impl Read) -> std::io::Result<Greeting> {
+    read_payload(stream)
+        .map(|payload| serde_json::from_slice(&payload).map_err(std::io::Error::other))?
 }
 
 pub fn read_request(stream: &mut impl Read) -> std::io::Result<ClientRequest> {

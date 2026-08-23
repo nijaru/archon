@@ -18,6 +18,9 @@ pub struct LeaseAgent {
     /// process generations — an older hello never reinstates.
     session: u64,
     next_handle: u64,
+    /// Highest fence seen per binding; operations carrying an older
+    /// generation are rejected as stale.
+    bindings: BTreeMap<u64, u64>,
 }
 
 impl LeaseAgent {
@@ -30,6 +33,7 @@ impl LeaseAgent {
             grace: BTreeMap::new(),
             session: 0,
             next_handle: 1,
+            bindings: BTreeMap::new(),
         }
     }
 
@@ -70,11 +74,15 @@ impl LeaseAgent {
                 binding,
                 lease,
                 session,
+                fence,
                 ..
             } => {
                 if self.check_session(session) {
                     return self.failed(binding, &format!("stale session {session}"));
                 }
+                // Record this binding's generation; only non-stale
+                // operations are honored from here on.
+                self.bindings.insert(binding, fence);
                 let handle = self.next_handle;
                 self.next_handle += 1;
                 let _ = lease;
@@ -84,7 +92,7 @@ impl LeaseAgent {
                 binding,
                 lease,
                 session,
-                fence: _,
+                fence,
                 command,
                 limits,
                 image,
@@ -93,10 +101,10 @@ impl LeaseAgent {
                 grace_secs,
                 devices,
             } => {
-                self.grace.insert(LeaseId::from_u64(lease), grace_secs);
-                if self.check_session(session) {
-                    return self.failed(binding, &format!("stale session {session}"));
+                if !self.generation_valid(binding, session, fence) {
+                    return self.failed(binding, &format!("stale generation {session}/{fence}"));
                 }
+                self.grace.insert(LeaseId::from_u64(lease), grace_secs);
                 let lease_id = LeaseId::from_u64(lease);
                 let result = if image.is_empty() {
                     // Processes share the host filesystem and network;
@@ -168,6 +176,24 @@ impl LeaseAgent {
         }
         self.session = session;
         false
+    }
+
+    /// Whether this operation's generation is current: the session must
+    /// not be stale, and the fence must not regress behind one already
+    /// seen for the binding. An unseen binding at the current session is
+    /// accepted — reconciliation legitimately activates bindings prepared
+    /// under a previous agent process.
+    fn generation_valid(&mut self, binding: u64, session: u64, fence: u64) -> bool {
+        if self.check_session(session) {
+            return false;
+        }
+        match self.bindings.get(&binding) {
+            Some(seen) if *seen > fence => false,
+            _ => {
+                self.bindings.insert(binding, fence);
+                true
+            }
+        }
     }
 
     fn failed(&self, binding: u64, reason: &str) -> AgentResponse {
