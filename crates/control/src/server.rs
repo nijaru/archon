@@ -423,9 +423,15 @@ impl ControlPlane {
             filters: vec![],
         }];
         if memory_mib > 0 {
+            let bytes = memory_mib.checked_mul(1 << 20);
+            let Some(bytes) = bytes else {
+                return ServerResponse::Error {
+                    reason: "memory_mib overflows".into(),
+                };
+            };
             needs.push(Need {
                 kind: NodeKind::Memory,
-                quantity: qty(Dimension::Bytes, memory_mib * (1 << 20)),
+                quantity: qty(Dimension::Bytes, bytes),
                 filters: vec![],
             });
         }
@@ -458,19 +464,36 @@ impl ControlPlane {
                     mount_path: mount_path.into(),
                 })
                 .collect(),
-            ports: ports
+            ports: match ports
                 .iter()
                 .map(|spec| match spec.split_once(':') {
-                    Some((host, container)) => archon_kernel::PortPublish {
-                        container_port: container.parse().expect("port"),
-                        host_port: Some(host.parse().expect("host port")),
-                    },
-                    None => archon_kernel::PortPublish {
-                        container_port: spec.parse().expect("port"),
-                        host_port: None,
-                    },
+                    Some((host, container)) => {
+                        let container_port: u16 = container.parse().map_err(|_| {
+                            "invalid port spec (expected [host:]container)".to_string()
+                        })?;
+                        let host_port: u16 = host.parse().map_err(|_| {
+                            "invalid port spec (expected [host:]container)".to_string()
+                        })?;
+                        Ok(archon_kernel::PortPublish {
+                            container_port,
+                            host_port: Some(host_port),
+                        })
+                    }
+                    None => spec
+                        .parse::<u16>()
+                        .map(|container_port| archon_kernel::PortPublish {
+                            container_port,
+                            host_port: None,
+                        })
+                        .map_err(|_| "invalid port spec (expected [host:]container)".to_string()),
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, String>>()
+            {
+                Ok(ports) => ports,
+                Err(reason) => {
+                    return ServerResponse::Error { reason };
+                }
+            },
         };
         self.service.submit(request, OwnerId::from_u64(owner));
         match self.service.admit_one() {
