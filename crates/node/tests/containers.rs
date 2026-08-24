@@ -126,14 +126,21 @@ fn find_container(lease: LeaseId) -> Option<String> {
         .map(String::from)
 }
 
-fn wait_until_container(lease: LeaseId) -> Option<String> {
+fn wait_until_container(service: &mut NodeService, lease: LeaseId) -> Option<String> {
     let mut name = None;
     wait_until(Duration::from_secs(30), || {
+        // Agent acks advance asynchronously; pump them between polls.
+        let _ = service.drive(Duration::from_millis(20));
         name = find_container(lease);
         name.is_some()
     });
     name
 }
+
+/// Container discovery matches by lease-id suffix, so concurrent tests
+/// would see each other's containers; docker tests also contend for the
+/// engine. Run them one at a time.
+static DOCKER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
@@ -148,6 +155,9 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 
 #[test]
 fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
+    let _docker = DOCKER_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !engine_available() {
         eprintln!("skipping: docker not reachable");
         return;
@@ -180,11 +190,12 @@ fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
         Some(RequestId::from_u64(1))
     );
     let lease = LeaseId::from_u64(1);
-    let name = wait_until_container(lease);
+    let name = wait_until_container(&mut service, lease);
     let name = name.unwrap_or_else(|| format!("archon-lease-{}", lease.as_u64()));
 
     assert!(
         wait_until(Duration::from_secs(10), || {
+            let _ = service.drive(Duration::from_millis(20));
             docker_inspect("{{.State.Running}}", &name) == "true"
         }),
         "the lease's container must be running"
@@ -197,7 +208,10 @@ fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
 
     service.revoke(lease).expect("revoke");
     assert!(
-        wait_until(Duration::from_secs(10), || find_container(lease).is_none()),
+        wait_until(Duration::from_secs(10), || {
+            let _ = service.drive(Duration::from_millis(20));
+            find_container(lease).is_none()
+        }),
         "revoke must remove the container"
     );
 
@@ -226,9 +240,12 @@ fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
         Some(RequestId::from_u64(2))
     );
     let lease2 = LeaseId::from_u64(2);
-    let name2 = wait_until_container(lease2).expect("container appears");
+    let name2 = wait_until_container(&mut service, lease2).expect("container appears");
 
-    let wrote = wait_until(Duration::from_secs(30), || host_dir.join("proof").exists());
+    let wrote = wait_until(Duration::from_secs(30), || {
+        let _ = service.drive(Duration::from_millis(20));
+        host_dir.join("proof").exists()
+    });
     assert!(wrote, "the bind mount must reach the host directory");
     let content = std::fs::read_to_string(host_dir.join("proof")).expect("read proof");
     assert_eq!(content.trim(), "stored");
@@ -287,6 +304,9 @@ fn submit_request_template(id: u64, command: Vec<String>, dir: &std::path::Path)
 
 #[test]
 fn container_revoke_drains_within_grace() {
+    let _docker = DOCKER_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !engine_available() {
         eprintln!("skipping: docker not reachable");
         return;
@@ -308,11 +328,17 @@ fn container_revoke_drains_within_grace() {
     service.cluster.set_now(1);
     service.admit_one().expect("admit");
     let lease = LeaseId::from_u64(1);
-    assert!(wait_until_container(lease).is_some(), "container must run");
+    assert!(
+        wait_until_container(&mut service, lease).is_some(),
+        "container must run"
+    );
 
     // Revoke with drain budget; the trap writes the marker before exit.
     service.revoke(lease).unwrap();
-    let drained = wait_until(Duration::from_secs(20), || dir.join("done").exists());
+    let drained = wait_until(Duration::from_secs(20), || {
+        let _ = service.drive(Duration::from_millis(20));
+        dir.join("done").exists()
+    });
     assert!(drained, "graceful TERM must reach the container workload");
     let _ = std::fs::remove_dir_all(&dir);
 }

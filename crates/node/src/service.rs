@@ -4,8 +4,11 @@
 //! both speak the same protocol, so decision and enforcement stay on
 //! opposite sides of the seam whether the machine is local or not.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::TcpStream;
+use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 
 use archon_kernel::{
     BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, NodeId, NodeKind, OwnerId,
@@ -15,6 +18,9 @@ use archon_kernel::{
 type CommandSink = Box<dyn FnMut(&Command) + Send>;
 
 use crate::agent::LeaseAgent;
+use crate::dispatch::{
+    AgentHandle, AgentReply, Delivery, EffectPhase, Inbox, Job, Tag, direct_job, spawn_worker,
+};
 use crate::protocol::{AgentRequest, AgentResponse, LeaseLimits, read_frame, write_frame};
 use crate::runtime::ProcessRuntime;
 
@@ -81,8 +87,18 @@ impl LeaseExecutor for RemoteExecutor {
 
 pub struct NodeService {
     pub cluster: Cluster,
-    /// One executor per registered machine, keyed by the machine NodeId.
-    agents: BTreeMap<NodeId, Box<dyn LeaseExecutor>>,
+    /// One worker handle per registered machine, keyed by the machine
+    /// NodeId. Workers own the executors and do all network I/O off the
+    /// controller's critical section.
+    agents: BTreeMap<NodeId, AgentHandle>,
+    /// Completed agent answers awaiting absorption.
+    inbox: Arc<Inbox>,
+    /// Outstanding asynchronous calls, keyed by their completion tag.
+    inflight: BTreeSet<Tag>,
+    /// Last observed running state per lease, from status polls.
+    running: BTreeMap<LeaseId, bool>,
+    /// Machines whose last probe failed, consumed by health policy.
+    unreachable: Vec<NodeId>,
     queue: Vec<Queued>,
     /// Workload payload per queued request, kept outside the kernel log:
     /// resource decisions never need it, only execution does.
@@ -223,6 +239,8 @@ impl NodeService {
     /// Register one machine's agent: apply its graph fragment (or match an
     /// existing machine by name on re-registration), assign a fresh session,
     /// and let the kernel's Reconcile re-drive live work onto the agent.
+    /// The executor moves onto a dedicated worker thread; registration and
+    /// all later effects enqueue without blocking on the agent.
     pub fn register_agent(
         &mut self,
         description: crate::discover::MachineDescription,
@@ -263,7 +281,8 @@ impl NodeService {
                 (machine, true)
             }
         };
-        self.agents.insert(machine, executor);
+        self.agents
+            .insert(machine, spawn_worker(executor, self.inbox.clone()));
         let session = self.next_session;
         self.next_session += 1;
         if !new_machine {
@@ -277,15 +296,18 @@ impl NodeService {
             })?;
         }
         self.commit(Command::SetAgentSession { machine, session })?;
-        self.deliver_all()?;
-        let _ = new_machine;
+        self.pump()?;
         Ok(machine)
     }
 
-    fn with_agents(agents: BTreeMap<NodeId, Box<dyn LeaseExecutor>>) -> Self {
+    fn with_agents(agents: BTreeMap<NodeId, AgentHandle>) -> Self {
         Self {
             cluster: Cluster::new(),
             agents,
+            inbox: Arc::new(Inbox::default()),
+            inflight: BTreeSet::new(),
+            running: BTreeMap::new(),
+            unreachable: Vec::new(),
             queue: Vec::new(),
             commands: BTreeMap::new(),
             lease_commands: BTreeMap::new(),
@@ -343,7 +365,7 @@ impl NodeService {
     /// plane uses this for recovery actions and administrative commands.
     pub fn apply(&mut self, command: Command) -> Result<(), Error> {
         self.commit(command)?;
-        self.deliver_all()
+        self.pump()
     }
 
     /// Submit a workload: queued for admission; its command runs when the
@@ -389,13 +411,10 @@ impl NodeService {
         })?;
         self.dequeue(&request_id);
         self.open_enforced_bindings(lease)?;
-        self.deliver_all()?;
-        self.commit(Command::ActivateLease { lease })?;
-        let bindings: Vec<BindingId> = self.cluster.bindings_for(lease);
-        for binding in bindings {
-            self.commit(Command::ActivateBinding { binding })?;
-        }
-        self.deliver_all()?;
+        self.pump()?;
+        // Activation waits for every binding's Prepare ack; a lease without
+        // enforced bindings activates right away.
+        self.maybe_activate(lease);
         Ok(Some(request_id))
     }
 
@@ -472,20 +491,26 @@ impl NodeService {
         for lease in &live {
             self.commit(Command::RevokeLease { lease: *lease })?;
         }
-        self.deliver_all()?;
+        self.pump()?;
         Ok(count)
     }
 
-    /// Probe every registered agent's liveness. Returns the machines whose
-    /// agent could not be reached; the caller decides policy.
-    pub fn probe_agents(&mut self) -> Vec<NodeId> {
-        let mut unreachable = Vec::new();
-        for (machine, executor) in self.agents.iter_mut() {
-            if executor.execute(AgentRequest::Status { lease: 0 }).is_err() {
-                unreachable.push(*machine);
+    /// Probe every registered agent's liveness without blocking: each
+    /// machine's worker answers through the inbox, and failures land in
+    /// [`NodeService::take_unreachable`].
+    pub fn probe_agents(&mut self) {
+        for machine in self.agents.keys().copied().collect::<Vec<_>>() {
+            let tag = Tag::Probe { machine };
+            if self.inflight.contains(&tag) {
+                continue;
             }
+            self.dispatch(machine, tag, AgentRequest::Status { lease: 0 });
         }
-        unreachable
+    }
+
+    /// Machines whose most recent probe failed; the caller decides policy.
+    pub fn take_unreachable(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.unreachable)
     }
 
     /// Declare a machine unhealthy: stop placements there (quarantine) and
@@ -523,7 +548,7 @@ impl NodeService {
                 reason: "machine unhealthy".into(),
             })?;
         }
-        self.deliver_all()
+        self.pump()
     }
 
     /// Clear a machine's quarantine and mark it healthy again; called when
@@ -535,7 +560,7 @@ impl NodeService {
             node: machine,
             health: "healthy".into(),
         })?;
-        self.deliver_all()
+        self.pump()
     }
 
     /// Collect failed/expired keep-alive leases as fresh re-submissions,
@@ -594,34 +619,19 @@ impl NodeService {
 
     /// Poll every executing workload and record natural exits: zero exit
     /// codes complete the lease (claims released), failures fail it.
-    /// Returns the leases whose workload finished this tick.
+    /// Status queries go out to the agents; their answers complete leases
+    /// on a later absorb. Returns the leases whose workload finished this
+    /// call.
     pub fn collect_completions(&mut self) -> Result<Vec<LeaseId>, Error> {
-        let mut finished = Vec::new();
+        let finished = self.absorb()?;
         for lease in self.executing_leases() {
-            let Some(machine) = self.lease_machine(lease) else {
+            let tag = Tag::Status { lease };
+            if self.inflight.contains(&tag) {
                 continue;
-            };
-            let Some(executor) = self.agents.get_mut(&machine) else {
-                continue;
-            };
-            let Ok(response) = executor.execute(crate::protocol::AgentRequest::Status {
-                lease: lease.as_u64(),
-            }) else {
-                continue; // probe_agents handles unreachable machines
-            };
-            let crate::protocol::AgentResponse::Running { exit_code, .. } = response else {
-                continue;
-            };
-            let Some(code) = exit_code else { continue };
-            self.commit(Command::CompleteLease {
-                lease,
-                exit_code: code,
-            })?;
-            finished.push(lease);
+            }
+            self.request_status(lease);
         }
-        if !finished.is_empty() {
-            self.deliver_all()?;
-        }
+        self.pump()?;
         Ok(finished)
     }
 
@@ -650,25 +660,36 @@ impl NodeService {
         self.lease_commands.get(&lease).cloned()
     }
 
-    /// A lease's captured output, fetched from its executing agent.
+    /// A lease's captured output, fetched from its executing agent. Blocks
+    /// briefly on the agent's reply; callers holding a shared lock should
+    /// use [`NodeService::request_logs`] and wait outside it instead.
     pub fn lease_logs(&mut self, lease: LeaseId) -> Result<String, Error> {
-        let Some(machine) = self.lease_machine(lease) else {
-            return Ok(ProcessRuntime::read_log(lease));
-        };
-        let Some(executor) = self.agents.get_mut(&machine) else {
-            return Ok(ProcessRuntime::read_log(lease));
-        };
-        match executor.execute(crate::protocol::AgentRequest::Logs {
-            lease: lease.as_u64(),
-        }) {
-            Ok(crate::protocol::AgentResponse::Logs { output, .. }) => Ok(output),
-            Ok(other) => Err(Error::Refused {
-                explanation: format!("expected Logs, got {other:?}"),
-            }),
-            Err(reason) => Err(Error::Refused {
-                explanation: reason,
-            }),
+        match self.request_logs(lease) {
+            None => Ok(ProcessRuntime::read_log(lease)),
+            Some(receiver) => match receiver.recv_timeout(Duration::from_secs(10)) {
+                Ok(Ok(crate::protocol::AgentResponse::Logs { output, .. })) => Ok(output),
+                Ok(Ok(other)) => Err(Error::Refused {
+                    explanation: format!("expected Logs, got {other:?}"),
+                }),
+                Ok(Err(reason)) => Err(Error::Refused {
+                    explanation: reason,
+                }),
+                Err(_) => Err(Error::Refused {
+                    explanation: "timed out waiting for agent logs".into(),
+                }),
+            },
         }
+    }
+
+    /// Send one Logs query and return the direct reply channel; resolving
+    /// the agent round trip happens off-lock.
+    pub fn request_logs(&mut self, lease: LeaseId) -> Option<Receiver<AgentReply>> {
+        let machine = self.lease_machine(lease)?;
+        let handle = self.agents.get(&machine)?;
+        let (job, receiver) = direct_job(AgentRequest::Logs {
+            lease: lease.as_u64(),
+        });
+        handle.send(job).then_some(receiver)
     }
 
     /// Host device paths bound by a lease's device-kind claims, resolved
@@ -698,7 +719,7 @@ impl NodeService {
 
     pub fn revoke(&mut self, lease: LeaseId) -> Result<(), Error> {
         self.commit(Command::RevokeLease { lease })?;
-        self.deliver_all()
+        self.pump()
     }
 
     pub fn expire_due(&mut self) -> Result<Vec<LeaseId>, Error> {
@@ -719,7 +740,7 @@ impl NodeService {
         for lease in &due {
             self.commit(Command::ExpireLease { lease: *lease })?;
         }
-        self.deliver_all()?;
+        self.pump()?;
         Ok(due)
     }
 
@@ -734,27 +755,34 @@ impl NodeService {
     }
 
     /// Whether the lease's process is running, per the agent.
+    /// Whether the lease's process is running, per its agent. Waits for
+    /// activation to settle, sends one status query if none is outstanding,
+    /// then answers from the latest poll.
     pub fn is_running(&mut self, lease: LeaseId) -> bool {
-        let Some(lease_record) = self.cluster.leases.get(&lease) else {
+        if !self.cluster.leases.contains_key(&lease) {
             return false;
-        };
-        let machines: std::collections::BTreeSet<NodeId> = lease_record
-            .allocation
-            .claims
-            .iter()
-            .filter_map(|claim| self.cluster.graph.machine_of(claim.node))
-            .collect();
-        machines
-            .into_iter()
-            .any(|machine| match self.agents.get_mut(&machine) {
-                Some(executor) => matches!(
-                    executor.execute(AgentRequest::Status {
-                        lease: lease.as_u64()
-                    }),
-                    Ok(AgentResponse::Running { running: true, .. })
-                ),
-                None => false,
-            })
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self
+            .cluster
+            .leases
+            .get(&lease)
+            .is_some_and(|l| l.state == archon_kernel::LeaseState::Preparing)
+            && Instant::now() < deadline
+        {
+            let _ = self.drive(Duration::from_millis(50));
+        }
+        let active = self
+            .cluster
+            .leases
+            .get(&lease)
+            .is_some_and(|l| l.state == archon_kernel::LeaseState::Active);
+        if !active {
+            return false;
+        }
+        self.request_status(lease);
+        let _ = self.drive(Duration::from_secs(1));
+        self.running.get(&lease).copied().unwrap_or(false)
     }
 
     fn dequeue(&mut self, request_id: &RequestId) {
@@ -803,13 +831,204 @@ impl NodeService {
         Ok(())
     }
 
-    fn deliver_all(&mut self) -> Result<(), Error> {
+    /// Commit inside the asynchronous completion path: kernel rejections
+    /// there are legitimate races (expiry vs. late agent answers), so they
+    /// are logged instead of failing the whole drain.
+    fn commit_lenient(&mut self, command: Command) {
+        if let Err(err) = self.commit(command) {
+            eprintln!("archon: rejected stale completion: {err}");
+        }
+    }
+
+    /// Send every pending effect to its machine's worker. Pure routing and
+    /// session rebinding happen here; agent round trips happen on workers.
+    fn pump(&mut self) -> Result<(), Error> {
         while let Some(effect) = self.pending.pop_front() {
-            for command in self.execute(effect)? {
+            for command in self.route(effect)? {
                 self.commit(command)?;
             }
         }
         Ok(())
+    }
+
+    /// Absorb completed agent answers: record binding acks (the kernel
+    /// validates each against the binding's session and fence), advance
+    /// leases whose bindings are all prepared, note status polls, and
+    /// collect failed probes. Returns the leases completed this pass.
+    fn absorb(&mut self) -> Result<Vec<LeaseId>, Error> {
+        let mut finished = Vec::new();
+        for (tag, reply) in self.inbox.take() {
+            self.inflight.remove(&tag);
+            match (&tag, reply) {
+                (
+                    Tag::Binding {
+                        binding,
+                        session,
+                        fence,
+                        phase: _,
+                    },
+                    reply,
+                ) => {
+                    let binding = *binding;
+                    match reply {
+                        Ok(AgentResponse::Prepared { handle, .. }) => {
+                            let lease = self.binding_lease(binding);
+                            self.commit_lenient(Command::RecordBindingPrepared {
+                                binding,
+                                session: *session,
+                                provider_handle: handle,
+                                fence: *fence,
+                            });
+                            if let Some(lease) = lease {
+                                self.maybe_activate(lease);
+                            }
+                        }
+                        Ok(AgentResponse::Activated { .. }) => {
+                            self.commit_lenient(Command::RecordBindingActive {
+                                binding,
+                                session: *session,
+                                fence: *fence,
+                            })
+                        }
+                        Ok(AgentResponse::Released { .. }) => {
+                            self.commit_lenient(Command::RecordBindingReleased {
+                                binding,
+                                session: *session,
+                                fence: *fence,
+                            })
+                        }
+                        Ok(AgentResponse::Fenced { .. }) => {
+                            self.commit_lenient(Command::RecordBindingFenced {
+                                binding,
+                                session: *session,
+                                fence: *fence,
+                            })
+                        }
+                        Ok(AgentResponse::Failed { reason, .. }) => {
+                            self.commit_lenient(Command::RecordBindingFailed {
+                                binding,
+                                session: *session,
+                                reason,
+                                fence: *fence,
+                            })
+                        }
+                        Ok(other) => {
+                            eprintln!(
+                                "archon: unexpected agent response for binding {binding}: {other:?}"
+                            )
+                        }
+                        Err(reason) => {
+                            // Transport failure: leave the binding as-is;
+                            // prepare deadlines, probes, and reconciliation
+                            // recover from here.
+                            eprintln!(
+                                "archon: agent call for binding {binding} failed; dropping: {reason}"
+                            );
+                        }
+                    }
+                }
+                (
+                    Tag::Status { lease },
+                    Ok(AgentResponse::Running {
+                        running, exit_code, ..
+                    }),
+                ) => {
+                    self.running.insert(*lease, running);
+                    if let Some(code) = exit_code {
+                        self.commit_lenient(Command::CompleteLease {
+                            lease: *lease,
+                            exit_code: code,
+                        });
+                        finished.push(*lease);
+                    }
+                }
+                (Tag::Status { .. }, Ok(other)) => {
+                    eprintln!("archon: unexpected status response: {other:?}")
+                }
+                (Tag::Status { .. }, Err(_)) => {}
+                (Tag::Probe { machine }, Err(_)) => self.unreachable.push(*machine),
+                (Tag::Probe { .. }, Ok(_)) => {}
+            }
+        }
+        if !finished.is_empty() {
+            self.pump()?;
+        }
+        Ok(finished)
+    }
+
+    /// Advance pending work: absorb completions, send queued effects, and
+    /// wait for up to `timeout` while calls are still outstanding. Never
+    /// blocks when the service is quiescent.
+    pub fn drive(&mut self, timeout: Duration) -> Result<(), Error> {
+        let start = Instant::now();
+        loop {
+            self.absorb()?;
+            self.pump()?;
+            if self.pending.is_empty() && self.inflight.is_empty() || start.elapsed() >= timeout {
+                return Ok(());
+            }
+            self.inbox.wait_timeout(Duration::from_millis(25));
+        }
+    }
+
+    /// Shared completion inbox, for waiters outside the controller lock.
+    pub fn inbox_handle(&self) -> Arc<Inbox> {
+        self.inbox.clone()
+    }
+
+    /// True when no effects are queued and no agent call is outstanding.
+    pub fn is_quiescent(&self) -> bool {
+        self.pending.is_empty() && self.inflight.is_empty()
+    }
+
+    fn binding_lease(&self, binding: BindingId) -> Option<LeaseId> {
+        self.cluster.bindings.get(&binding).map(|r| r.lease)
+    }
+
+    /// Activate a preparing lease once every enforced binding is prepared:
+    /// commit ActivateLease and ActivateBinding so their effects spawn the
+    /// workload on the agent.
+    fn maybe_activate(&mut self, lease: LeaseId) {
+        let Some(record) = self.cluster.leases.get(&lease) else {
+            return;
+        };
+        if record.state != archon_kernel::LeaseState::Preparing {
+            return;
+        }
+        let bindings = self.cluster.bindings_for(lease);
+        // A prepared binding carries its provider handle from the agent's
+        // ack; the kernel keeps the state Preparing until activation.
+        let all_prepared = !bindings.is_empty()
+            && bindings.iter().all(|binding| {
+                self.cluster
+                    .bindings
+                    .get(binding)
+                    .is_some_and(|r| r.provider_handle.is_some())
+            });
+        if !all_prepared {
+            return;
+        }
+        self.commit_lenient(Command::ActivateLease { lease });
+        for binding in bindings {
+            self.commit_lenient(Command::ActivateBinding { binding });
+        }
+    }
+
+    fn request_status(&mut self, lease: LeaseId) {
+        let tag = Tag::Status { lease };
+        if self.inflight.contains(&tag) {
+            return;
+        }
+        let Some(machine) = self.lease_machine(lease) else {
+            return;
+        };
+        self.dispatch(
+            machine,
+            tag,
+            AgentRequest::Status {
+                lease: lease.as_u64(),
+            },
+        );
     }
 
     /// CPU and memory claims of a lease, as enforceable limits.
@@ -836,9 +1055,31 @@ impl NodeService {
         Ok(limits)
     }
 
-    /// The controller side of the seam: route one kernel Effect to the
-    /// agent that owns its node, and turn the answer into Record commands.
-    fn execute(&mut self, effect: Effect) -> Result<Vec<Command>, Error> {
+    /// Enqueue one asynchronous agent call toward `machine`, tagged for
+    /// completion routing.
+    fn dispatch(&mut self, machine: NodeId, tag: Tag, request: AgentRequest) {
+        self.inflight.insert(tag.clone());
+        let sent = match self.agents.get(&machine) {
+            Some(handle) => handle.send(Job {
+                request,
+                delivery: Delivery::Inbox(tag.clone()),
+            }),
+            None => false,
+        };
+        if !sent {
+            // No agent for this machine (restart before re-registration,
+            // or the agent died). Kernel state proceeds; Reconcile re-drives
+            // live work when the agent registers again. A dead agent holds
+            // no processes, so dropping the effect is honest.
+            self.inflight.remove(&tag);
+            eprintln!("archon: no agent for machine {machine}; dropping effect");
+        }
+    }
+
+    /// The controller side of the seam: route one kernel Effect toward the
+    /// agent that owns its node without waiting for the answer. Agent acks
+    /// come back through [`NodeService::absorb`] as Record commands.
+    fn route(&mut self, effect: Effect) -> Result<Vec<Command>, Error> {
         // Reconcile re-drives a machine's live bindings onto its (fresh)
         // agent: rebind each still-Active binding to the machine's new
         // session, then ActivateBinding — idempotent for Active bindings,
@@ -970,47 +1211,23 @@ impl NodeService {
             Effect::Reconcile { .. } => unreachable!(),
         };
 
-        let Some(executor) = self.agents.get_mut(&machine) else {
-            // No agent for this machine (restart before re-registration, or
-            // the agent died). Kernel state proceeds; Reconcile re-drives
-            // live work when the agent registers again. A dead agent holds
-            // no processes, so dropping the effect is honest.
-            eprintln!("archon: no agent for machine {machine}; dropping effect");
-            return Ok(Vec::new());
+        let phase = match &effect {
+            Effect::Prepare { .. } => EffectPhase::Prepare,
+            Effect::Activate { .. } => EffectPhase::Activate,
+            Effect::Release { .. } => EffectPhase::Release,
+            Effect::Fence { .. } => EffectPhase::Fence,
+            Effect::Reconcile { .. } => unreachable!(),
         };
-        match executor.execute(request).map_err(|reason| Error::Refused {
-            explanation: reason,
-        })? {
-            AgentResponse::Prepared { handle, .. } => Ok(vec![Command::RecordBindingPrepared {
-                binding: binding_id,
-                session,
-                provider_handle: handle,
-                fence,
-            }]),
-            AgentResponse::Activated { .. } => Ok(vec![Command::RecordBindingActive {
+        self.dispatch(
+            machine,
+            Tag::Binding {
                 binding: binding_id,
                 session,
                 fence,
-            }]),
-            AgentResponse::Released { .. } => Ok(vec![Command::RecordBindingReleased {
-                binding: binding_id,
-                session,
-                fence,
-            }]),
-            AgentResponse::Fenced { .. } => Ok(vec![Command::RecordBindingFenced {
-                binding: binding_id,
-                session,
-                fence,
-            }]),
-            AgentResponse::Failed { reason, .. } => Ok(vec![Command::RecordBindingFailed {
-                binding: binding_id,
-                session,
-                reason,
-                fence,
-            }]),
-            other => Err(Error::Refused {
-                explanation: format!("unexpected agent response {other:?}"),
-            }),
-        }
+                phase,
+            },
+            request,
+        );
+        Ok(Vec::new())
     }
 }

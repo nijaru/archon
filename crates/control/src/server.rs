@@ -89,6 +89,10 @@ impl ControlPlane {
         let commands = CommandLog::read(&log_path)?;
         let first_boot = !restored && commands.is_empty();
 
+        // The link registers at most once per boot: a remote agent serves
+        // one controller connection, so registering twice would deadlock
+        // the second handshake behind the still-open first.
+        let mut registered = false;
         if first_boot && !matches!(link, AgentLink::None) {
             // The graph of record enters the log on first boot so restarts
             // replay it instead of rediscovering.
@@ -102,6 +106,7 @@ impl ControlPlane {
                 }
                 AgentLink::None => {}
             }
+            registered = true;
             service.set_command_sink(None);
         }
 
@@ -115,8 +120,9 @@ impl ControlPlane {
         let recovered = service.revoke_live_leases()?;
 
         // Register this process's own execution path (local dev or the
-        // legacy connect-out agent); dial-in agents arrive via serve().
-        if !matches!(link, AgentLink::None) {
+        // legacy connect-out agent) unless first boot already did; dial-in
+        // agents arrive via serve().
+        if !registered && !matches!(link, AgentLink::None) {
             match &link {
                 AgentLink::Local { cgroup_root } => {
                     service.register_local(cgroup_root.clone())?;
@@ -205,8 +211,9 @@ impl ControlPlane {
         self.token = Some(token);
     }
 
-    /// Periodic maintenance: expire due leases, probe agents, quarantine
-    /// unreachable machines, restart keep-alive workloads, and compact the
+    /// Periodic maintenance: expire due leases, collect workload exits,
+    /// re-admit queued work, quarantine machines whose last probe failed,
+    /// issue fresh probes, restart keep-alive workloads, and compact the
     /// log when it grows past the threshold.
     pub fn maintain(&mut self) {
         self.service.tick().ok();
@@ -225,12 +232,14 @@ impl ControlPlane {
                 }
             }
         }
-        let unreachable = self.service.probe_agents();
-        for machine in unreachable {
+        // Quarantine on the previous round's probe results, then issue the
+        // next round; answers arrive asynchronously.
+        for machine in self.service.take_unreachable() {
             if self.service.mark_machine_unhealthy(machine).is_err() {
                 eprintln!("archon: failed to mark machine {machine} unhealthy");
             }
         }
+        self.service.probe_agents();
         for (request, owner) in self.service.take_restarts() {
             eprintln!("archon: restarting keep-alive request {}", request.id);
             self.service.submit(request, owner);
@@ -254,14 +263,40 @@ impl ControlPlane {
     /// Accept clients and dial-in agents. The first frame on a connection
     /// decides its role: `Hello` registers an agent (its machine joins the
     /// graph, and re-registration with the same machine name reconciles);
-    /// anything else is a client. Agents are then driven lockstep by
-    /// whichever thread routes their effects.
+    /// anything else is a client. A driver thread absorbs agent completions
+    /// as they arrive, so no client handler or registration ever waits on
+    /// network I/O while holding the plane lock.
     pub fn serve(this: &std::sync::Arc<std::sync::Mutex<Self>>, listener: TcpListener) {
+        let inbox = this.lock().unwrap().service.inbox_handle();
+        {
+            let this = this.clone();
+            std::thread::spawn(move || {
+                loop {
+                    inbox.wait_timeout(std::time::Duration::from_millis(500));
+                    if let Ok(mut plane) = this.lock() {
+                        plane.advance();
+                    }
+                }
+            });
+        }
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             let plane = this.clone();
             std::thread::spawn(move || Self::accept(&plane, stream));
         }
+    }
+
+    /// Absorb completed agent work without waiting: completions already in
+    /// the inbox apply under the lock; round trips happen on workers.
+    pub fn advance(&mut self) {
+        if let Err(err) = self.service.drive(std::time::Duration::ZERO) {
+            eprintln!("archon: advancing agent work failed: {err}");
+        }
+    }
+
+    /// True when no agent round trip or effect delivery is outstanding.
+    pub fn settled(&self) -> bool {
+        self.service.is_quiescent()
     }
 
     fn accept(this: &std::sync::Arc<std::sync::Mutex<Self>>, mut stream: TcpStream) {
@@ -400,10 +435,29 @@ impl ControlPlane {
             ClientRequest::Status => self.status(),
             ClientRequest::Revoke { lease } => self.revoke(lease),
             ClientRequest::Logs { lease } => {
-                match self.service.lease_logs(LeaseId::from_u64(lease)) {
-                    Ok(output) => ServerResponse::Logs { lease, output },
-                    Err(err) => ServerResponse::Error {
-                        reason: err.to_string(),
+                // Resolve the agent call under the lock, then wait for the
+                // reply outside it so a slow agent cannot stall the plane.
+                let reply = self.service.request_logs(LeaseId::from_u64(lease));
+                match reply {
+                    Some(receiver) => {
+                        match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
+                            Ok(Ok(archon_node::protocol::AgentResponse::Logs {
+                                output, ..
+                            })) => ServerResponse::Logs { lease, output },
+                            Ok(Ok(other)) => ServerResponse::Error {
+                                reason: format!("expected Logs, got {other:?}"),
+                            },
+                            Ok(Err(reason)) => ServerResponse::Error { reason },
+                            Err(_) => ServerResponse::Error {
+                                reason: "timed out waiting for agent logs".into(),
+                            },
+                        }
+                    }
+                    None => match self.service.lease_logs(LeaseId::from_u64(lease)) {
+                        Ok(output) => ServerResponse::Logs { lease, output },
+                        Err(err) => ServerResponse::Error {
+                            reason: err.to_string(),
+                        },
                     },
                 }
             }

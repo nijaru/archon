@@ -3,6 +3,7 @@
 
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use archon_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
 use archon_control::server::ControlPlane;
@@ -58,6 +59,9 @@ fn submit_sleep(service: &mut NodeService, id: u64, lifetime: u64) {
     service.submit(request, OwnerId::from_u64(1));
     service.cluster.set_now(1);
     service.admit_one().expect("admit");
+    // Activation completes as agent acks arrive; settle before callers
+    // inspect the log or lease state.
+    service.drive(Duration::from_secs(5)).expect("settle");
 }
 
 #[test]
@@ -152,6 +156,13 @@ fn snapshot_compaction_preserves_state_across_restarts() {
     write_frame(&mut stream, &ClientRequest::Revoke { lease: 1 }).unwrap();
     read_response(&mut stream).unwrap();
 
+    // Agent acks (activation of lease 2, teardown of lease 1) complete
+    // asynchronously; let the plane drain before freezing state.
+    assert!(
+        wait_until(Duration::from_secs(5), || plane.lock().unwrap().settled()),
+        "plane must settle before compaction"
+    );
+
     // Compact: snapshot + truncated log.
     plane.lock().unwrap().compact().unwrap();
     eprintln!(
@@ -210,6 +221,17 @@ fn log_len(path: &std::path::Path) -> usize {
     std::fs::read_to_string(path)
         .map(|content| content.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0)
+}
+
+fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < deadline {
+        if check() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    check()
 }
 
 #[test]

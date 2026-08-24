@@ -159,3 +159,78 @@ fn empty_command_is_rejected() {
     );
     assert!(matches!(response, ServerResponse::Error { .. }));
 }
+
+/// A silent agent holds its worker's round trip, not the plane: other
+/// clients keep getting fast responses while one machine never answers.
+#[test]
+fn a_silent_agent_does_not_block_other_clients() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap().to_string();
+    let log = temp_log("silent-agent");
+    std::thread::spawn(move || {
+        let link = archon_control::server::AgentLink::None;
+        let plane = std::sync::Arc::new(std::sync::Mutex::new(
+            ControlPlane::boot(link, log, 0).expect("boot"),
+        ));
+        ControlPlane::serve(&plane, listener);
+    });
+
+    // The agent registers and then goes silent; it never answers Prepare.
+    let mut agent = TcpStream::connect(&addr).expect("agent connect");
+    write_frame(
+        &mut agent,
+        &archon_control::api::Greeting::Agent {
+            token: None,
+            instance_id: "inst-silent".into(),
+            name: "silent".into(),
+            cpus: 4,
+            memory_bytes: 8 << 30,
+            devices: vec![],
+        },
+    )
+    .expect("agent greeting");
+
+    // Give registration a moment, then submit work that lands on it.
+    std::thread::sleep(Duration::from_millis(200));
+    let mut client = TcpStream::connect(&addr).expect("client connect");
+    open(&mut client);
+    let response = roundtrip(
+        &mut client,
+        ClientRequest::Submit {
+            owner: 1,
+            cpus: 1,
+            memory_mib: 0,
+            lifetime_secs: 3_600,
+            command: vec!["sleep".into(), "30".into()],
+            keep_alive: false,
+            volumes: vec![],
+            ports: vec![],
+            grace_secs: 0,
+            image: None,
+            gpus: 0,
+        },
+    );
+    let ServerResponse::Submitted { lease, .. } = response else {
+        panic!("expected Submitted, got {response:?}");
+    };
+    assert!(lease > 0);
+
+    // While the agent stays silent, another client must be served promptly.
+    let mut watcher = TcpStream::connect(&addr).expect("watcher connect");
+    open(&mut watcher);
+    for _ in 0..10 {
+        let start = Instant::now();
+        roundtrip(&mut watcher, ClientRequest::Status);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "a silent agent must not stall other clients"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // Administrative requests stay responsive too.
+    let start = Instant::now();
+    let response = roundtrip(&mut client, ClientRequest::Revoke { lease });
+    assert!(matches!(response, ServerResponse::Revoked));
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
