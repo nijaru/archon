@@ -5,3 +5,8 @@ members = ["crates/kernel", "crates/sim", "crates/node", "crates/control", "crat
 [workspace.package]
 edition = "2024"
 publish = false
+
+# Release binaries ship via GitHub releases/brew at launch; keep them lean.
+[profile.release]
+lto = "thin"
+strip = true

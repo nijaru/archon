@@ -25,7 +25,11 @@ fn main() {
     let mut index = 0;
     while index < args.len() && args[index] != "--" {
         if args[index] == "-c" {
-            connect = Some(args.get(index + 1).expect("-c ADDR").clone());
+            connect = Some(
+                args.get(index + 1)
+                    .unwrap_or_else(|| fail("-c requires an address"))
+                    .clone(),
+            );
             args.drain(index..=(index + 1).min(args.len() - 1));
         } else {
             index += 1;
@@ -58,6 +62,23 @@ fn load_token(token_file: &Option<String>) -> Option<String> {
         return Some(content.trim().to_string());
     }
     std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty())
+}
+
+/// Report an operational failure and exit; the CLI never panics at users.
+fn fail(message: impl std::fmt::Display) -> ! {
+    eprintln!("archon: {message}");
+    exit(1);
+}
+
+/// Parse a user-supplied value or report which flag was invalid.
+fn parse_flag<T>(value: &str, flag: &str) -> T
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    value
+        .parse()
+        .unwrap_or_else(|err| fail(format!("invalid value for {flag}: '{value}' ({err})")))
 }
 
 fn usage() -> ! {
@@ -94,8 +115,8 @@ fn serve(args: &[String]) {
             "--log" => log = Some(PathBuf::from(value)),
             "--remote" => remote = Some(value.clone()),
             "--token-file" => token_file = Some(value.clone()),
-            "--probe-secs" => probe_secs = value.parse().expect("probe-secs"),
-            "--compact-every" => compact_every = value.parse().expect("compact-every"),
+            "--probe-secs" => probe_secs = parse_flag(value, "--probe-secs"),
+            "--compact-every" => compact_every = parse_flag(value, "--compact-every"),
             "--cgroup-root" => cgroup_root = Some(value.clone()),
             _ => usage(),
         }
@@ -109,8 +130,10 @@ fn serve(args: &[String]) {
         (None, false) => archon_control::server::AgentLink::Local { cgroup_root },
         (None, true) => archon_control::server::AgentLink::None,
     };
-    let mut plane =
-        archon_control::server::ControlPlane::boot(link, log, compact_every).expect("boot");
+    let mut plane = match archon_control::server::ControlPlane::boot(link, log, compact_every) {
+        Ok(plane) => plane,
+        Err(err) => fail(format!("boot failed: {err}")),
+    };
     match load_token(&token_file) {
         Some(token) => {
             plane.require_token(token);
@@ -128,7 +151,10 @@ fn serve(args: &[String]) {
             }
         });
     }
-    let listener = TcpListener::bind(&listen).expect("bind");
+    let listener = match TcpListener::bind(&listen) {
+        Ok(listener) => listener,
+        Err(err) => fail(format!("cannot listen on {listen}: {err}")),
+    };
     eprintln!("archon: control plane serving on {listen}");
     archon_control::server::ControlPlane::serve(&plane, listener);
 }
@@ -172,7 +198,10 @@ fn agent(args: &[String]) {
             "archon: warning: no auth token configured; this agent executes              commands for anyone who can reach {listen} (--token-file to secure)"
         );
     }
-    let listener = TcpListener::bind(&listen).expect("bind");
+    let listener = match TcpListener::bind(&listen) {
+        Ok(listener) => listener,
+        Err(err) => fail(format!("cannot listen on {listen}: {err}")),
+    };
     eprintln!("archon: agent listening on {listen}");
     for stream in listener.incoming() {
         let mut stream = match stream {
@@ -260,10 +289,20 @@ fn load_instance_id(id: Option<String>) -> String {
                 ^ std::process::id() as u64
         )
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Some(parent) = path.parent()
+        && let Err(err) = std::fs::create_dir_all(parent)
+    {
+        fail(format!(
+            "cannot create state directory {}: {err}",
+            parent.display()
+        ));
     }
-    std::fs::write(&path, &id).expect("persist agent id");
+    if let Err(err) = std::fs::write(&path, &id) {
+        fail(format!(
+            "cannot persist agent id to {}: {err}",
+            path.display()
+        ));
+    }
     id
 }
 
@@ -324,9 +363,9 @@ fn demo(remote: Option<String>) {
     let mut service = match &remote {
         Some(addr) => {
             let mut service = NodeService::new();
-            service
-                .register_remote(addr)
-                .expect("register remote agent");
+            if let Err(err) = service.register_remote(addr) {
+                fail(format!("cannot connect to remote agent at {addr}: {err}"));
+            }
             eprintln!("archon: connected to remote agent at {addr}");
             service
         }
@@ -424,24 +463,36 @@ fn print_machine(service: &NodeService) {
 fn client(connect: Option<String>, args: &[String]) {
     let rest: Vec<String> = args.to_vec();
     let Some(addr) = connect else { usage() };
-    let mut stream = TcpStream::connect(&addr).expect("connect to control plane");
+    let mut stream = match TcpStream::connect(&addr) {
+        Ok(stream) => stream,
+        Err(err) => fail(format!("cannot reach control plane at {addr}: {err}")),
+    };
     let token = std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty());
     let greeting = archon_control::api::Greeting::Client { token };
-    archon_node::protocol::write_frame(&mut stream, &greeting).expect("send greeting");
+    if let Err(err) = archon_node::protocol::write_frame(&mut stream, &greeting) {
+        fail(format!("cannot greet control plane at {addr}: {err}"));
+    }
     // The server's auth failure is silent (connection closed); surface it
     // on the first request failing instead.
     let response = match rest[0].as_str() {
         "submit" => submit_request(&rest[1..]),
         "status" => ClientRequest::Status,
-        "revoke" => ClientRequest::Revoke {
-            lease: rest.get(1).expect("lease id").parse().expect("lease id"),
-        },
-        "logs" => ClientRequest::Logs {
-            lease: rest.get(1).expect("lease id").parse().expect("lease id"),
-        },
+        "revoke" | "logs" => {
+            let Some(value) = rest.get(1) else {
+                fail("lease id required (archon -c ADDR revoke|logs LEASE)");
+            };
+            let lease: u64 = parse_flag(value, "lease id");
+            if rest[0] == "revoke" {
+                ClientRequest::Revoke { lease }
+            } else {
+                ClientRequest::Logs { lease }
+            }
+        }
         _ => usage(),
     };
-    write_frame(&mut stream, &response).expect("send");
+    if let Err(err) = write_frame(&mut stream, &response) {
+        fail(format!("cannot send request: {err}"));
+    }
     let reply = read_response(&mut stream).unwrap_or_else(|_| {
         eprintln!("error: connection closed by control plane (bad token?)");
         std::process::exit(1);
@@ -462,20 +513,26 @@ fn submit_request(args: &[String]) -> ClientRequest {
     let mut gpus: u64 = 0;
     let mut rest = args;
     while !rest.is_empty() && rest[0].starts_with("--") && rest[0] != "--" {
-        let (flag, value) = (rest[0].as_str(), rest.get(1).expect("flag value"));
+        let (flag, value) = (
+            rest[0].as_str(),
+            match rest.get(1) {
+                Some(value) => value,
+                None => fail(format!("flag {} needs a value", rest[0])),
+            },
+        );
         match flag {
-            "--owner" => owner = value.parse().expect("owner"),
-            "--cpus" => cpus = value.parse().expect("cpus"),
-            "--mem-mib" => mem_mib = value.parse().expect("mem-mib"),
-            "--lifetime" => lifetime = value.parse().expect("lifetime"),
+            "--owner" => owner = parse_flag(value, flag),
+            "--cpus" => cpus = parse_flag(value, flag),
+            "--mem-mib" => mem_mib = parse_flag(value, flag),
+            "--lifetime" => lifetime = parse_flag(value, flag),
             "--keep-alive" => {
                 keep_alive = true;
                 rest = &rest[1..];
                 continue;
             }
-            "--grace-secs" => grace_secs = value.parse().expect("grace-secs"),
+            "--grace-secs" => grace_secs = parse_flag(value, flag),
             "--image" => image = Some(value.clone()),
-            "--gpu" => gpus = value.parse().expect("gpu count"),
+            "--gpu" => gpus = parse_flag(value, flag),
             "--volume" => {
                 volumes.push(value.clone());
                 rest = &rest[2..];

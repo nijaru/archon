@@ -24,8 +24,8 @@ fn logged_service(path: &Path) -> NodeService {
     let path = path.to_path_buf();
     let mut service = NodeService::new();
     let log_path = path.clone();
+    let mut log = archon_control::log::CommandLog::open(&log_path).expect("open log");
     service.set_command_sink(Some(Box::new(move |command: &Command| {
-        let mut log = archon_control::log::CommandLog::open(&log_path).expect("open log");
         log.append(command).expect("append log");
     })));
     service

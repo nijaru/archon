@@ -171,10 +171,25 @@ impl ControlPlane {
         log_path: &std::path::Path,
         counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
     ) -> Box<dyn FnMut(&Command) + Send> {
-        let log_path = log_path.to_path_buf();
+        // One handle for the sink's lifetime: append-mode writes still land
+        // at end-of-file after compaction truncates the file, so the
+        // per-command flush keeps its crash-safety without reopening per
+        // applied command.
+        let mut log = match CommandLog::open(log_path) {
+            Ok(log) => log,
+            Err(err) => {
+                eprintln!(
+                    "archon: cannot open command log {}: {err}",
+                    log_path.display()
+                );
+                std::process::exit(2);
+            }
+        };
         Box::new(move |command: &Command| {
-            let mut log = CommandLog::open(&log_path).expect("open command log");
-            log.append(command).expect("append command log");
+            if let Err(err) = log.append(command) {
+                eprintln!("archon: cannot append command log: {err}");
+                std::process::exit(2);
+            }
             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })
     }
