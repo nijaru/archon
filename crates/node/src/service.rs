@@ -551,18 +551,6 @@ impl NodeService {
         self.pump()
     }
 
-    /// Clear a machine's quarantine and mark it healthy again; called when
-    /// its agent re-registers.
-    pub fn mark_machine_healthy(&mut self, machine: NodeId) -> Result<(), Error> {
-        self.commit(Command::UnquarantineNode { node: machine })
-            .ok();
-        self.commit(Command::SetNodeHealth {
-            node: machine,
-            health: "healthy".into(),
-        })?;
-        self.pump()
-    }
-
     /// Collect failed/expired keep-alive leases as fresh re-submissions,
     /// capped per original request so a permanently-broken workload cannot
     /// spin, with exponential backoff between attempts (1s doubling to a

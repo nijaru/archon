@@ -168,7 +168,16 @@ pub fn write_frame<T: serde::Serialize>(
 /// Upper bound on one frame; refused before any allocation.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
-fn read_payload(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
+/// Bound how long one frame read/write may stall. Without this a silent
+/// peer blocks its handler thread forever.
+pub fn set_stream_limits(stream: &std::net::TcpStream) {
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(60)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(60)));
+}
+
+/// Read one raw framed payload. Public because the control plane must
+/// parse the Greeting before it knows which message type follows.
+pub fn read_payload(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
     let mut length = [0u8; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_le_bytes(length) as usize;
@@ -189,9 +198,7 @@ pub fn read_frame(stream: &mut impl Read) -> std::io::Result<AgentResponse> {
 }
 
 pub fn write_response(stream: &mut impl Write, response: &AgentResponse) -> std::io::Result<()> {
-    let payload = serde_json::to_vec(response).expect("serialize response");
-    stream.write_all(&(payload.len() as u32).to_le_bytes())?;
-    stream.write_all(&payload)
+    write_frame(stream, response)
 }
 
 pub fn read_greeting(stream: &mut impl Read) -> std::io::Result<Greeting> {

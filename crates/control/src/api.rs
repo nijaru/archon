@@ -1,14 +1,13 @@
 //! Control plane API: length-prefixed JSON frames over TCP, same framing as
 //! the agent protocol. Clients submit work, inspect state, and revoke.
-
-use std::io::{Read, Write};
+//! The framing primitives live in the node protocol crate so both wire
+//! surfaces share one implementation.
 
 use serde::{Deserialize, Serialize};
 
-/// The first frame on any control-plane connection: role and optional
-/// shared token. Defined in the node protocol so both directions of the
-/// wire share one type.
-pub use archon_node::protocol::Greeting;
+pub use archon_node::protocol::{
+    Greeting, MAX_FRAME, read_payload, set_stream_limits, write_frame,
+};
 
 /// Constant-time equality; a length mismatch leaks only the length.
 pub fn token_matches(expected: &str, presented: &str) -> bool {
@@ -89,54 +88,24 @@ pub enum ServerResponse {
     },
 }
 
-pub fn write_frame(stream: &mut impl Write, message: &impl Serialize) -> std::io::Result<()> {
-    let payload = serde_json::to_vec(message).expect("serialize frame");
-    stream.write_all(&(payload.len() as u32).to_le_bytes())?;
-    stream.write_all(&payload)
-}
-
-pub fn read_greeting(stream: &mut impl Read) -> std::io::Result<Greeting> {
+pub fn read_greeting(stream: &mut impl std::io::Read) -> std::io::Result<Greeting> {
     read_payload(stream)
         .map(|payload| serde_json::from_slice(&payload).map_err(std::io::Error::other))?
 }
 
-pub fn read_request(stream: &mut impl Read) -> std::io::Result<ClientRequest> {
+pub fn read_request(stream: &mut impl std::io::Read) -> std::io::Result<ClientRequest> {
     read_payload(stream)
         .map(|payload| serde_json::from_slice(&payload).map_err(std::io::Error::other))?
 }
 
-pub fn write_response(stream: &mut impl Write, response: &ServerResponse) -> std::io::Result<()> {
+pub fn write_response(
+    stream: &mut impl std::io::Write,
+    response: &ServerResponse,
+) -> std::io::Result<()> {
     write_frame(stream, response)
 }
 
-pub fn read_response(stream: &mut impl Read) -> std::io::Result<ServerResponse> {
+pub fn read_response(stream: &mut impl std::io::Read) -> std::io::Result<ServerResponse> {
     read_payload(stream)
         .map(|payload| serde_json::from_slice(&payload).map_err(std::io::Error::other))?
-}
-
-/// Upper bound on one frame; refused before any allocation so a hostile
-/// length prefix cannot force a huge buffer (the Greeting arrives through
-/// this path, before authentication).
-pub const MAX_FRAME: usize = 16 * 1024 * 1024;
-
-/// Bound how long one frame read/write may stall. Without this a silent
-/// peer blocks its handler thread forever.
-pub fn set_stream_limits(stream: &std::net::TcpStream) {
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(60)));
-    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(60)));
-}
-
-pub fn read_payload(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
-    let mut length = [0u8; 4];
-    stream.read_exact(&mut length)?;
-    let length = u32::from_le_bytes(length) as usize;
-    if length > MAX_FRAME {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "frame exceeds maximum size",
-        ));
-    }
-    let mut payload = vec![0u8; length];
-    stream.read_exact(&mut payload)?;
-    Ok(payload)
 }

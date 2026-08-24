@@ -72,7 +72,6 @@ impl LeaseAgent {
             }
             AgentRequest::Prepare {
                 binding,
-                lease,
                 session,
                 fence,
                 ..
@@ -85,7 +84,6 @@ impl LeaseAgent {
                 self.bindings.insert(binding, fence);
                 let handle = self.next_handle;
                 self.next_handle += 1;
-                let _ = lease;
                 AgentResponse::Prepared { binding, handle }
             }
             AgentRequest::Activate {
@@ -131,12 +129,7 @@ impl LeaseAgent {
             AgentRequest::Release { binding, lease, .. } => {
                 let lease_id = LeaseId::from_u64(lease);
                 let grace = self.grace.remove(&lease_id).unwrap_or(0);
-                let terminated = if self.containers.is_tracked(lease_id) {
-                    self.containers.terminate_with_grace(lease_id, grace)
-                } else {
-                    self.process.terminate_with_grace(lease_id, grace)
-                };
-                match terminated {
+                match self.terminate_lease(lease_id, grace) {
                     Ok(_) => AgentResponse::Released { binding },
                     Err(reason) => self.failed(binding, &reason),
                 }
@@ -147,16 +140,21 @@ impl LeaseAgent {
                 // like release does; stale generations are rejected by the
                 // session check before effects ever reach here.
                 let grace = self.grace.remove(&lease_id).unwrap_or(0);
-                let terminated = if self.containers.is_tracked(lease_id) {
-                    self.containers.terminate_with_grace(lease_id, grace)
-                } else {
-                    self.process.terminate_with_grace(lease_id, grace)
-                };
-                match terminated {
+                match self.terminate_lease(lease_id, grace) {
                     Ok(_) => AgentResponse::Fenced { binding },
                     Err(reason) => self.failed(binding, &reason),
                 }
             }
+        }
+    }
+
+    /// Drain a lease's workload with its recorded grace period, whichever
+    /// runtime currently tracks it.
+    fn terminate_lease(&mut self, lease_id: LeaseId, grace: u32) -> Result<bool, String> {
+        if self.containers.is_tracked(lease_id) {
+            self.containers.terminate_with_grace(lease_id, grace)
+        } else {
+            self.process.terminate_with_grace(lease_id, grace)
         }
     }
 
