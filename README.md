@@ -17,6 +17,11 @@ The first implementation is a Rust resource/lease kernel and deterministic
 simulator in `crates/kernel` and `crates/sim`. Do not treat deleted Go
 model-serving code as the architecture.
 
+All links (client↔controller, controller↔agent) are encrypted and
+token-authenticated. Set the same shared secret on both ends via
+`--token-file` or `ARCHON_TOKEN`; without one, links stay encrypted but
+unauthenticated.
+
 ```text
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings

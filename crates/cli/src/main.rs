@@ -320,6 +320,7 @@ fn dial_in(
     loop {
         match TcpStream::connect(addr) {
             Ok(stream) => {
+                archon_control::api::set_stream_limits(&stream);
                 let mut stream =
                     match archon_node::transport::establish_initiator(stream, token.as_deref()) {
                         Ok(stream) => stream,
@@ -475,6 +476,7 @@ fn client(connect: Option<String>, args: &[String]) {
     let rest: Vec<String> = args.to_vec();
     let Some(addr) = connect else { usage() };
     let mut stream = match TcpStream::connect(&addr).and_then(|stream| {
+        archon_control::api::set_stream_limits(&stream);
         let token = std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty());
         archon_node::transport::establish_initiator(stream, token.as_deref())
     }) {
