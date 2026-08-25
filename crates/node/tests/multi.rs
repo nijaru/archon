@@ -18,7 +18,11 @@ fn spawn_named_agent(_instance_id: &'static str, name: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
+        if let Ok((stream, _)) = listener.accept() {
+            // The control plane always secures links before any frames.
+            let Ok(mut stream) = archon_node::transport::establish_responder(stream, None) else {
+                return;
+            };
             use archon_node::protocol::{AgentRequest, AgentResponse};
             let _ = archon_node::protocol::read_greeting(&mut stream);
             let Ok(AgentRequest::Hello) = read_request(&mut stream) else {
@@ -58,7 +62,7 @@ fn register_instance(
     name: &str,
     addr: &str,
 ) -> archon_kernel::NodeId {
-    let mut executor = archon_node::service::RemoteExecutor::connect(addr).expect("connect");
+    let mut executor = archon_node::service::RemoteExecutor::connect(addr, None).expect("connect");
     let mut description = NodeService::hello(&mut executor).expect("hello");
     description.instance_id = instance_id.to_string();
     description.name = name.to_string();

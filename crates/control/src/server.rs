@@ -38,8 +38,9 @@ struct SubmitSpec {
 pub enum AgentLink {
     /// Execute on this machine; cgroup root enables kernel enforcement.
     Local { cgroup_root: Option<String> },
-    /// Connect out to one remote `archon agent` daemon at boot.
-    Remote { addr: String },
+    /// Connect out to one remote `archon agent` daemon at boot; the token
+    /// secures that link the same way `require_token` secures inbound ones.
+    Remote { addr: String, token: Option<String> },
     /// Pure control plane: no built-in machine; agents dial in.
     None,
 }
@@ -101,7 +102,10 @@ impl ControlPlane {
                 AgentLink::Local { cgroup_root } => {
                     service.register_local(cgroup_root.clone())?;
                 }
-                AgentLink::Remote { addr } => {
+                AgentLink::Remote { addr, token } => {
+                    if let Some(token) = token {
+                        service.set_link_token(token.clone());
+                    }
                     service.register_remote(addr)?;
                 }
                 AgentLink::None => {}
@@ -127,7 +131,7 @@ impl ControlPlane {
                 AgentLink::Local { cgroup_root } => {
                     service.register_local(cgroup_root.clone())?;
                 }
-                AgentLink::Remote { addr } => {
+                AgentLink::Remote { addr, .. } => {
                     service.register_remote(addr)?;
                 }
                 AgentLink::None => {}
@@ -221,8 +225,12 @@ impl ControlPlane {
         Ok(())
     }
 
-    /// Require a shared token on every connection.
+    /// Require token-authenticated links: connections complete a Noise
+    /// XXpsk3 handshake whose PSK derives from this token. Without it, links
+    /// stay encrypted but unauthenticated (open mode). Also secures the
+    /// controller's own outbound agent connections.
     pub fn require_token(&mut self, token: String) {
+        self.service.set_link_token(token.clone());
         self.token = Some(token);
     }
 
@@ -314,15 +322,25 @@ impl ControlPlane {
         self.service.is_quiescent()
     }
 
-    fn accept(this: &std::sync::Arc<std::sync::Mutex<Self>>, mut stream: TcpStream) {
+    fn accept(this: &std::sync::Arc<std::sync::Mutex<Self>>, stream: TcpStream) {
         crate::api::set_stream_limits(&stream);
         let peer = stream
             .peer_addr()
             .map(|addr| addr.to_string())
             .unwrap_or_default();
-        // The first frame is always a Greeting: role declaration plus token
-        // when the plane requires one. A bad token ends the connection
-        // before any other work happens.
+        // Every link runs a Noise XXpsk3 handshake first: the shared token
+        // is the PSK, proven on both sides without ever crossing the wire.
+        // A wrong token fails the handshake before any frame is read.
+        let token = this.lock().unwrap().token.clone();
+        let mut stream = match archon_node::transport::establish_responder(stream, token.as_deref())
+        {
+            Ok(stream) => stream,
+            Err(_) => {
+                eprintln!("archon: {peer} failed the transport handshake");
+                return;
+            }
+        };
+        // The first framed message is always a Greeting declaring the role.
         let greeting = match crate::api::read_payload(&mut stream)
             .ok()
             .and_then(|payload| serde_json::from_slice::<crate::api::Greeting>(&payload).ok())
@@ -333,19 +351,6 @@ impl ControlPlane {
                 return;
             }
         };
-        let authorized = {
-            let plane = this.lock().unwrap();
-            match &plane.token {
-                Some(expected) => greeting
-                    .token()
-                    .is_some_and(|presented| crate::api::token_matches(expected, presented)),
-                None => true,
-            }
-        };
-        if !authorized {
-            eprintln!("archon: {peer} failed authentication");
-            return;
-        }
         match greeting {
             crate::api::Greeting::Agent {
                 instance_id,
@@ -353,7 +358,6 @@ impl ControlPlane {
                 cpus,
                 memory_bytes,
                 devices,
-                ..
             } => {
                 if let Err(err) = this.lock().unwrap().register_dial_in(
                     stream,
@@ -368,7 +372,7 @@ impl ControlPlane {
                     eprintln!("archon: agent {peer} disconnected");
                 }
             }
-            crate::api::Greeting::Client { .. } => {
+            crate::api::Greeting::Client => {
                 eprintln!("archon: client connected from {peer}");
                 while let Ok(request) = crate::api::read_request(&mut stream) {
                     let response = this.lock().unwrap().tick_and_handle(request);
@@ -383,7 +387,7 @@ impl ControlPlane {
 
     fn register_dial_in(
         &mut self,
-        stream: TcpStream,
+        stream: archon_node::transport::SecureStream,
         instance_id: String,
         name: String,
         cpus: u64,
@@ -397,7 +401,7 @@ impl ControlPlane {
             memory_bytes,
             devices,
         };
-        let executor = archon_node::service::RemoteExecutor::from_stream(stream);
+        let executor = archon_node::service::RemoteExecutor::from_secure(stream);
         let machine = self
             .service
             .register_agent(description, Box::new(executor))?;

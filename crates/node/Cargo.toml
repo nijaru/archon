@@ -8,6 +8,8 @@ publish.workspace = true
 archon-kernel = { path = "../kernel", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+snow = "0.10"
 
 [lib]
 path = "src/lib.rs"

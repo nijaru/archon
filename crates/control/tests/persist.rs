@@ -126,13 +126,10 @@ fn snapshot_compaction_preserves_state_across_restarts() {
     }
 
     // Operate: two workloads live, one already finished (revoked).
-    let mut stream = TcpStream::connect(&addr).expect("connect");
-    // Connections open with a Greeting before any requests.
-    write_frame(
-        &mut stream,
-        &archon_control::api::Greeting::Client { token: None },
-    )
-    .unwrap();
+    // Connections secure the link with the Noise handshake, then greet.
+    let stream = TcpStream::connect(&addr).expect("connect");
+    let mut stream = archon_node::transport::establish_initiator(stream, None).unwrap();
+    write_frame(&mut stream, &archon_control::api::Greeting::Client).unwrap();
     for _id in [1u64, 2] {
         write_frame(
             &mut stream,

@@ -5,8 +5,11 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use std::io::{Read, Write};
+
 use archon_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
 use archon_control::server::ControlPlane;
+use archon_node::transport::{SecureStream, establish_initiator};
 
 fn temp_log(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -29,18 +32,17 @@ fn spawn_server(name: &str) -> String {
     addr
 }
 
-fn roundtrip(stream: &mut TcpStream, request: ClientRequest) -> ServerResponse {
+fn roundtrip<S: Read + Write>(stream: &mut S, request: ClientRequest) -> ServerResponse {
     write_frame(stream, &request).expect("send");
     read_response(stream).expect("receive")
 }
 
-/// Open-mode server: connections start with a Greeting, then requests.
-fn open(stream: &mut TcpStream) {
-    write_frame(
-        stream,
-        &archon_control::api::Greeting::Client { token: None },
-    )
-    .expect("send greeting");
+/// Connect, secure the link, and greet as a client.
+fn open_client(addr: &str, token: Option<&str>) -> SecureStream {
+    let stream = TcpStream::connect(addr).expect("connect");
+    let mut stream = establish_initiator(stream, token).expect("handshake");
+    write_frame(&mut stream, &archon_control::api::Greeting::Client).expect("send greeting");
+    stream
 }
 
 fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
@@ -57,8 +59,7 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 #[test]
 fn submit_status_revoke_over_the_wire() {
     let addr = spawn_server("lifecycle");
-    let mut stream = TcpStream::connect(&addr).expect("connect");
-    open(&mut stream);
+    let mut stream = open_client(&addr, None);
 
     let response = roundtrip(
         &mut stream,
@@ -116,21 +117,20 @@ fn wrong_token_is_rejected_before_any_work() {
         ControlPlane::serve(&std::sync::Arc::new(std::sync::Mutex::new(plane)), listener);
     });
 
-    // Wrong token: connection closes without a response.
-    let mut stream = TcpStream::connect(&addr).expect("connect");
-    write_frame(
-        &mut stream,
-        &Greeting::Client {
-            token: Some("wrong".into()),
-        },
-    )
-    .expect("send greeting");
-    let rejected = read_response(&mut stream).is_err();
-    assert!(rejected, "wrong token must close the connection");
+    // Wrong token: the responder rejects it while decrypting message 3,
+    // so the connection closes before any request is served.
+    if let Ok(mut stream) =
+        TcpStream::connect(&addr).and_then(|stream| establish_initiator(stream, Some("wrong")))
+    {
+        write_frame(&mut stream, &Greeting::Client).expect("send greeting");
+        assert!(
+            read_response(&mut stream).is_err(),
+            "wrong token must close the connection"
+        );
+    }
 
     // Right token: requests are served.
-    let mut stream = TcpStream::connect(&addr).expect("connect");
-    write_frame(&mut stream, &Greeting::Client { token: Some(token) }).expect("send greeting");
+    let mut stream = open_client(&addr, Some(&token));
     write_frame(&mut stream, &ClientRequest::Status).expect("send status");
     let response = read_response(&mut stream).expect("status response");
     assert!(matches!(response, ServerResponse::Status { .. }));
@@ -139,8 +139,7 @@ fn wrong_token_is_rejected_before_any_work() {
 #[test]
 fn empty_command_is_rejected() {
     let addr = spawn_server("reject");
-    let mut stream = TcpStream::connect(&addr).expect("connect");
-    open(&mut stream);
+    let mut stream = open_client(&addr, None);
     let response = roundtrip(
         &mut stream,
         ClientRequest::Submit {
@@ -176,11 +175,12 @@ fn a_silent_agent_does_not_block_other_clients() {
     });
 
     // The agent registers and then goes silent; it never answers Prepare.
-    let mut agent = TcpStream::connect(&addr).expect("agent connect");
+    let agent = TcpStream::connect(&addr).expect("agent connect");
+    let mut agent =
+        archon_node::transport::establish_initiator(agent, None).expect("agent handshake");
     write_frame(
         &mut agent,
         &archon_control::api::Greeting::Agent {
-            token: None,
             instance_id: "inst-silent".into(),
             name: "silent".into(),
             cpus: 4,
@@ -192,8 +192,7 @@ fn a_silent_agent_does_not_block_other_clients() {
 
     // Give registration a moment, then submit work that lands on it.
     std::thread::sleep(Duration::from_millis(200));
-    let mut client = TcpStream::connect(&addr).expect("client connect");
-    open(&mut client);
+    let mut client = open_client(&addr, None);
     let response = roundtrip(
         &mut client,
         ClientRequest::Submit {
@@ -216,8 +215,7 @@ fn a_silent_agent_does_not_block_other_clients() {
     assert!(lease > 0);
 
     // While the agent stays silent, another client must be served promptly.
-    let mut watcher = TcpStream::connect(&addr).expect("watcher connect");
-    open(&mut watcher);
+    let mut watcher = open_client(&addr, None);
     for _ in 0..10 {
         let start = Instant::now();
         roundtrip(&mut watcher, ClientRequest::Status);

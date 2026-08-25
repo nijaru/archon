@@ -9,15 +9,6 @@ pub use archon_node::protocol::{
     Greeting, MAX_FRAME, read_payload, set_stream_limits, write_frame,
 };
 
-/// Constant-time equality; a length mismatch leaks only the length.
-pub fn token_matches(expected: &str, presented: &str) -> bool {
-    let (a, b) = (expected.as_bytes(), presented.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClientRequest {
     Submit {

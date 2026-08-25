@@ -125,8 +125,12 @@ fn serve(args: &[String]) {
     let (Some(listen), Some(log)) = (listen, log) else {
         usage();
     };
+    let token = load_token(&token_file);
     let link = match (&remote, no_local) {
-        (Some(addr), _) => archon_control::server::AgentLink::Remote { addr: addr.clone() },
+        (Some(addr), _) => archon_control::server::AgentLink::Remote {
+            addr: addr.clone(),
+            token: token.clone(),
+        },
         (None, false) => archon_control::server::AgentLink::Local { cgroup_root },
         (None, true) => archon_control::server::AgentLink::None,
     };
@@ -134,12 +138,11 @@ fn serve(args: &[String]) {
         Ok(plane) => plane,
         Err(err) => fail(format!("boot failed: {err}")),
     };
-    match load_token(&token_file) {
-        Some(token) => {
-            plane.require_token(token);
-            eprintln!("archon: link auth enabled");
-        }
-        None => eprintln!("archon: warning: no auth token configured; links are open"),
+    if let Some(token) = token {
+        plane.require_token(token);
+        eprintln!("archon: link auth enabled");
+    } else {
+        eprintln!("archon: warning: no auth token configured; links are open");
     }
     let plane = std::sync::Arc::new(std::sync::Mutex::new(plane));
     {
@@ -204,7 +207,7 @@ fn agent(args: &[String]) {
     };
     eprintln!("archon: agent listening on {listen}");
     for stream in listener.incoming() {
-        let mut stream = match stream {
+        let stream = match stream {
             Ok(stream) => stream,
             Err(_) => continue,
         };
@@ -213,24 +216,24 @@ fn agent(args: &[String]) {
             .peer_addr()
             .map(|addr| addr.to_string())
             .unwrap_or_default();
-        // Connections open with the same Greeting the control plane uses;
-        // anything else is refused before a single request is served.
-        let authorized = match archon_control::api::read_greeting(&mut stream) {
-            Ok(archon_control::api::Greeting::Agent {
-                token: presented, ..
-            }) => {
-                match (&token, presented) {
-                    (Some(expected), Some(presented)) => {
-                        archon_control::api::token_matches(expected, &presented)
-                    }
-                    (None, _) => true, // open mode, warned at startup
-                    (Some(_), None) => false,
-                }
+        // Every controller link runs a Noise XXpsk3 handshake first: the
+        // token is the PSK, proven on both sides without crossing the wire.
+        // A wrong token fails before any frame is read.
+        let mut stream = match archon_node::transport::establish_responder(stream, token.as_deref())
+        {
+            Ok(stream) => stream,
+            Err(_) => {
+                eprintln!("archon: {peer} failed agent authentication");
+                continue;
             }
-            _ => false,
         };
-        if !authorized {
-            eprintln!("archon: {peer} failed agent authentication");
+        // The first framed message declares the role; anything else is
+        // refused before a single request is served.
+        let role_ok = matches!(
+            archon_control::api::read_greeting(&mut stream),
+            Ok(archon_control::api::Greeting::Agent { .. })
+        );
+        if !role_ok {
             continue;
         }
         eprintln!("archon: controller connected from {peer}");
@@ -316,10 +319,18 @@ fn dial_in(
     let instance_id = load_instance_id(id);
     loop {
         match TcpStream::connect(addr) {
-            Ok(mut stream) => {
+            Ok(stream) => {
+                let mut stream =
+                    match archon_node::transport::establish_initiator(stream, token.as_deref()) {
+                        Ok(stream) => stream,
+                        Err(err) => {
+                            eprintln!("archon: handshake with control plane failed: {err}");
+                            std::thread::sleep(Duration::from_secs(2));
+                            continue;
+                        }
+                    };
                 let description = archon_node::discover::describe();
                 let greeting = archon_control::api::Greeting::Agent {
-                    token: token.clone(),
                     instance_id: instance_id.clone(),
                     name: name.clone().unwrap_or(description.name),
                     cpus: description.cpus,
@@ -463,17 +474,19 @@ fn print_machine(service: &NodeService) {
 fn client(connect: Option<String>, args: &[String]) {
     let rest: Vec<String> = args.to_vec();
     let Some(addr) = connect else { usage() };
-    let mut stream = match TcpStream::connect(&addr) {
+    let mut stream = match TcpStream::connect(&addr).and_then(|stream| {
+        let token = std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty());
+        archon_node::transport::establish_initiator(stream, token.as_deref())
+    }) {
         Ok(stream) => stream,
         Err(err) => fail(format!("cannot reach control plane at {addr}: {err}")),
     };
-    let token = std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty());
-    let greeting = archon_control::api::Greeting::Client { token };
+    let greeting = archon_control::api::Greeting::Client;
     if let Err(err) = archon_node::protocol::write_frame(&mut stream, &greeting) {
         fail(format!("cannot greet control plane at {addr}: {err}"));
     }
-    // The server's auth failure is silent (connection closed); surface it
-    // on the first request failing instead.
+    // A failed handshake or greeting is silent (connection closed); surface
+    // it on the first request failing instead.
     let response = match rest[0].as_str() {
         "submit" => submit_request(&rest[1..]),
         "status" => ClientRequest::Status,

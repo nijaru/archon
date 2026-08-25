@@ -10,13 +10,12 @@ use std::io::{Read, Write};
 use archon_kernel::{PortPublish, StorageMount};
 use serde::{Deserialize, Serialize};
 
-/// Connection handshake: role plus optional shared token, sent before
-/// any request on either direction of the wire.
+/// Connection greeting: role declaration, sent as the first framed
+/// message after the Noise handshake authenticates and encrypts the link.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Greeting {
     /// A dial-in agent announcing its machine.
     Agent {
-        token: Option<String>,
         instance_id: String,
         name: String,
         cpus: u64,
@@ -26,15 +25,7 @@ pub enum Greeting {
         devices: Vec<(archon_kernel::NodeKind, String)>,
     },
     /// A CLI client.
-    Client { token: Option<String> },
-}
-
-impl Greeting {
-    pub fn token(&self) -> Option<&str> {
-        match self {
-            Greeting::Agent { token, .. } | Greeting::Client { token } => token.as_deref(),
-        }
-    }
+    Client,
 }
 
 /// Resource limits derived from a lease's claims. Zero means unlimited.

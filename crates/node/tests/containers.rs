@@ -45,7 +45,10 @@ fn spawn_agent() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
+        if let Ok((stream, _)) = listener.accept() {
+            let Ok(mut stream) = archon_node::transport::establish_responder(stream, None) else {
+                return;
+            };
             use archon_node::protocol::AgentRequest;
             let _ = archon_node::protocol::read_greeting(&mut stream);
             let Ok(AgentRequest::Hello) = read_request(&mut stream) else {

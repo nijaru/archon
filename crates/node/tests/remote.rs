@@ -19,7 +19,11 @@ fn spawn_agent() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
+        if let Ok((stream, _)) = listener.accept() {
+            // The controller secures the link before any frames flow.
+            let Ok(mut stream) = archon_node::transport::establish_responder(stream, None) else {
+                return;
+            };
             let mut agent = LeaseAgent::new(ProcessRuntime::new());
             // The controller greets before driving requests.
             let _ = archon_node::protocol::read_greeting(&mut stream);

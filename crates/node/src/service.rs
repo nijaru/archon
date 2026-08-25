@@ -46,20 +46,18 @@ impl LeaseExecutor for LocalExecutor {
     }
 }
 
-/// Remote execution over TCP; one connection per agent.
+/// Remote execution over TCP; one encrypted connection per agent.
 pub struct RemoteExecutor {
-    stream: TcpStream,
+    stream: crate::transport::SecureStream,
 }
 
 impl RemoteExecutor {
-    pub fn connect(addr: &str) -> std::io::Result<Self> {
-        let mut stream = TcpStream::connect(addr)?;
+    pub fn connect(addr: &str, token: Option<&str>) -> std::io::Result<Self> {
+        let stream = TcpStream::connect(addr)?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
         stream.set_write_timeout(Some(std::time::Duration::from_secs(60)))?;
-        // Secured listeners refuse requests before the Greeting.
-        let token = std::env::var("ARCHON_TOKEN").ok().filter(|t| !t.is_empty());
+        let mut stream = crate::transport::establish_initiator(stream, token)?;
         let greeting = crate::protocol::Greeting::Agent {
-            token,
             instance_id: String::new(),
             name: String::new(),
             cpus: 0,
@@ -70,10 +68,8 @@ impl RemoteExecutor {
         Ok(Self { stream })
     }
 
-    /// Wrap an already-connected socket (dial-in agents).
-    pub fn from_stream(stream: TcpStream) -> Self {
-        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(60)));
-        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(60)));
+    /// Wrap an already-established secure stream (dial-in agents).
+    pub fn from_secure(stream: crate::transport::SecureStream) -> Self {
         Self { stream }
     }
 }
@@ -87,6 +83,8 @@ impl LeaseExecutor for RemoteExecutor {
 
 pub struct NodeService {
     pub cluster: Cluster,
+    /// Shared secret for outbound agent connections; None runs open mode.
+    link_token: Option<String>,
     /// One worker handle per registered machine, keyed by the machine
     /// NodeId. Workers own the executors and do all network I/O off the
     /// controller's critical section.
@@ -173,6 +171,11 @@ impl NodeService {
         Self::with_agents(BTreeMap::new())
     }
 
+    /// Set the shared secret used to secure outbound agent links.
+    pub fn set_link_token(&mut self, token: String) {
+        self.link_token = Some(token);
+    }
+
     /// A controller executing on this machine; cgroup enforcement when a
     /// root is given (Linux only). Unregistered: call `register_local`.
     pub fn local(cgroup_root: Option<String>) -> Self {
@@ -203,7 +206,8 @@ impl NodeService {
 
     /// Connect to a remote agent, learn its machine, and register it.
     pub fn register_remote(&mut self, addr: &str) -> Result<NodeId, Error> {
-        let mut executor = RemoteExecutor::connect(addr).map_err(|err| Error::Refused {
+        let token = self.link_token.as_deref();
+        let mut executor = RemoteExecutor::connect(addr, token).map_err(|err| Error::Refused {
             explanation: format!("connect {addr}: {err}"),
         })?;
         let description = Self::hello(&mut executor)?;
@@ -303,6 +307,7 @@ impl NodeService {
     fn with_agents(agents: BTreeMap<NodeId, AgentHandle>) -> Self {
         Self {
             cluster: Cluster::new(),
+            link_token: None,
             agents,
             inbox: Arc::new(Inbox::default()),
             inflight: BTreeSet::new(),
