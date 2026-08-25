@@ -177,10 +177,7 @@ fn device_claims_resolve_to_host_paths() {
             name: "gpu-box".into(),
             cpus: 2,
             memory_bytes: 0,
-            devices: vec![
-                (archon_kernel::NodeKind::Gpu, "/dev/gpuA".into()),
-                (archon_kernel::NodeKind::Gpu, "/dev/gpuB".into()),
-            ],
+            devices: vec![gpu_spec("/dev/gpuA"), gpu_spec("/dev/gpuB")],
         },
         base,
     );
@@ -216,10 +213,7 @@ fn device_claims_resolve_to_host_paths() {
                 name: "gpu-box".into(),
                 cpus: 2,
                 memory_bytes: 0,
-                devices: vec![
-                    (archon_kernel::NodeKind::Gpu, "/dev/gpuA".into()),
-                    (archon_kernel::NodeKind::Gpu, "/dev/gpuB".into()),
-                ],
+                devices: vec![gpu_spec("/dev/gpuA"), gpu_spec("/dev/gpuB")],
             },
             Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
         )
@@ -259,8 +253,17 @@ fn device_claims_resolve_to_host_paths() {
     let devices = service.lease_devices(LeaseId::from_u64(1));
     assert_eq!(devices.len(), 1, "one claimed gpu");
     assert!(
-        devices[0].starts_with("/dev/gpu"),
+        devices[0].dev.starts_with("/dev/gpu"),
         "resolved host path, got {:?}",
         devices[0]
     );
+}
+
+/// A GPU declaration whose stable id is its host path.
+fn gpu_spec(dev: &str) -> archon_node::discover::DeviceSpec {
+    archon_node::discover::DeviceSpec {
+        kind: archon_kernel::NodeKind::Gpu,
+        id: dev.to_string(),
+        dev: dev.to_string(),
+    }
 }

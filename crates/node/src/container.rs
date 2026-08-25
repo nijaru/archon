@@ -18,7 +18,7 @@ pub struct ContainerConfig<'a> {
     pub limits: &'a LeaseLimits,
     pub storage: &'a [StorageMount],
     pub ports: &'a [PortPublish],
-    pub devices: &'a [String],
+    pub devices: &'a [crate::protocol::DeviceAccess],
 }
 
 pub struct ContainerRuntime {
@@ -82,8 +82,8 @@ impl ContainerRuntime {
         if cfg.limits.memory_bytes > 0 {
             cmd.arg(format!("--memory={}b", cfg.limits.memory_bytes));
         }
-        for path in cfg.devices {
-            cmd.arg(format!("--device={path}:{path}"));
+        for device in cfg.devices {
+            cmd.arg(format!("--device={}:{}", device.dev, device.dev));
         }
         for mount in cfg.storage {
             let relabel = if self.relabels { ":Z" } else { "" };

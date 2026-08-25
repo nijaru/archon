@@ -35,11 +35,20 @@ pub struct MachineDescription {
     pub name: String,
     pub cpus: u64,
     pub memory_bytes: u64,
-    /// Devices this machine exposes, as (kind, host path). Declared via
-    /// ARCHON_DEVICES (`gpu:/dev/nvidia0,nic:...`); real discovery is a
+    /// Devices this machine exposes. Declared via ARCHON_DEVICES
+    /// (`gpu:/dev/nvidia0` or `gpu=gpu0:/dev/nvidia0`); real discovery is a
     /// later upgrade behind the same representation.
     #[serde(default)]
-    pub devices: Vec<(archon_kernel::NodeKind, String)>,
+    pub devices: Vec<DeviceSpec>,
+}
+
+/// One declared device: a stable `id` that survives re-registration and
+/// access-path changes, plus the current host path it is reachable through.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSpec {
+    pub kind: NodeKind,
+    pub id: String,
+    pub dev: String,
 }
 
 pub fn describe() -> MachineDescription {
@@ -52,16 +61,26 @@ pub fn describe() -> MachineDescription {
     }
 }
 
-/// Parse ARCHON_DEVICES (`gpu:/dev/nvidia0,nic:/dev/eth0`) into device
-/// entries; unparsable entries are skipped with a warning.
-fn declared_devices() -> Vec<(archon_kernel::NodeKind, String)> {
+/// Parse ARCHON_DEVICES entries into device specs; unparsable entries are
+/// skipped with a warning. Each entry is `kind:path`, or `kind=id:path` for
+/// an explicit stable id (defaulting to the path when omitted).
+fn declared_devices() -> Vec<DeviceSpec> {
     let Ok(spec) = std::env::var("ARCHON_DEVICES") else {
         return Vec::new();
     };
     spec.split(',')
         .filter(|entry| !entry.trim().is_empty())
         .filter_map(|entry| {
-            let (kind, path) = entry.split_once(':')?;
+            let (kind, id, dev) = match entry.split_once('=') {
+                Some((kind, rest)) => {
+                    let (id, dev) = rest.split_once(':')?;
+                    (kind, id, dev)
+                }
+                None => {
+                    let (kind, dev) = entry.split_once(':')?;
+                    (kind, dev, dev)
+                }
+            };
             let kind = match kind.trim().to_lowercase().as_str() {
                 "gpu" => archon_kernel::NodeKind::Gpu,
                 "nic" => archon_kernel::NodeKind::Nic,
@@ -71,7 +90,11 @@ fn declared_devices() -> Vec<(archon_kernel::NodeKind, String)> {
                     return None;
                 }
             };
-            Some((kind, path.to_string()))
+            Some(DeviceSpec {
+                kind,
+                id: id.trim().to_string(),
+                dev: dev.to_string(),
+            })
         })
         .collect()
 }
@@ -149,13 +172,14 @@ pub fn build_graph(
             capacity: qty(Dimension::Bytes, description.memory_bytes),
         },
     ];
-    for (kind, path) in &description.devices {
+    for device_spec in &description.devices {
         let device = ids.node();
         let mut attrs = Attrs::new();
-        attrs.insert("dev".into(), path.clone());
+        attrs.insert("id".into(), device_spec.id.clone());
+        attrs.insert("dev".into(), device_spec.dev.clone());
         nodes.push(Node {
             id: device,
-            kind: *kind,
+            kind: device_spec.kind,
             attrs,
             capacity: qty(Dimension::Count, 1),
         });
@@ -182,18 +206,18 @@ pub fn build_graph(
             attrs: Attrs::new(),
         });
     }
-    for (kind, path) in &description.devices {
-        if let Some(device) = nodes
-            .iter()
-            .find(|node| node.kind == *kind && node.attrs.get("dev").is_some_and(|dev| dev == path))
-        {
-            edges.push(Edge {
-                from: machine,
-                to: device.id,
-                kind: EdgeKind::Contains,
-                attrs: Attrs::new(),
-            });
-        }
+    for device in &description.devices {
+        let Some(device) = nodes.iter().find(|node| {
+            node.kind == device.kind && node.attrs.get("id").is_some_and(|id| id == &device.id)
+        }) else {
+            continue;
+        };
+        edges.push(Edge {
+            from: machine,
+            to: device.id,
+            kind: EdgeKind::Contains,
+            attrs: Attrs::new(),
+        });
     }
     (
         LocalMachine {

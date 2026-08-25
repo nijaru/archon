@@ -12,6 +12,31 @@ use serde::{Deserialize, Serialize};
 
 /// Connection greeting: role declaration, sent as the first framed
 /// message after the Noise handshake authenticates and encrypts the link.
+/// One claimed device handed to an execution adapter: its stable `id`
+/// (survives re-registration) and the host path it is currently reachable
+/// through. Adapters enforce access per runtime — containers via
+/// `--device`, processes via their own device provider (e.g. cgroup-device
+/// eBPF filters) keyed on the same id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAccess {
+    pub id: String,
+    pub dev: String,
+}
+
+impl DeviceAccess {
+    /// Build from a device node's graph attributes.
+    pub fn from_attrs(attrs: &archon_kernel::Attrs) -> Option<Self> {
+        let dev = attrs.get("dev")?;
+        if dev.is_empty() {
+            return None;
+        }
+        Some(DeviceAccess {
+            id: attrs.get("id").cloned().unwrap_or_else(|| dev.clone()),
+            dev: dev.clone(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Greeting {
     /// A dial-in agent announcing its machine.
@@ -20,9 +45,9 @@ pub enum Greeting {
         name: String,
         cpus: u64,
         memory_bytes: u64,
-        /// Devices this machine exposes, as (kind, host path).
+        /// Devices this machine exposes.
         #[serde(default)]
-        devices: Vec<(archon_kernel::NodeKind, String)>,
+        devices: Vec<crate::discover::DeviceSpec>,
     },
     /// A CLI client.
     Client,
@@ -55,9 +80,9 @@ pub enum AgentRequest {
         name: String,
         cpus: u64,
         memory_bytes: u64,
-        /// Devices this machine exposes, as (kind, host path).
+        /// Devices this machine exposes.
         #[serde(default)]
-        devices: Vec<(archon_kernel::NodeKind, String)>,
+        devices: Vec<crate::discover::DeviceSpec>,
     },
     Prepare {
         binding: u64,
@@ -84,9 +109,9 @@ pub enum AgentRequest {
         /// Seconds between SIGTERM and SIGKILL on teardown.
         #[serde(default)]
         grace_secs: u32,
-        /// Host device paths the lease's claims bound.
+        /// Devices the lease's claims bound.
         #[serde(default)]
-        devices: Vec<String>,
+        devices: Vec<DeviceAccess>,
     },
     Release {
         binding: u64,
@@ -114,7 +139,7 @@ pub enum AgentResponse {
         cpus: u64,
         memory_bytes: u64,
         #[serde(default)]
-        devices: Vec<(archon_kernel::NodeKind, String)>,
+        devices: Vec<crate::discover::DeviceSpec>,
     },
     Prepared {
         binding: u64,

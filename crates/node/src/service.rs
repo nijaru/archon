@@ -267,7 +267,10 @@ impl NodeService {
                 })
         };
         let (machine, new_machine) = match named(&self.cluster, &description.instance_id) {
-            Some(machine) => (machine, false),
+            Some(machine) => {
+                self.reconcile_device_subtree(machine, &description.devices)?;
+                (machine, false)
+            }
             None => {
                 let base = self
                     .cluster
@@ -302,6 +305,76 @@ impl NodeService {
         self.commit(Command::SetAgentSession { machine, session })?;
         self.pump()?;
         Ok(machine)
+    }
+
+    /// Re-align a known machine's device nodes with its current declaration.
+    /// Devices match by stable `id` attr: matched ids keep their NodeId (so
+    /// live claims survive) and only their `dev` attr refreshes; unknown ids
+    /// become fresh capacity-1 nodes under the machine. Emits nothing when
+    /// the declaration already matches the graph.
+    fn reconcile_device_subtree(
+        &mut self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Result<(), Error> {
+        use archon_kernel::{Attrs, Dimension, Edge, EdgeKind, Node, qty};
+
+        let mut existing: BTreeMap<String, NodeId> = self
+            .cluster
+            .graph
+            .children(machine)
+            .iter()
+            .filter_map(|child| {
+                let node = self.cluster.graph.node(*child)?;
+                if !matches!(node.kind, NodeKind::Gpu | NodeKind::Nic | NodeKind::Nvme) {
+                    return None;
+                }
+                node.attrs.get("id").map(|id| (id.clone(), *child))
+            })
+            .collect();
+
+        let mut base = self
+            .cluster
+            .graph
+            .nodes()
+            .map(|node| node.id.as_u64())
+            .max()
+            .unwrap_or(0);
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for spec in devices {
+            let id = existing.remove(&spec.id).unwrap_or_else(|| {
+                base += 1;
+                let fresh = NodeId::from_u64(base);
+                edges.push(Edge {
+                    from: machine,
+                    to: fresh,
+                    kind: EdgeKind::Contains,
+                    attrs: Attrs::new(),
+                });
+                fresh
+            });
+            let node = self.cluster.graph.node(id);
+            let unchanged = node.is_some_and(|node| {
+                node.kind == spec.kind && node.attrs.get("dev").is_some_and(|dev| dev == &spec.dev)
+            });
+            if unchanged {
+                continue;
+            }
+            let mut attrs = Attrs::new();
+            attrs.insert("id".into(), spec.id.clone());
+            attrs.insert("dev".into(), spec.dev.clone());
+            nodes.push(Node {
+                id,
+                kind: spec.kind,
+                attrs,
+                capacity: qty(Dimension::Count, 1),
+            });
+        }
+        if nodes.is_empty() && edges.is_empty() {
+            return Ok(());
+        }
+        self.commit(Command::ApplyGraph { nodes, edges })
     }
 
     fn with_agents(agents: BTreeMap<NodeId, AgentHandle>) -> Self {
@@ -687,7 +760,7 @@ impl NodeService {
 
     /// Host device paths bound by a lease's device-kind claims, resolved
     /// through the graph's `dev` attributes.
-    pub fn lease_devices(&self, lease: LeaseId) -> Vec<String> {
+    pub fn lease_devices(&self, lease: LeaseId) -> Vec<crate::protocol::DeviceAccess> {
         use archon_kernel::NodeKind;
         let Some(allocation_lease) = self.cluster.leases.get(&lease) else {
             return Vec::new();
@@ -705,7 +778,7 @@ impl NodeService {
                 self.cluster
                     .graph
                     .node(claim.node)
-                    .and_then(|node| node.attrs.get("dev").cloned())
+                    .and_then(|node| crate::protocol::DeviceAccess::from_attrs(&node.attrs))
             })
             .collect()
     }

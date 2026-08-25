@@ -392,7 +392,7 @@ impl ControlPlane {
         name: String,
         cpus: u64,
         memory_bytes: u64,
-        devices: Vec<(archon_kernel::NodeKind, String)>,
+        devices: Vec<archon_node::discover::DeviceSpec>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let description = archon_node::discover::MachineDescription {
             instance_id,
