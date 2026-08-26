@@ -2,6 +2,8 @@
 pub mod agent;
 pub mod cgroup;
 pub mod container;
+#[cfg(target_os = "linux")]
+pub mod device_filter;
 pub mod discover;
 pub mod dispatch;
 #[cfg(target_os = "linux")]

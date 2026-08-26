@@ -102,6 +102,7 @@ fn first_instruction_runs_inside_the_lease_cgroup() {
                 cpu_count: 1,
                 memory_bytes: 64 * (1 << 20),
             },
+            &[],
         )
         .unwrap();
 
@@ -141,6 +142,7 @@ fn failed_launch_removes_the_lease_cgroup() {
             cpu_count: 1,
             memory_bytes: 64 * (1 << 20),
         },
+        &[],
     );
     assert!(error.is_err());
     assert!(!fs::exists(format!("{ROOT}/lease-{lease}")).unwrap());
@@ -206,4 +208,49 @@ fn memory_limit_kills_an_overallocating_process() {
 
     service.revoke(lease).unwrap();
     cleanup_root();
+}
+
+#[test]
+fn claimed_devices_are_enforced_by_cgroup_device_filter() {
+    if !require_cgroup_writable() {
+        return;
+    }
+    cleanup_root();
+    let mut runtime = ProcessRuntime::new().with_cgroup_root(ROOT.into());
+    let lease = LeaseId::from_u64(2);
+    let devices = vec![archon_node::protocol::DeviceAccess {
+        id: "gpu0".into(),
+        dev: "/dev/null".into(),
+    }];
+    runtime
+        .activate(
+            lease,
+            &[
+                "sh".into(),
+                "-c".into(),
+                "cat /dev/zero > /dev/null && cat /dev/urandom > /dev/null; test -r /dev/tty0 && echo tty-ok || echo tty-denied".to_string(),
+            ],
+            &LeaseLimits {
+                cpu_count: 1,
+                memory_bytes: 64 * (1 << 20),
+            },
+            &devices,
+        )
+        .expect("activation with device filter");
+
+    // /dev/null is claimed, so reads/writes through it succeed; the log
+    // captures the outcome of probing an unclaimed device node.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut output = String::new();
+    while Instant::now() < deadline {
+        output = ProcessRuntime::read_log(lease);
+        if output.contains("tty-denied") || output.contains("tty-ok") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        output.contains("tty-denied"),
+        "unclaimed devices must be denied by the cgroup-device filter, got: {output}"
+    );
 }

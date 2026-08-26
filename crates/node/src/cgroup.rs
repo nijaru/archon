@@ -65,6 +65,11 @@ impl CgroupGroup {
     }
 
     /// Kill every process in the group atomically (kernel 5.14+).
+    /// The lease group's filesystem path (the BPF attach point).
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     pub fn kill(&self) -> Result<(), String> {
         self.write("cgroup.kill", "1")
     }

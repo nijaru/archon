@@ -76,6 +76,8 @@ pub struct ProcessRuntime {
     /// Cgroup root for lease groups; empty means lifecycle-only enforcement.
     #[cfg(target_os = "linux")]
     cgroup_root: Option<String>,
+    /// Warned once that device claims ride unenforced on this runtime.
+    warned_unenforced_devices: bool,
 }
 
 impl ProcessRuntime {
@@ -119,6 +121,7 @@ impl ProcessRuntime {
         lease: LeaseId,
         command: &[String],
         limits: &LeaseLimits,
+        devices: &[crate::protocol::DeviceAccess],
     ) -> Result<(), String> {
         if self.children.contains_key(&lease) {
             return Ok(());
@@ -126,6 +129,10 @@ impl ProcessRuntime {
         let [program, args @ ..] = command else {
             return Err(format!("lease {lease} has no command to execute"));
         };
+        if !devices.is_empty() && !self.warned_unenforced_devices {
+            self.warned_unenforced_devices = true;
+            eprintln!("archon: device claims are tracked but not enforced by this runtime");
+        }
         // Output goes to a per-lease file so results survive the process.
         let log_path = Self::log_dir().join(format!("lease-{}.log", lease.as_u64()));
         if let Some(parent) = log_path.parent()
@@ -147,6 +154,18 @@ impl ProcessRuntime {
 
         #[cfg(target_os = "linux")]
         if group.is_some() {
+            // Device claims must hold inside the cgroup before the workload
+            // can start; an unattachable filter fails activation loudly.
+            if !devices.is_empty() {
+                let created = group.as_ref().expect("group checked above");
+                if let Err(err) = crate::device_filter::enforce_devices(created.path(), devices) {
+                    if let Some(created) = group.take() {
+                        let _ = created.kill();
+                        let _ = created.destroy();
+                    }
+                    return Err(format!("device enforcement for lease {lease}: {err}"));
+                }
+            }
             let child = {
                 let created = group.as_ref().expect("group checked above");
                 linux_process::spawn(created, program, args, &log_file)

@@ -106,8 +106,9 @@ impl LeaseAgent {
                 let lease_id = LeaseId::from_u64(lease);
                 let result = if image.is_empty() {
                     // Processes share the host filesystem and network;
-                    // mounts and ports are container-only concerns.
-                    self.process.activate(lease_id, &command, &limits)
+                    // mounts and ports are container-only concerns. Device
+                    // claims are enforced by the cgroup-device filter.
+                    self.process.activate(lease_id, &command, &limits, &devices)
                 } else {
                     self.containers.activate(
                         lease_id,
