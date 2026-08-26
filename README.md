@@ -1,67 +1,39 @@
 # Archon
 
-Archon is a Rust-first distributed resource operating system for heterogeneous
-compute infrastructure.
+Archon is a Rust-first distributed resource operating system for heterogeneous compute infrastructure.
 
-> A datacenter is a graph of leaseable capabilities. A workload is a set of
-> constraints and objectives over that graph.
+> A datacenter is a graph of leaseable capabilities. A workload is a set of constraints and objectives over that graph.
 
-Archon provides one resource, lease, scheduling, identity, isolation, execution,
-health, and recovery model for services, batch/HPC, distributed AI, inference,
-processes, OCI containers, microVMs, VMs, and WASM. Archon is the primary
-resource-control and scheduling authority for those workload classes. It reuses
-Linux, KVM, OCI, accelerator drivers, storage systems, network fabrics, and
-other lower-level substrate rather than replacing them.
+Archon provides resource discovery, scheduling, enforceable leases, execution lifecycle, health, and recovery across Linux machines. The current implementation supports native processes and OCI containers, multi-node agents, cgroup-based CPU/memory enforcement, device claims, persistent control state, and deterministic simulation/fault testing.
 
-The first implementation is a Rust resource/lease kernel and deterministic
-simulator in `crates/kernel` and `crates/sim`. Do not treat deleted Go
-model-serving code as the architecture.
+Linux and existing runtime/hardware stacks remain substrate: cgroups, eBPF, OCI runtimes, KVM, device drivers, accelerator stacks, networking, and storage systems are reused rather than reimplemented.
 
-All links (client↔controller, controller↔agent) are encrypted and
-token-authenticated. Set the same shared secret on both ends via
-`--token-file` or `ARCHON_TOKEN`; without one, links stay encrypted but
-unauthenticated.
+The implementation is lab-proven and is not yet a production-scale claim.
+
+## Build and verify
 
 ```text
+cargo fmt --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p archon-sim
 ```
 
-## Deployment
+All client↔controller and controller↔agent links use encrypted Noise transport. Configure the same shared secret with `--token-file` or `ARCHON_TOKEN` for PSK authentication; without a token the current development mode is encrypted but unauthenticated.
 
-Archon's current host target is ordinary Linux. Existing cgroups/namespaces,
-eBPF, OCI runtimes, KVM, device drivers, accelerator stacks, network fabrics,
-and storage systems remain substrate. Archon owns resource authority,
-scheduling, provider attachment/enforcement, workload lifecycle, and recovery
-above them.
+## Project context
 
-Existing datacenters do not need an all-at-once migration. Archon can take over
-a drained, explicitly bounded machine/resource set while incumbent schedulers
-continue managing the rest. A resource must never be under ambiguous dual
-scheduler ownership. Incumbent schedulers may also run inside bounded Archon
-leases, while Archon may run inside an incumbent allocation during evaluation.
+Durable product/design/roadmap context is centralized in the private [Archon project context](https://github.com/nijaru/agent-context/tree/main/projects/github.com/omendb/archon/ai) rather than duplicated in this repository.
 
-See [`docs/deployment.md`](docs/deployment.md) for the implementation-facing
-integration contract.
+Key sources:
 
-## Documentation
+- [`spec.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/spec.md) — canonical product/system contract;
+- [`STATUS.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/STATUS.md) — current implementation state;
+- [`PLAN.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/PLAN.md) — active roadmap;
+- [`design/deployment-and-adoption.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/design/deployment-and-adoption.md) — Linux/datacenter deployment and authority-handoff design.
 
-Private design and status context is maintained in the central
-[Archon project context](https://github.com/nijaru/agent-context/tree/main/projects/github.com/omendb/archon/ai).
-The repository contains the implementation and its tests; the context
-contains the product specification, architecture, decisions, plan, status, and
-authoritative deployment/adoption design.
-
-Inference and private accelerator fleets are first workloads. vLLM, Slurm,
-Flux, Ray, MPI, Kubernetes, and other systems are optional integrations or
-nested workloads; they do not define Archon's internal resource, lease, or
-scheduling model.
+This repository should document behavior that is actually implemented—CLI/API usage, host prerequisites, installation, troubleshooting, and version compatibility as those stabilize. Future product/deployment strategy belongs in the centralized context.
 
 ## License
 
-Archon is currently private. The planned public release boundary is
-[AGPL-3.0-or-later](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/design/LICENSE_BOUNDARY.md)
-for the core, with Apache-2.0 for schemas, SDKs, and provider/extension
-interfaces. Public license text, copyright ownership, and contribution policy
-will be published before open-source release.
+Archon is currently private. The planned public-release boundary is [AGPL-3.0-or-later](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/design/LICENSE_BOUNDARY.md) for the core, with Apache-2.0 for schemas, SDKs, and provider/extension interfaces. Public license text, copyright ownership, and contribution policy will be finalized before release.
