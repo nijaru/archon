@@ -28,12 +28,30 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p archon-sim
 ```
 
+## Deployment
+
+Archon's current host target is ordinary Linux. Existing cgroups/namespaces,
+eBPF, OCI runtimes, KVM, device drivers, accelerator stacks, network fabrics,
+and storage systems remain substrate. Archon owns resource authority,
+scheduling, provider attachment/enforcement, workload lifecycle, and recovery
+above them.
+
+Existing datacenters do not need an all-at-once migration. Archon can take over
+a drained, explicitly bounded machine/resource set while incumbent schedulers
+continue managing the rest. A resource must never be under ambiguous dual
+scheduler ownership. Incumbent schedulers may also run inside bounded Archon
+leases, while Archon may run inside an incumbent allocation during evaluation.
+
+See [`docs/deployment.md`](docs/deployment.md) for the implementation-facing
+integration contract.
+
 ## Documentation
 
 Private design and status context is maintained in the central
 [Archon project context](https://github.com/nijaru/agent-context/tree/main/projects/github.com/omendb/archon/ai).
 The repository contains the implementation and its tests; the context
-contains the product specification, architecture, decisions, plan, and status.
+contains the product specification, architecture, decisions, plan, status, and
+authoritative deployment/adoption design.
 
 Inference and private accelerator fleets are first workloads. vLLM, Slurm,
 Flux, Ray, MPI, Kubernetes, and other systems are optional integrations or
