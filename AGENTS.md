@@ -1,108 +1,85 @@
 # Archon Compute OS
 
-Rust-first distributed resource OS. Archon is the resource and scheduling
-authority. Linux, KVM, OCI, and drivers are substrate. Kubernetes, Slurm, Ray,
-and MPI are optional integrations or nested workloads.
+Rust-first distributed resource OS. Archon is the resource/scheduling authority for resources it directly manages; Linux, KVM, OCI, drivers, accelerator/runtime stacks, networking, and storage systems are substrate/providers.
 
-> A datacenter is a graph of leaseable capabilities. A workload is a set of
-> constraints and objectives over that graph.
+## Persistent context
 
-## Persistent project context
+Durable project context is centralized at:
 
-Archon's private project context is centralized outside this repository at
-`~/github/nijaru/agent-context/projects/github.com/omendb/archon/ai/`.
-Use the `ai-context` skill to retrieve it. Read `brief.md` first, and never
-recreate a repository-local `ai/` directory.
+`~/github/nijaru/agent-context/projects/github.com/omendb/archon/ai/`
+
+Never recreate a repository-local `ai/` tree and do not copy product/design/roadmap prose into this repository.
 
 ## Session start
 
-1. Read the centralized `brief.md`.
-2. Run `tk ready`.
-3. Check `git status` before editing.
+1. Read centralized `brief.md`.
+2. Read only the canonical context file relevant to the task.
+3. Run `tk ready` if using the project task tracker.
+4. Check `git status` before editing.
 
-Load the centralized `design/DISTRIBUTED_RESOURCE_OS.md` only when changing
-architecture or kernel contracts. Load `design/mvp-scope.md` only for historical
-v0 context. Read `design/scope-simplicity-performance.md` before adding a new
-mandatory subsystem or expanding product ownership. Read
-`design/deployment-and-adoption.md` before changing Linux host requirements,
-node onboarding, hardware/provider integration, scheduler coexistence,
-resource handoff, or datacenter deployment behavior.
+## Context load map
 
-## Implementation order
+| Task | Read |
+|---|---|
+| Product/architecture/scope | centralized `spec.md` |
+| Current implementation | centralized `STATUS.md`, then code/tests |
+| Roadmap/priorities | centralized `PLAN.md` |
+| Durable rationale | centralized `DECISIONS.md` |
+| Resource/lease kernel semantics | centralized `design/kernel-primitives.md` |
+| Fencing/recovery authority | centralized `design/lease-fencing.md` |
+| Scope/complexity/performance expansion | centralized `design/scope-simplicity-performance.md` |
+| Linux/datacenter/coexistence/handoff | centralized `design/deployment-and-adoption.md` |
+| Device/provider enforcement | centralized `design/device-enforcement.md` |
+| License claims | centralized `design/LICENSE_BOUNDARY.md` |
 
-The proof foundation exists. Follow the active centralized `PLAN.md`, currently:
+Do not load `archive/` during ordinary work.
+
+## Current implementation order
+
+Follow centralized `PLAN.md`. Current sequence:
 
 1. production-safe controller/agent restart reconciliation;
 2. real accelerator discovery/attachment/workload proof;
-3. mixed long-running + batch + distributed workload evidence;
-4. scale/overhead/simplicity baselines;
+3. mixed long-running + batch + distributed + accelerator workload proof;
+4. scale/overhead/utilization baselines;
 5. optimize only measured limits;
-6. stabilize external schemas, deployment identity/security, packaging, and
-   pilots.
+6. stabilize schemas, deployment identity/security, install/diagnostics, then pilot.
 
-Do not add long-term architecture features merely because they appear in the
-full design. Do not recreate Postgres, NATS, ConnectRPC, model, endpoint,
-replica, GPU-telemetry, service-mesh, storage-engine, or bare-metal provisioning
-surfaces without a measured or named workload requirement.
+## Architecture guardrails
 
-## Deployment and authority
-
-Linux is the current host substrate. Reuse cgroups, namespaces, eBPF, OCI, KVM,
-CDI/VFIO/SR-IOV, vendor drivers, networking, and storage systems rather than
-replacing them.
-
-Machine provisioning is not currently Archon's responsibility. A machine joins
-when a prepared Linux environment starts an Archon agent and registers the
-capabilities it can enforce.
-
-A schedulable exclusive resource has one unambiguous authority at a time. Do
-not implement a path where Archon and Kubernetes/Slurm/Flux/Nomad independently
-believe they own the same resource. Coexistence requires disjoint resource sets
-or explicit parent/delegated allocations. Handoff requires drain/revoke,
-confirmed binding close/fence, then transfer of authority.
-
-See `docs/deployment.md` for the repository-local implementation summary; the
-centralized `design/deployment-and-adoption.md` is authoritative.
+- Keep the resource/workload model broad and Archon's ownership boundary narrow.
+- A schedulable exclusive resource has one unambiguous authority at a time.
+- Reuse Linux cgroups/namespaces/eBPF, OCI/KVM, CDI/VFIO/SR-IOV, vendor drivers, networking, and storage systems unless evidence requires replacement.
+- Machine provisioning is not currently an Archon responsibility.
+- Kubernetes, Slurm, Flux, Ray, MPI, and similar systems are integrations, bounded nested workloads, or outer authorities during explicitly delegated evaluation—not competing owners of the same exclusive resource.
+- Unsupported enforcement must fail explicitly; never silently weaken an accepted resource/isolation contract.
+- Do not add mandatory infrastructure because an incumbent uses it.
+- Do not scaffold speculative long-term components or recreate deleted Go model/endpoint/replica/Postgres/NATS/ConnectRPC surfaces.
+- Performance, utilization, and simplicity advantages require matched repeatable evidence.
 
 ## Invariants
 
 - Exclusive leases never overlap.
-- Older binding fences and agent sessions are rejected at resource endpoints.
-- Provider bindings enforce leases at resource endpoints.
-- Partial preparation reaches an active lease or an explicit failure.
-- One Cluster owns ordinary allocation; wider/global policy delegates bounded
-  capacity rather than sharing ambiguous authority.
-- A resource is not handed to another scheduler/authority until Archon bindings
-  are closed or fenced.
-- Telemetry is not authoritative allocation state.
-- Simulator and production share the same pure decision logic where applicable.
-- Unsupported enforcement is explicit; do not silently weaken an accepted
-  resource or isolation contract.
+- Stale binding fences and agent sessions are rejected at enforcement boundaries.
+- Partial preparation reaches active ownership or explicit failure.
+- Resource reuse occurs only after prior bindings are closed/fenced.
+- Telemetry cannot grant resource authority.
+- Simulator and production share pure resource-decision logic where applicable.
+- Small deployments do not inherit unnecessary datacenter complexity.
 
-## Load map
+## Repository documentation boundary
 
-| Trigger | Read |
-|---|---|
-| Current work | centralized `brief.md`, then `STATUS.md` if needed |
-| Product contract | centralized `spec.md` |
-| Architecture | centralized `DESIGN.md`, then `design/DISTRIBUTED_RESOURCE_OS.md` if needed |
-| Scope / complexity / performance | centralized `design/scope-simplicity-performance.md` |
-| Deployment / Linux / datacenter integration | centralized `design/deployment-and-adoption.md` and local `docs/deployment.md` |
-| Kernel design | centralized `design/kernel-primitives.md` |
-| Initial kernel history | centralized `design/mvp-scope.md` |
-| Rationale | centralized `DECISIONS.md` |
-| Implementation stages | centralized `PLAN.md` |
-| License claims | centralized `design/LICENSE_BOUNDARY.md` |
+Keep this repository's docs tied to executable behavior: build/test instructions, current CLI/API/wire behavior, supported host prerequisites, installation, troubleshooting, and version compatibility.
 
-Planned public license: AGPL-3.0-or-later core; Apache-2.0 schemas, SDKs, and
-provider/extension interfaces. Do not claim third-party or generated-artifact
-licenses without checking notices.
+Future product strategy, architecture rationale, deployment/adoption strategy, and roadmap live only in centralized context. Link rather than copy.
 
 ## Verification
 
-- Docs: resolve links in changed files; `git diff --check`.
-- Rust: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
-  and `cargo run -p archon-sim`.
-- Use the simulator for distributed ownership/failure invariants and live Linux
-  integration tests for enforcement, process/device behavior, and timing.
-- Do not invent a second implementation stack.
+```text
+cargo fmt --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p archon-sim
+```
+
+Use the simulator for distributed ownership/failure invariants and live Linux integration tests for enforcement, process/device behavior, and timing-sensitive proof.
