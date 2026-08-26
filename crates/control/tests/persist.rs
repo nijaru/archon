@@ -82,14 +82,17 @@ fn replay_reproduces_cluster_state_exactly() {
 }
 
 #[test]
-fn recovery_revokes_live_leases_without_reexecution() {
+fn restart_recovery_revokes_unprovable_work_through_reconciliation() {
     let path = temp_log("recover");
     let mut service = logged_service(&path);
     submit_sleep(&mut service, 1, 3_600);
     let lease = LeaseId::from_u64(1);
     assert!(service.is_running(lease));
 
-    // A restart replays the log into a fresh agent that holds no processes.
+    // A restart replays the log into a fresh controller whose new local
+    // agent holds no processes: reconciliation must prove ownership against
+    // the endpoint, fail it as unprovable, and fence through the protocol —
+    // not blanket-revoke at boot.
     let commands = archon_control::log::CommandLog::read(&path).expect("read log");
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
@@ -98,9 +101,28 @@ fn recovery_revokes_live_leases_without_reexecution() {
         LeaseState::Active,
         "replay alone restores the pre-crash state"
     );
-    let revoked = recovered.revoke_live_leases().expect("revoke");
-    assert_eq!(revoked, 1);
-    assert_eq!(recovered.cluster.leases[&lease].state, LeaseState::Revoked);
+    assert_eq!(recovered.live_lease_count(), 1);
+    recovered
+        .register_local(None)
+        .expect("register local agent");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline
+        && !matches!(
+            recovered.cluster.leases.get(&lease).map(|l| l.state),
+            Some(LeaseState::Revoked | LeaseState::Failed)
+        )
+    {
+        let _ = recovered.drive(Duration::from_millis(20));
+    }
+    assert_ne!(
+        recovered.cluster.leases[&lease].state,
+        LeaseState::Active,
+        "unprovable work must not survive a restart"
+    );
+    assert!(
+        !recovered.cluster.occupies(lease),
+        "claims free only after every binding fenced"
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -180,6 +202,20 @@ fn snapshot_compaction_preserves_state_across_restarts() {
     drop(stream);
     let link2 = archon_control::server::AgentLink::Local { cgroup_root: None };
     let mut plane2 = ControlPlane::boot(link2, log.clone(), 0).expect("reboot");
+    // The fresh local agent holds no processes: reconciliation proves the
+    // live workload gone, revokes its lease, and fences its bindings.
+    let settled = wait_until(Duration::from_secs(5), || {
+        plane2.advance();
+        let response = plane2.handle(ClientRequest::Status);
+        let ServerResponse::Status { leases, .. } = response else {
+            return false;
+        };
+        leases
+            .iter()
+            .find(|l| l.id == 2)
+            .is_some_and(|survivor| survivor.state != "Active")
+    });
+    assert!(settled, "restart reconciliation must settle the live lease");
     let status = plane2.handle(ClientRequest::Status);
     let ServerResponse::Status { leases, .. } = status else {
         panic!("expected Status");
@@ -187,10 +223,10 @@ fn snapshot_compaction_preserves_state_across_restarts() {
     assert_eq!(leases.len(), 2, "both leases survive compaction");
     let revoked = leases.iter().find(|l| l.id == 1).expect("lease 1");
     assert_eq!(revoked.state, "Revoked");
-    // Recovery policy: a restarted controller revokes live work rather
-    // than re-executing it — both leases come back Revoked.
+    // Recovery policy: work is preserved only when provably current; the
+    // fresh local agent cannot prove it, so the survivor is torn down.
     let survivor = leases.iter().find(|l| l.id == 2).expect("lease 2");
-    assert_eq!(survivor.state, "Revoked");
+    assert_ne!(survivor.state, "Active");
 
     // The restored controller still operates: fresh work places normally.
     let response = plane2.handle(ClientRequest::Submit {

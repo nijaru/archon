@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use archon_kernel::{
     Allocation, BindingId, Cluster, Command, Digest, Effect, Endpoint, EndpointOp, Error, LeaseId,
@@ -159,6 +159,17 @@ impl World {
             .push(TraceEvent::RestartAgent { machine, session });
         self.apply(Command::SetAgentSession { machine, session })?;
         Ok(session)
+    }
+
+    /// Controller crash and recovery: a fresh authority rebuilds the identical
+    /// Cluster state machine from the committed trace while Agents and provider
+    /// endpoints keep enforcing their last accepted generations.
+    /// Re-registration then drives [`World::reconcile`], which adopts work whose
+    /// Binding generation is provably still enforced and fences the rest.
+    pub fn restart_controller(&mut self) -> Result<(), Error> {
+        let cluster = self.replay_trace()?;
+        self.cluster = cluster;
+        Ok(())
     }
 
     /// Remove an admitted request from the queue only after its lease opens
@@ -530,6 +541,9 @@ impl World {
         }
         agent.epoch = epoch;
         agent.session = session;
+        // Leases already failed during this reconciliation pass; a second
+        // unprovable sibling binding only needs its Fence, not a re-fail.
+        let mut failed_leases = BTreeSet::new();
         for binding_id in bindings {
             let Some(binding) = self.cluster.bindings.get(&binding_id).cloned() else {
                 continue;
@@ -585,6 +599,17 @@ impl World {
                 binding.state,
                 archon_kernel::BindingState::Preparing | archon_kernel::BindingState::Active
             ) {
+                if lease_live && failed_leases.insert(binding.lease) {
+                    // The generation could not be proven at the endpoint;
+                    // authority ends before anything may reuse the claims.
+                    // FailLease emits Fence effects for every open Binding of
+                    // the lease, including this one.
+                    self.apply(Command::FailLease {
+                        lease: binding.lease,
+                        reason: "reconciliation could not prove the binding".into(),
+                    })?;
+                    continue;
+                }
                 self.pending.push_back(Effect::Fence {
                     binding: binding_id,
                     node: binding.node,

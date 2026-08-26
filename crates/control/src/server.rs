@@ -117,11 +117,13 @@ impl ControlPlane {
         let replayed = commands.len();
         service.replay(commands)?;
 
-        // Recovery policy: live leases do not survive a controller restart.
-        // A fresh controller holds no processes, so work is revoked, never
-        // silently re-executed.
+        // Recovery policy: replay restores authoritative state, but ownership
+        // of live work is not assumed. Each agent re-registers with a fresh
+        // monotonic session; registration queries the machine's actual
+        // endpoint state and adopts only provably-current bindings, fencing
+        // or revoking everything else before its claims can be reused.
         service.set_command_sink(Some(Self::make_sink(&log_path, self_counter.clone())));
-        let recovered = service.revoke_live_leases()?;
+        let live = service.live_lease_count();
 
         // Register this process's own execution path (local dev or the
         // legacy connect-out agent) unless first boot already did; dial-in
@@ -146,7 +148,7 @@ impl ControlPlane {
             .max()
             .unwrap_or(1);
         eprintln!(
-            "archon: {}boot, replayed {replayed} commands, revoked {recovered} live leases",
+            "archon: {}boot, replayed {replayed} commands, {live} live leases await agent reconciliation",
             if restored {
                 "snapshot "
             } else if first_boot {
@@ -421,6 +423,9 @@ impl ControlPlane {
         request: crate::api::ClientRequest,
     ) -> crate::api::ServerResponse {
         self.service.tick().ok();
+        // Drain completed agent answers (recovery proofs, activations) so
+        // single-threaded callers observe settled state without serve().
+        let _ = self.service.drive(std::time::Duration::ZERO);
         self.handle(request)
     }
 

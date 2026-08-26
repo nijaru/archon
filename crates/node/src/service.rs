@@ -121,6 +121,17 @@ pub struct NodeService {
     pending: VecDeque<Effect>,
     next_session: u64,
     next_binding: u64,
+    /// First session value this controller process may issue. Recorded
+    /// sessions below this floor belong to a previous controller process:
+    /// a machine returning with such a session reconciles against real
+    /// endpoint state instead of blindly re-driving work.
+    session_floor: u64,
+    /// Machines re-registered after a controller restart whose live
+    /// Bindings are still being proven against actual endpoint state.
+    /// Each entry lists the Active Leases awaiting their proof query.
+    recovering_machines: BTreeMap<NodeId, BTreeSet<LeaseId>>,
+    /// Active Leases whose recovery Status query is outstanding.
+    recovering_leases: BTreeSet<LeaseId>,
     /// Observes every command applied to the cluster; the control plane
     /// persists them here.
     command_sink: Option<CommandSink>,
@@ -290,11 +301,24 @@ impl NodeService {
         };
         self.agents
             .insert(machine, spawn_worker(executor, self.inbox.clone()));
-        let session = self.next_session;
-        self.next_session += 1;
-        if !new_machine {
-            // A known machine came back: clear any quarantine and health
-            // marks before reconciliation re-drives its live work.
+        // A recorded session older than this controller process means the
+        // machine is returning after a controller restart: its live work
+        // must be adopted-or-fenced from real endpoint state, never blindly
+        // re-executed. Mid-flight re-registrations (fresh agent process)
+        // keep the re-drive path: the new agent holds nothing to adopt.
+        let floor = self.session_floor();
+        let prior_session = self.cluster.sessions.get(&machine).copied();
+        let recovering = !new_machine && prior_session.is_some_and(|prior| prior < floor);
+        if recovering {
+            self.recovering_machines.insert(machine, BTreeSet::new());
+            eprintln!(
+                "archon: machine {machine} returned after restart; reconciling live bindings"
+            );
+        } else if !new_machine {
+            // A known machine came back mid-flight: clear any quarantine
+            // and health marks before reconciliation re-drives its live
+            // work. Recovery defers these marks until its bindings resolve,
+            // because quarantine cannot lift while open bindings exist.
             self.commit(Command::UnquarantineNode { node: machine })
                 .ok();
             self.commit(Command::SetNodeHealth {
@@ -302,9 +326,37 @@ impl NodeService {
                 health: "healthy".into(),
             })?;
         }
+        let session = self.next_session;
+        self.next_session += 1;
         self.commit(Command::SetAgentSession { machine, session })?;
         self.pump()?;
+        if recovering
+            && self
+                .recovering_machines
+                .get(&machine)
+                .is_some_and(BTreeSet::is_empty)
+        {
+            // No live bindings needed proof: restore health marks now.
+            self.finish_machine_recovery(machine);
+        }
         Ok(machine)
+    }
+
+    /// Restore a reconciled machine's health marks, deferred during
+    /// recovery because quarantine cannot lift while open bindings exist.
+    /// A rejected un-quarantine leaves the machine unavailable — the safe
+    /// direction when some Binding could not be resolved.
+    fn finish_machine_recovery(&mut self, machine: NodeId) {
+        self.recovering_machines.remove(&machine);
+        if let Err(err) = self.commit(Command::UnquarantineNode { node: machine }) {
+            eprintln!("archon: machine {machine} stays quarantined after recovery: {err}");
+        }
+        if let Err(err) = self.commit(Command::SetNodeHealth {
+            node: machine,
+            health: "healthy".into(),
+        }) {
+            eprintln!("archon: failed to restore health of machine {machine}: {err}");
+        }
     }
 
     /// Re-align a known machine's device nodes with its current declaration.
@@ -400,9 +452,22 @@ impl NodeService {
             pending: VecDeque::new(),
             next_session: 1,
             next_binding: 1,
+            session_floor: 0,
+            recovering_machines: BTreeMap::new(),
+            recovering_leases: BTreeSet::new(),
             command_sink: None,
             history: Vec::new(),
         }
+    }
+
+    /// Lazily capture the first session this process can hand out: any
+    /// machine still carrying a lower session was registered by a previous
+    /// controller generation.
+    fn session_floor(&mut self) -> u64 {
+        if self.session_floor == 0 {
+            self.session_floor = self.next_session;
+        }
+        self.session_floor
     }
 
     /// Persist every command applied to the cluster (kernel commands and
@@ -436,6 +501,11 @@ impl NodeService {
             }
             self.commit(command)?;
         }
+        // Replayed commands re-emit their historical effects (stale
+        // Prepares, Activates, Reconciles). They were delivered once,
+        // before the restart; delivering them again would re-execute or
+        // duplicate work. Recovery regenerates exactly what is live.
+        self.pending.clear();
         Ok(())
     }
 
@@ -547,30 +617,14 @@ impl NodeService {
         self.queue.len()
     }
 
-    /// Revoke every live lease regardless of deadline. Recovery uses this:
-    /// a fresh agent holds no processes, so in-flight work cannot survive a
-    /// restart and must be revoked, not re-executed.
-    pub fn revoke_live_leases(&mut self) -> Result<usize, Error> {
-        let live: Vec<LeaseId> = self
-            .cluster
+    /// Live leases restored by replay/snapshot that await agent
+    /// reconciliation after this controller's boot.
+    pub fn live_lease_count(&self) -> usize {
+        self.cluster
             .leases
             .values()
-            .filter(|lease| {
-                matches!(
-                    lease.state,
-                    archon_kernel::LeaseState::Preparing
-                        | archon_kernel::LeaseState::Active
-                        | archon_kernel::LeaseState::Reserved
-                )
-            })
-            .map(|lease| lease.id)
-            .collect();
-        let count = live.len();
-        for lease in &live {
-            self.commit(Command::RevokeLease { lease: *lease })?;
-        }
-        self.pump()?;
-        Ok(count)
+            .filter(|lease| self.cluster.occupies(lease.id))
+            .count()
     }
 
     /// Probe every registered agent's liveness without blocking: each
@@ -999,13 +1053,18 @@ impl NodeService {
                         running, exit_code, ..
                     }),
                 ) => {
-                    self.running.insert(*lease, running);
-                    if let Some(code) = exit_code {
-                        self.commit_lenient(Command::CompleteLease {
-                            lease: *lease,
-                            exit_code: code,
-                        });
-                        finished.push(*lease);
+                    let lease = *lease;
+                    if self.recovering_leases.remove(&lease) {
+                        self.resolve_recovered_lease(lease, running, exit_code, &mut finished);
+                    } else {
+                        self.running.insert(lease, running);
+                        if let Some(code) = exit_code {
+                            self.commit_lenient(Command::CompleteLease {
+                                lease,
+                                exit_code: code,
+                            });
+                            finished.push(lease);
+                        }
                     }
                 }
                 (Tag::Status { .. }, Ok(other)) => {
@@ -1142,6 +1201,110 @@ impl NodeService {
         }
     }
 
+    /// Controller-restart reconciliation for one re-registered machine:
+    /// decide each live Binding from actual endpoint state rather than
+    /// assuming it. Active Leases get a Status proof query (answered in
+    /// [`NodeService::absorb`]); Preparing Leases fail — their prepare
+    /// deadline passed and partial preparation is unprovable; terminal
+    /// Leases' leftover open Bindings fence immediately so occupied claims
+    /// from before the restart become reusable only after fencing lands.
+    fn route_recovery(
+        &mut self,
+        machine: NodeId,
+        bindings: Vec<BindingId>,
+    ) -> Result<Vec<Command>, Error> {
+        let mut commands = Vec::new();
+        for binding in bindings {
+            let Some(record) = self.cluster.bindings.get(&binding) else {
+                continue;
+            };
+            let Some(lease_record) = self.cluster.leases.get(&record.lease) else {
+                continue;
+            };
+            let (lease_id, state) = (record.lease, lease_record.state);
+            match state {
+                archon_kernel::LeaseState::Active => {
+                    if self.recovering_leases.insert(lease_id)
+                        && let Some(pending) = self.recovering_machines.get_mut(&machine)
+                    {
+                        pending.insert(lease_id);
+                    }
+                    self.dispatch(
+                        machine,
+                        Tag::Status { lease: lease_id },
+                        AgentRequest::Status {
+                            lease: lease_id.as_u64(),
+                        },
+                    );
+                }
+                archon_kernel::LeaseState::Preparing => commands.push(Command::FailLease {
+                    lease: lease_id,
+                    reason: "restart left preparation unproven".into(),
+                }),
+                _ => commands.push(Command::FenceBinding { binding }),
+            }
+        }
+        Ok(commands)
+    }
+
+    /// Resolve one lease whose ownership was unproven at controller restart:
+    /// running work is adopted onto the agent's new session (never
+    /// re-executed), a natural exit completes the lease normally, and
+    /// anything else is revoked so its bindings fence before reuse.
+    fn resolve_recovered_lease(
+        &mut self,
+        lease: LeaseId,
+        running: bool,
+        exit_code: Option<i32>,
+        finished: &mut Vec<LeaseId>,
+    ) {
+        if running {
+            let session = self
+                .lease_machine(lease)
+                .and_then(|machine| self.cluster.sessions.get(&machine).copied());
+            if let Some(session) = session {
+                for binding in self.cluster.bindings_for(lease) {
+                    if let Err(err) = self.commit(Command::RebindSession { binding, session }) {
+                        eprintln!(
+                            "archon: adopting lease {lease} failed on binding {binding}: {err}"
+                        );
+                        return;
+                    }
+                }
+                self.running.insert(lease, true);
+                eprintln!("archon: recovered lease {lease}: adopted from its agent");
+            }
+        } else if let Some(code) = exit_code {
+            self.commit_lenient(Command::CompleteLease {
+                lease,
+                exit_code: code,
+            });
+            finished.push(lease);
+            eprintln!("archon: recovered lease {lease}: workload exited while detached");
+        } else {
+            self.commit_lenient(Command::RevokeLease { lease });
+            finished.push(lease);
+            eprintln!("archon: recovered lease {lease}: ownership unprovable, revoking");
+        }
+        self.settle_machine_recovery(lease);
+    }
+
+    /// Drop `lease` from its machine's recovery set; when every recovering
+    /// lease on that machine resolved, restore its deferred health marks.
+    fn settle_machine_recovery(&mut self, lease: LeaseId) {
+        let Some(machine) = self.lease_machine(lease) else {
+            return;
+        };
+        let mut done = false;
+        if let Some(pending) = self.recovering_machines.get_mut(&machine) {
+            pending.remove(&lease);
+            done = pending.is_empty();
+        }
+        if done {
+            self.finish_machine_recovery(machine);
+        }
+    }
+
     /// The controller side of the seam: route one kernel Effect toward the
     /// agent that owns its node without waiting for the answer. Agent acks
     /// come back through [`NodeService::absorb`] as Record commands.
@@ -1153,9 +1316,16 @@ impl NodeService {
         // spawn the work again on the new agent process. Revoked or expired
         // leases stay dead.
         if let Effect::Reconcile {
-            bindings, session, ..
+            machine,
+            bindings,
+            session,
+            ..
         } = &effect
         {
+            let machine = *machine;
+            if self.recovering_machines.contains_key(&machine) {
+                return self.route_recovery(machine, bindings.clone());
+            }
             let mut commands: Vec<Command> = Vec::new();
             for binding in bindings {
                 let active = self
