@@ -267,11 +267,22 @@ fn load_program(prog: &[Insn]) -> io::Result<i64> {
     attr.write_u32(4, prog.len() as u32); // insn_cnt
     attr.write_u64(8, insns.as_ptr() as usize as u64); // insns
     attr.write_u64(16, license.as_ptr() as usize as u64); // license
+    attr.write_u32(68, BPF_CGROUP_DEVICE as u32); // expected_attach_type
     match bpf_syscall(BPF_PROG_LOAD, &attr) {
         Ok(fd) => Ok(fd),
-        Err(err) => Err(io::Error::other(format!(
-            "bpf(BPF_PROG_LOAD, cgroup_device): {err}; device enforcement needs CAP_BPF/CAP_SYS_ADMIN"
-        ))),
+        Err(_) => {
+            // Retry with the verifier log so rejections carry diagnostics.
+            let mut log = vec![0u8; 64 * 1024];
+            attr.write_u32(24, 1); // log_level
+            attr.write_u32(28, log.len() as u32); // log_size
+            attr.write_u64(32, log.as_mut_ptr() as usize as u64); // log_buf
+            let err = bpf_syscall(BPF_PROG_LOAD, &attr).unwrap_err();
+            let detail = String::from_utf8_lossy(&log);
+            Err(io::Error::other(format!(
+                "bpf(BPF_PROG_LOAD, cgroup_device): {err}: {}",
+                detail.trim_end_matches('\0').trim()
+            )))
+        }
     }
 }
 
@@ -540,5 +551,22 @@ mod tests {
         assert_eq!((packed >> 12) & 0xf, prog[0].src_reg as u64);
         assert_eq!((packed >> 16) & 0xffff, prog[0].off as u16 as u64);
         assert_eq!(packed >> 32, prog[0].imm as u32 as u64);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod live_tests {
+    use super::*;
+
+    #[test]
+    fn loads_minimal_program_when_privileged() {
+        let fd = load_program(&compile(&[]));
+        match fd {
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                eprintln!("skipping: bpf() requires privileges here");
+            }
+            Err(err) => panic!("minimal deny program failed to load: {err}"),
+        }
     }
 }

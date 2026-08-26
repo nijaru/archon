@@ -14,30 +14,35 @@ use archon_node::protocol::LeaseLimits;
 use archon_node::runtime::{ProcessRuntime, WorkStatus};
 use archon_node::service::NodeService;
 
-const ROOT: &str = "/sys/fs/cgroup/archon-test";
+/// Per-test cgroup roots: tests run in parallel threads and must not
+/// trample each other's groups.
+fn root(name: &str) -> String {
+    format!("/sys/fs/cgroup/archon-test-{name}")
+}
 
 /// Skip unless this process may create cgroups (root or a delegated
 /// subtree). CI runners and developer laptops skip; enforcement hosts run.
-fn require_cgroup_writable() -> bool {
-    match fs::create_dir(ROOT) {
+fn require_cgroup_writable(name: &str) -> bool {
+    let root = root(name);
+    match fs::create_dir(&root) {
         Ok(()) => {
-            let _ = fs::remove_dir(ROOT);
+            let _ = fs::remove_dir(&root);
             true
         }
         Err(err) => {
-            eprintln!("skipping: cannot create cgroups at {ROOT}: {err}");
+            eprintln!("skipping: cannot create cgroups at {root}: {err}");
             false
         }
     }
 }
 
-fn cleanup_root() {
-    if let Ok(entries) = fs::read_dir(ROOT) {
+fn cleanup_root(root: &str) {
+    if let Ok(entries) = fs::read_dir(root) {
         for entry in entries.flatten() {
             let _ = fs::remove_dir(entry.path());
         }
     }
-    let _ = fs::remove_dir(ROOT);
+    let _ = fs::remove_dir(root);
 }
 
 fn request(id: u64, command: Vec<String>, memory_mib: u64) -> Request {
@@ -84,11 +89,12 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 
 #[test]
 fn first_instruction_runs_inside_the_lease_cgroup() {
-    if !require_cgroup_writable() {
+    let root = root("first-instruction");
+    if !require_cgroup_writable("first-instruction") {
         return;
     }
-    cleanup_root();
-    let mut runtime = ProcessRuntime::new().with_cgroup_root(ROOT.into());
+    cleanup_root(&root);
+    let mut runtime = ProcessRuntime::new().with_cgroup_root(root.clone());
     let lease = LeaseId::from_u64(1);
     runtime
         .activate(
@@ -124,16 +130,17 @@ fn first_instruction_runs_inside_the_lease_cgroup() {
         "the first command must see its lease cgroup"
     );
     runtime.terminate(lease).unwrap();
-    cleanup_root();
+    cleanup_root(&root);
 }
 
 #[test]
 fn failed_launch_removes_the_lease_cgroup() {
-    if !require_cgroup_writable() {
+    let root = root("failed-launch");
+    if !require_cgroup_writable("failed-launch") {
         return;
     }
-    cleanup_root();
-    let mut runtime = ProcessRuntime::new().with_cgroup_root(ROOT.into());
+    cleanup_root(&root);
+    let mut runtime = ProcessRuntime::new().with_cgroup_root(root.clone());
     let lease = LeaseId::from_u64(1);
     let error = runtime.activate(
         lease,
@@ -145,17 +152,18 @@ fn failed_launch_removes_the_lease_cgroup() {
         &[],
     );
     assert!(error.is_err());
-    assert!(!fs::exists(format!("{ROOT}/lease-{lease}")).unwrap());
-    cleanup_root();
+    assert!(!fs::exists(format!("{root}/lease-{lease}")).unwrap());
+    cleanup_root(&root);
 }
 
 #[test]
 fn lease_claims_become_kernel_limits() {
-    if !require_cgroup_writable() {
+    let root = root("limits");
+    if !require_cgroup_writable("limits") {
         return;
     }
-    cleanup_root();
-    let mut service = NodeService::local(Some(ROOT.into()));
+    cleanup_root(&root);
+    let mut service = NodeService::local(Some(root.clone()));
     service.submit(
         request(1, vec!["sleep".into(), "30".into()], 64),
         OwnerId::from_u64(1),
@@ -164,8 +172,21 @@ fn lease_claims_become_kernel_limits() {
     service.admit_one().unwrap();
     let lease = LeaseId::from_u64(1);
 
-    let group = format!("{ROOT}/lease-{lease}");
-    let cpu_max = fs::read_to_string(format!("{group}/cpu.max")).unwrap();
+    let group = format!("{root}/lease-{lease}");
+    // Activation is asynchronous: drive the service until the group
+    // materializes (the same pumping is_running performs).
+    let group_file = format!("{group}/cpu.max");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !fs::exists(&group_file).unwrap_or(false) {
+        let _ = service.drive(Duration::from_millis(50));
+    }
+    assert!(
+        fs::exists(&group_file).unwrap_or(false),
+        "lease group must be created during activation; lease state = {:?}, root exists = {}",
+        service.cluster.leases.get(&lease).map(|l| l.state),
+        fs::exists(&root).unwrap_or(false),
+    );
+    let cpu_max = fs::read_to_string(&group_file).unwrap();
     assert_eq!(cpu_max.trim(), "100000 100000", "1 cpu claim = one core");
     let memory_max = fs::read_to_string(format!("{group}/memory.max")).unwrap();
     assert_eq!(memory_max.trim(), (64 * (1 << 20)).to_string());
@@ -175,16 +196,17 @@ fn lease_claims_become_kernel_limits() {
     service.revoke(lease).unwrap();
     assert!(!service.is_running(lease), "revoke must kill the group");
     assert!(!fs::exists(&group).unwrap(), "group must be removed");
-    cleanup_root();
+    cleanup_root(&root);
 }
 
 #[test]
 fn memory_limit_kills_an_overallocating_process() {
-    if !require_cgroup_writable() {
+    let root = root("oom");
+    if !require_cgroup_writable("oom") {
         return;
     }
-    cleanup_root();
-    let mut service = NodeService::local(Some(ROOT.into()));
+    cleanup_root(&root);
+    let mut service = NodeService::local(Some(root.clone()));
     // tail /dev/zero allocates without bound; the 16 MiB limit must OOM it.
     service.submit(
         request(1, vec!["tail".into(), "/dev/zero".into()], 16),
@@ -196,7 +218,7 @@ fn memory_limit_kills_an_overallocating_process() {
 
     let died = wait_until(Duration::from_secs(10), || !service.is_running(lease));
     assert!(died, "memory.max must OOM-kill the runaway process");
-    let events = fs::read_to_string(format!("{ROOT}/lease-{lease}/memory.events")).unwrap();
+    let events = fs::read_to_string(format!("{root}/lease-{lease}/memory.events")).unwrap();
     let oom: usize = events
         .lines()
         .find_map(|line| {
@@ -207,16 +229,17 @@ fn memory_limit_kills_an_overallocating_process() {
     assert!(oom >= 1, "kernel must record an oom_kill, got {events}");
 
     service.revoke(lease).unwrap();
-    cleanup_root();
+    cleanup_root(&root);
 }
 
 #[test]
 fn claimed_devices_are_enforced_by_cgroup_device_filter() {
-    if !require_cgroup_writable() {
+    let root = root("devices");
+    if !require_cgroup_writable("devices") {
         return;
     }
-    cleanup_root();
-    let mut runtime = ProcessRuntime::new().with_cgroup_root(ROOT.into());
+    cleanup_root(&root);
+    let mut runtime = ProcessRuntime::new().with_cgroup_root(root.clone());
     let lease = LeaseId::from_u64(2);
     let devices = vec![archon_node::protocol::DeviceAccess {
         id: "gpu0".into(),
