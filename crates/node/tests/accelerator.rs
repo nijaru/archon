@@ -121,7 +121,10 @@ fn auto_discovers_and_runs_a_real_nvidia_device_lease() {
     );
 
     service.revoke(lease).expect("revoke");
-    assert!(wait_until(Duration::from_secs(2), || !service.is_running(lease)));
+    assert!(wait_until(Duration::from_secs(2), || {
+        let _ = service.drive(Duration::from_millis(20));
+        !service.cluster.occupies(lease)
+    }));
     assert_eq!(
         service.admit_one().expect("admit queued competitor"),
         Some(RequestId::from_u64(2)),
