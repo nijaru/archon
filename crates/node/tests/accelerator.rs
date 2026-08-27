@@ -17,11 +17,18 @@ fn gpu_request() -> Request {
     Request {
         id: RequestId::from_u64(1),
         class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Gpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
+        needs: vec![
+            Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            },
+            Need {
+                kind: ResourceClass::Gpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            },
+        ],
         topology: vec![],
         preferences: vec![],
         data: vec![],
@@ -61,7 +68,8 @@ fn auto_discovers_and_runs_a_real_nvidia_device_lease() {
         return;
     }
 
-    let mut service = NodeService::local(None);
+    let cgroup_root = std::env::var("ARCHON_CGROUP_ROOT");
+    let mut service = NodeService::local(cgroup_root.ok());
     let gpus = service.cluster.graph.nodes_of_class(ResourceClass::Gpu);
     if gpus.is_empty() {
         eprintln!("skipping: nvidia-smi reported no GPUs");
