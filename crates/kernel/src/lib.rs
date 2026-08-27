@@ -30,9 +30,9 @@ pub use preempt::preempt_victims;
 pub use select::select;
 pub use types::{
     Allocation, Attrs, Binding, BindingState, CapacityDimension, Claim, Edge, EdgeKind, Endpoint,
-    EndpointPhase, Filter, IdentifierError, Lease, LeaseState, Need, Node, PortPublish, Preference,
-    Quantity, Queued, Request, RequestClass, ResourceClass, StorageMount, TopologyConstraint,
-    TopologyRelation, qty, quantity_get,
+    EndpointPhase, Filter, IdentifierError, Lease, LeaseState, Need, Node, NodeState, PortPublish,
+    Preference, Quantity, Queued, Request, RequestClass, ResourceClass, StorageMount,
+    TopologyConstraint, TopologyRelation, qty, quantity_get,
 };
 
 impl Cluster {
@@ -41,20 +41,23 @@ impl Cluster {
     }
 
     pub fn allocate(&self, request: &Request) -> Result<Allocation, Error> {
-        select(&self.graph, &self.occupancy(), request, &self.quarantine)
+        let blocked = self.placement_blocked();
+        select(&self.graph, &self.occupancy(), request, &blocked)
     }
 
     pub fn admit(&self, queue: &[Queued]) -> Option<Admission> {
-        admit(&self.graph, &self.occupancy(), queue, &self.quarantine)
+        let blocked = self.placement_blocked();
+        admit(&self.graph, &self.occupancy(), queue, &blocked)
     }
 
     /// Budget-aware admission with per-owner, per-kind fair-share ceilings.
     /// Usage is always computed from this Cluster's own lease table.
     pub fn admit_fair(&self, queue: &[Queued], fair_share: &ClassUsage) -> Option<Admission> {
+        let blocked = self.placement_blocked();
         admit_fair(
             &self.graph,
             &self.occupancy(),
-            &self.quarantine,
+            &blocked,
             fair_share,
             queue,
             &self.leases,
@@ -64,10 +67,11 @@ impl Cluster {
     /// EASY-style backfill over the priority queue with per-owner, per-kind
     /// fair-share ceilings.
     pub fn admit_backfill(&self, queue: &[Queued], fair_share: &ClassUsage) -> Option<Admission> {
+        let blocked = self.placement_blocked();
         admit_backfill(
             &self.graph,
             &self.occupancy(),
-            &self.quarantine,
+            &blocked,
             fair_share,
             queue,
             &crate::admit::BackfillCtx {

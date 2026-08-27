@@ -212,6 +212,23 @@ impl ResourceClass {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum NodeState {
+    Joining,
+    Schedulable,
+    Draining,
+    Unavailable,
+    Quarantined,
+    Retired,
+}
+
+impl NodeState {
+    pub const fn is_schedulable(self) -> bool {
+        matches!(self, Self::Schedulable)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EdgeKind {
     Contains,
     Connected,

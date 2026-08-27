@@ -1,5 +1,5 @@
 use crate::ids::{BindingId, LeaseId, NodeId, OwnerId, ProviderId};
-use crate::types::{Allocation, Edge, Node};
+use crate::types::{Allocation, Edge, Node, NodeState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -107,6 +107,10 @@ pub enum Command {
     SetNodeHealth {
         node: NodeId,
         health: String,
+    },
+    SetNodeState {
+        node: NodeId,
+        state: NodeState,
     },
     RebindSession {
         binding: BindingId,

@@ -6,14 +6,8 @@ use crate::select::select;
 use crate::types::Request;
 
 pub fn preempt_victims(cluster: &Cluster, request: &Request) -> Option<Vec<LeaseId>> {
-    if select(
-        &cluster.graph,
-        &cluster.occupancy(),
-        request,
-        &cluster.quarantine,
-    )
-    .is_ok()
-    {
+    let blocked = cluster.placement_blocked();
+    if select(&cluster.graph, &cluster.occupancy(), request, &blocked).is_ok() {
         return Some(Vec::new());
     }
     let mut candidates: Vec<LeaseId> = cluster
@@ -42,7 +36,8 @@ pub fn preempt_victims(cluster: &Cluster, request: &Request) -> Option<Vec<Lease
             except.extend(cluster.descendants_postorder(*victim));
         }
         let occupancy = cluster.occupancy_except(&except);
-        if select(&cluster.graph, &occupancy, request, &cluster.quarantine).is_ok() {
+        let blocked = cluster.placement_blocked();
+        if select(&cluster.graph, &occupancy, request, &blocked).is_ok() {
             return Some(victims);
         }
     }

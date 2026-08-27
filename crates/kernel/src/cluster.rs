@@ -5,7 +5,7 @@ use crate::error::Error;
 use crate::graph::Graph;
 use crate::ids::{BindingId, LeaseId, NodeId};
 use crate::occupancy::{claim_fits, covers, occupancy_from_leases, resolve_claim, subtree_used};
-use crate::types::{Binding, BindingState, Lease, LeaseState, Quantity};
+use crate::types::{Binding, BindingState, Lease, LeaseState, NodeState, Quantity};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaseDigest {
@@ -42,7 +42,7 @@ pub struct Digest {
     pub bindings: BTreeMap<BindingId, BindingDigest>,
     pub sessions: BTreeMap<NodeId, u64>,
     pub last_fence: BTreeMap<(crate::ids::ProviderId, NodeId), u64>,
-    pub quarantine: BTreeSet<NodeId>,
+    pub node_states: BTreeMap<NodeId, NodeState>,
 }
 
 /// (De)hydrate a tuple-keyed map as a sequence of pairs.
@@ -95,7 +95,11 @@ pub struct Cluster {
         )
     )]
     pub last_fence: BTreeMap<(crate::ids::ProviderId, NodeId), u64>,
-    pub quarantine: BTreeSet<NodeId>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub node_states: BTreeMap<NodeId, NodeState>,
 }
 
 impl Default for Cluster {
@@ -110,7 +114,7 @@ impl Default for Cluster {
             bindings: BTreeMap::new(),
             sessions: BTreeMap::new(),
             last_fence: BTreeMap::new(),
-            quarantine: BTreeSet::new(),
+            node_states: BTreeMap::new(),
         }
     }
 }
@@ -126,6 +130,29 @@ impl Cluster {
 
     pub fn set_agreement(&mut self, agreed: bool) {
         self.agreed = agreed;
+    }
+
+    /// Returns the authoritative control state for a known node. Graph nodes
+    /// without an explicit entry use the proof-era default: schedulable.
+    pub fn node_state(&self, node: NodeId) -> Option<NodeState> {
+        self.graph.node(node).map(|_| {
+            self.node_states
+                .get(&node)
+                .copied()
+                .unwrap_or(NodeState::Schedulable)
+        })
+    }
+
+    pub(crate) fn placement_blocked(&self) -> BTreeSet<NodeId> {
+        self.graph
+            .nodes()
+            .filter(|node| {
+                !self
+                    .node_state(node.id)
+                    .is_some_and(NodeState::is_schedulable)
+            })
+            .map(|node| node.id)
+            .collect()
     }
 
     pub fn advance_epoch(&mut self) {
@@ -216,7 +243,7 @@ impl Cluster {
                 .collect(),
             sessions: self.sessions.clone(),
             last_fence: self.last_fence.clone(),
-            quarantine: self.quarantine.clone(),
+            node_states: self.node_states.clone(),
         }
     }
 
@@ -301,12 +328,12 @@ impl Cluster {
     }
 
     fn node_quarantined(&self, node: NodeId) -> bool {
-        self.quarantine.contains(&node)
-            || self
-                .graph
-                .ancestors(node)
-                .into_iter()
-                .any(|ancestor| self.quarantine.contains(&ancestor))
+        let blocked = |candidate: NodeId| {
+            self.node_states
+                .get(&candidate)
+                .is_some_and(|state| !state.is_schedulable())
+        };
+        blocked(node) || self.graph.ancestors(node).into_iter().any(blocked)
     }
 
     fn require_session(&self, node: NodeId, session: u64) -> Result<NodeId, Error> {
@@ -408,6 +435,7 @@ impl Cluster {
                 self.set_agent_session(*machine, *session)
             }
             Command::SetNodeHealth { node, health } => self.set_node_health(*node, health.clone()),
+            Command::SetNodeState { node, state } => self.set_node_state(*node, *state),
             Command::RebindSession { binding, session } => self.rebind_session(*binding, *session),
             Command::QuarantineNode { node } => self.quarantine_node(*node),
             Command::UnquarantineNode { node } => self.unquarantine_node(*node),
@@ -1303,6 +1331,53 @@ impl Cluster {
         Ok(())
     }
 
+    fn node_has_live_authority(&self, node: NodeId) -> bool {
+        let in_scope = |candidate: NodeId| {
+            candidate == node || self.graph.ancestors(candidate).contains(&node)
+        };
+        self.leases.values().any(|lease| {
+            self.occupies(lease.id)
+                && lease
+                    .allocation
+                    .claims
+                    .iter()
+                    .any(|claim| in_scope(claim.node))
+        }) || self
+            .bindings
+            .values()
+            .any(|binding| !binding.state.is_closed() && in_scope(binding.node))
+    }
+
+    fn set_node_state(&mut self, node: NodeId, state: NodeState) -> Result<Vec<Effect>, Error> {
+        if self.graph.node(node).is_none() {
+            return Err(Error::UnknownNode(node));
+        }
+        let current = self.node_state(node).expect("checked graph node");
+        if current == NodeState::Retired && state != NodeState::Retired {
+            return Err(Error::Invalid("retired resources require a new identity"));
+        }
+        if state == NodeState::Schedulable
+            && current != NodeState::Schedulable
+            && current != NodeState::Draining
+            && self.bindings.values().any(|binding| {
+                !binding.state.is_closed() && {
+                    binding.node == node || self.graph.ancestors(binding.node).contains(&node)
+                }
+            })
+        {
+            return Err(Error::UnquarantineBlocked { node });
+        }
+        if state == NodeState::Retired && self.node_has_live_authority(node) {
+            return Err(Error::ResourceBusy { node });
+        }
+        if state == NodeState::Schedulable {
+            self.node_states.remove(&node);
+        } else {
+            self.node_states.insert(node, state);
+        }
+        Ok(Vec::new())
+    }
+
     /// Health is scoring input, not authoritative ownership state: it changes
     /// node attrs without advancing Graph.revision, so in-flight Allocations
     /// are never stranded by a health update.
@@ -1359,28 +1434,17 @@ impl Cluster {
     }
 
     fn quarantine_node(&mut self, node: NodeId) -> Result<Vec<Effect>, Error> {
-        if self.graph.node(node).is_none() {
-            return Err(Error::UnknownNode(node));
-        }
-        self.quarantine.insert(node);
-        Ok(Vec::new())
+        self.set_node_state(node, NodeState::Quarantined)
     }
 
     fn unquarantine_node(&mut self, node: NodeId) -> Result<Vec<Effect>, Error> {
-        if !self.quarantine.contains(&node) {
+        if self.graph.node(node).is_none() {
+            return Err(Error::UnknownNode(node));
+        }
+        if self.node_state(node) != Some(NodeState::Quarantined) {
             return Ok(Vec::new());
         }
-        let blocked = self.bindings.values().any(|binding| {
-            !binding.state.is_closed()
-                && (binding.node == node
-                    || self.graph.machine_of(binding.node) == Some(node)
-                    || self.graph.ancestors(binding.node).contains(&node))
-        });
-        if blocked {
-            return Err(Error::UnquarantineBlocked { node });
-        }
-        self.quarantine.remove(&node);
-        Ok(Vec::new())
+        self.set_node_state(node, NodeState::Schedulable)
     }
 
     fn fence_effects(&self, lease: LeaseId) -> Vec<Effect> {

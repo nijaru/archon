@@ -82,6 +82,9 @@ pub enum Error {
     UnquarantineBlocked {
         node: NodeId,
     },
+    ResourceBusy {
+        node: NodeId,
+    },
     Refused {
         explanation: String,
     },
@@ -157,6 +160,7 @@ impl fmt::Display for Error {
             Self::UnquarantineBlocked { node } => {
                 write!(f, "cannot unquarantine {node} before fence ack")
             }
+            Self::ResourceBusy { node } => write!(f, "resource {node} still has live authority"),
             Self::Refused { explanation } => write!(f, "refused: {explanation}"),
             Self::Invalid(reason) => write!(f, "invalid command: {reason}"),
         }

@@ -1,5 +1,5 @@
 use archon_kernel::{
-    CapacityDimension, Error, LeaseId, Need, OwnerId, Request, RequestClass, RequestId,
+    CapacityDimension, Error, LeaseId, Need, NodeState, OwnerId, Request, RequestClass, RequestId,
     ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
@@ -74,7 +74,10 @@ fn failed_machine_quarantines_and_releases() {
     let machine = machine_of(&world, 1);
     let victims = world.fail_machine(machine).unwrap();
     assert_eq!(victims, vec![LeaseId::from_u64(1)]);
-    assert!(world.cluster.quarantine.contains(&machine));
+    assert_eq!(
+        world.cluster.node_state(machine),
+        Some(NodeState::Quarantined)
+    );
     // Occupancy persists while the machine is unreachable: no fence acks.
     world.deliver_all().unwrap();
     assert!(world.cluster.occupies(LeaseId::from_u64(1)));
@@ -99,7 +102,7 @@ fn failed_machine_quarantines_and_releases() {
             .graph
             .nodes_of_class(ResourceClass::Machine)
             .iter()
-            .all(|id| world.cluster.quarantine.contains(id))
+            .all(|id| world.cluster.node_state(*id) == Some(NodeState::Quarantined))
     );
     let err = world
         .place(
@@ -128,7 +131,10 @@ fn recovery_unquarantines_and_replaces() {
     assert!(!world.cluster.occupies(LeaseId::from_u64(1)));
     world.unquarantine_machine(machine).unwrap();
     world.deliver_all().unwrap();
-    assert!(!world.cluster.quarantine.contains(&machine));
+    assert_eq!(
+        world.cluster.node_state(machine),
+        Some(NodeState::Schedulable)
+    );
     world
         .place(
             &gpu_request(9, 1),
