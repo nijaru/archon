@@ -14,6 +14,11 @@ use archon_kernel::{
 use archon_node::service::NodeService;
 
 fn gpu_request(id: u64) -> Request {
+    let command = if std::env::var_os("ARCHON_CUDA_SMOKE").is_some() {
+        "set -e; nvidia-smi --query-gpu=uuid --format=csv,noheader; LD_LIBRARY_PATH=/usr/local/lib/ollama/cuda_v13 \"$ARCHON_CUDA_SMOKE\"; sleep 30"
+    } else {
+        "nvidia-smi --query-gpu=uuid --format=csv,noheader; sleep 30"
+    };
     Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
@@ -32,11 +37,7 @@ fn gpu_request(id: u64) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![
-            "sh".into(),
-            "-c".into(),
-            "nvidia-smi --query-gpu=uuid --format=csv,noheader; sleep 30".into(),
-        ],
+        command: vec!["sh".into(), "-c".into(), command.into()],
         image: None,
         storage: vec![],
         ports: vec![],
@@ -112,6 +113,13 @@ fn auto_discovers_and_runs_a_real_nvidia_device_lease() {
             .lease_logs(lease)
             .is_ok_and(|logs| logs.contains(&uuid))
     }));
+    if std::env::var_os("ARCHON_CUDA_SMOKE").is_some() {
+        assert!(wait_until(Duration::from_secs(2), || {
+            service
+                .lease_logs(lease)
+                .is_ok_and(|logs| logs.contains("cuda smoke: devices=1"))
+        }));
+    }
 
     service.submit(gpu_request(2), OwnerId::from_u64(2));
     assert_eq!(
