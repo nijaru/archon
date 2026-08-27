@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 pub struct DeviceAccess {
     pub id: String,
     pub dev: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 impl DeviceAccess {
@@ -30,9 +32,14 @@ impl DeviceAccess {
         if dev.is_empty() {
             return None;
         }
+        let paths = attrs
+            .get("access")
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default();
         Some(DeviceAccess {
             id: attrs.get("id").cloned().unwrap_or_else(|| dev.clone()),
             dev: dev.clone(),
+            paths,
         })
     }
 }

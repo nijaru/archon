@@ -265,5 +265,7 @@ fn gpu_spec(dev: &str) -> archon_node::discover::DeviceSpec {
         kind: archon_kernel::ResourceClass::Gpu,
         id: dev.to_string(),
         dev: dev.to_string(),
+        access: Vec::new(),
+        attrs: Default::default(),
     }
 }

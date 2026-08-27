@@ -346,30 +346,34 @@ pub fn enforce_devices(cgroup_path: &Path, devices: &[DeviceAccess]) -> Result<(
         }
     }
 
-    // Claimed devices get full access including mknod.
+    // Claimed devices get full access including mknod. Provider support
+    // paths are part of the same logical claim (for example NVIDIA's
+    // control and UVM devices), not independently schedulable resources.
     for device in devices {
-        let Some((is_char, major, minor)) = device_numbers(&device.dev) else {
-            return Err(format!(
-                "device {} ({}) is not reachable or not a device node",
-                device.id, device.dev
-            ));
-        };
-        let key = (
-            if is_char {
-                DEVCG_DEV_CHAR
-            } else {
-                DEVCG_DEV_BLOCK
-            },
-            major,
-            minor,
-        );
-        if claimed.insert(key) {
-            rules.push(DeviceRule {
-                dev_type: key.0,
+        for path in std::iter::once(&device.dev).chain(device.paths.iter()) {
+            let Some((is_char, major, minor)) = device_numbers(path) else {
+                return Err(format!(
+                    "device {} ({path}) is not reachable or not a device node",
+                    device.id
+                ));
+            };
+            let key = (
+                if is_char {
+                    DEVCG_DEV_CHAR
+                } else {
+                    DEVCG_DEV_BLOCK
+                },
                 major,
                 minor,
-                access: DEVCG_ACC_READ | DEVCG_ACC_WRITE | DEVCG_ACC_MKNOD,
-            });
+            );
+            if claimed.insert(key) {
+                rules.push(DeviceRule {
+                    dev_type: key.0,
+                    major,
+                    minor,
+                    access: DEVCG_ACC_READ | DEVCG_ACC_WRITE | DEVCG_ACC_MKNOD,
+                });
+            }
         }
     }
 

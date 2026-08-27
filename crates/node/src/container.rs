@@ -83,7 +83,9 @@ impl ContainerRuntime {
             cmd.arg(format!("--memory={}b", cfg.limits.memory_bytes));
         }
         for device in cfg.devices {
-            cmd.arg(format!("--device={}:{}", device.dev, device.dev));
+            for path in std::iter::once(&device.dev).chain(device.paths.iter()) {
+                cmd.arg(format!("--device={path}:{path}"));
+            }
         }
         for mount in cfg.storage {
             let relabel = if self.relabels { ":Z" } else { "" };

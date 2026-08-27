@@ -20,8 +20,29 @@ fn description(instance: &str, gpu_dev: &str) -> MachineDescription {
             kind: ResourceClass::Gpu,
             id: "gpu0".into(),
             dev: gpu_dev.into(),
+            access: Vec::new(),
+            attrs: Default::default(),
         }],
     }
+}
+
+#[test]
+fn provider_support_paths_follow_one_device_claim() {
+    let mut service = NodeService::new();
+    let mut description = description("inst-paths", "/dev/null");
+    description.devices[0].access = vec!["/dev/zero".into()];
+    service
+        .register_agent(
+            description,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("registration");
+    service.submit(gpu_request(), OwnerId::from_u64(1));
+    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+    let devices = service.lease_devices(LeaseId::from_u64(1));
+    assert_eq!(devices[0].dev, "/dev/null");
+    assert_eq!(devices[0].paths, vec!["/dev/zero"]);
+    service.revoke(LeaseId::from_u64(1)).expect("revoke");
 }
 
 fn gpu_request() -> Request {
@@ -128,6 +149,8 @@ fn re_registration_adds_and_refreshes_without_spurious_revisions() {
         kind: ResourceClass::Nvme,
         id: "nvme0".into(),
         dev: "/dev/nvme0n1".into(),
+        access: Vec::new(),
+        attrs: Default::default(),
     });
     service
         .register_agent(

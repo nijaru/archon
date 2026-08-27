@@ -35,9 +35,9 @@ pub struct MachineDescription {
     pub name: String,
     pub cpus: u64,
     pub memory_bytes: u64,
-    /// Devices this machine exposes. Declared via ARCHON_DEVICES
-    /// (`gpu:/dev/nvidia0` or `gpu=gpu0:/dev/nvidia0`); real discovery is a
-    /// later upgrade behind the same representation.
+    /// Devices this machine exposes. `ARCHON_DEVICES` can provide explicit
+    /// declarations; supported providers may discover the same representation
+    /// automatically.
     #[serde(default)]
     pub devices: Vec<DeviceSpec>,
 }
@@ -49,6 +49,16 @@ pub struct DeviceSpec {
     pub kind: ResourceClass,
     pub id: String,
     pub dev: String,
+    /// Additional host device paths required to use this logical resource.
+    /// The primary path remains in `dev`; this list is for provider/runtime
+    /// support devices such as NVIDIA's control and UVM nodes.
+    #[serde(default)]
+    pub access: Vec<String>,
+    /// Provider-owned hard facts and capabilities used by placement and
+    /// enforcement adapters. The stable identity and current primary path
+    /// remain first-class fields for reconciliation.
+    #[serde(default)]
+    pub attrs: Attrs,
 }
 
 pub fn describe() -> MachineDescription {
@@ -57,8 +67,130 @@ pub fn describe() -> MachineDescription {
         name: hostname(),
         cpus: std::thread::available_parallelism().map_or(1, |n| n.get()) as u64,
         memory_bytes: total_memory_bytes(),
-        devices: declared_devices(),
+        devices: discovered_devices(),
     }
+}
+
+fn discovered_devices() -> Vec<DeviceSpec> {
+    if std::env::var_os("ARCHON_DEVICES").is_some() {
+        return declared_devices();
+    }
+    nvidia_devices()
+}
+
+/// Discover NVIDIA devices through the vendor's stable management query.
+/// Failure to run the optional provider leaves the host with no automatic
+/// device claims; explicit `ARCHON_DEVICES` declarations remain available.
+fn nvidia_devices() -> Vec<DeviceSpec> {
+    let output = match Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=index,uuid,name,pci.bus_id,memory.total,compute_cap,driver_version",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            eprintln!(
+                "archon: nvidia-smi discovery failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            return Vec::new();
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) => {
+            eprintln!("archon: cannot run nvidia-smi discovery: {err}");
+            return Vec::new();
+        }
+    };
+    parse_nvidia_devices(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_nvidia_devices(output: &str) -> Vec<DeviceSpec> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split(',').map(str::trim).collect();
+            if fields.len() != 7 {
+                eprintln!("archon: ignoring malformed nvidia-smi row: {line:?}");
+                return None;
+            }
+            let index = fields[0].parse::<u32>().ok()?;
+            let uuid = fields[1];
+            let model = fields[2];
+            let pci_bus_id = normalize_pci_bus_id(fields[3]);
+            let memory_mib = fields[4].parse::<u64>().ok()?;
+            if uuid.is_empty() || model.is_empty() || pci_bus_id.is_empty() {
+                eprintln!("archon: ignoring incomplete nvidia-smi row: {line:?}");
+                return None;
+            }
+            let primary = format!("/dev/nvidia{index}");
+            let mut access = vec![
+                "/dev/nvidiactl".into(),
+                "/dev/nvidia-uvm".into(),
+                "/dev/nvidia-uvm-tools".into(),
+                "/dev/nvidia-modeset".into(),
+            ];
+            access.retain(|path| std::fs::metadata(path).is_ok());
+            let mut attrs = pci_attrs(&pci_bus_id);
+            attrs.insert("provider".into(), "nvidia".into());
+            attrs.insert("vendor".into(), "nvidia".into());
+            attrs.insert("model".into(), model.into());
+            attrs.insert("uuid".into(), uuid.into());
+            attrs.insert("pci_bus_id".into(), pci_bus_id);
+            attrs.insert(
+                "memory_bytes".into(),
+                (memory_mib * 1024 * 1024).to_string(),
+            );
+            attrs.insert("compute_capability".into(), fields[5].into());
+            if !fields[6].is_empty() {
+                attrs.insert("driver_version".into(), fields[6].into());
+            }
+            attrs.insert("whole_device".into(), "true".into());
+            attrs.insert(
+                "enforcement".into(),
+                "linux-cgroup-device,oci-device".into(),
+            );
+            attrs.insert("cdi".into(), format!("nvidia.com/gpu={uuid}"));
+            Some(DeviceSpec {
+                kind: ResourceClass::Gpu,
+                id: uuid.into(),
+                dev: primary,
+                access,
+                attrs,
+            })
+        })
+        .collect()
+}
+
+fn normalize_pci_bus_id(value: &str) -> String {
+    if let Some((domain, _rest)) = value.split_once(':')
+        && domain.len() == 8
+        && domain.as_bytes().iter().all(u8::is_ascii_hexdigit)
+    {
+        return value[4..].to_string();
+    }
+    value.to_string()
+}
+
+fn pci_attrs(bus_id: &str) -> Attrs {
+    let mut attrs = Attrs::new();
+    let path = std::path::Path::new("/sys/bus/pci/devices").join(bus_id);
+    if let Ok(numa) = std::fs::read_to_string(path.join("numa_node")) {
+        let numa = numa.trim();
+        if !numa.is_empty() && numa != "-1" {
+            attrs.insert("numa_node".into(), numa.into());
+        }
+    }
+    if let Ok(real) = std::fs::canonicalize(&path)
+        && let Some(parent) = real.parent().and_then(std::path::Path::file_name)
+    {
+        let parent = parent.to_string_lossy();
+        if parent.starts_with("0000:") && parent.contains('.') {
+            attrs.insert("pci_root".into(), parent.into_owned());
+        }
+    }
+    attrs
 }
 
 /// Parse ARCHON_DEVICES entries into device specs; unparsable entries are
@@ -94,6 +226,8 @@ fn declared_devices() -> Vec<DeviceSpec> {
                 kind,
                 id: id.trim().to_string(),
                 dev: dev.to_string(),
+                access: Vec::new(),
+                attrs: Attrs::new(),
             })
         })
         .collect()
@@ -174,9 +308,15 @@ pub fn build_graph(
     ];
     for device_spec in &description.devices {
         let device = ids.node();
-        let mut attrs = Attrs::new();
+        let mut attrs = device_spec.attrs.clone();
         attrs.insert("id".into(), device_spec.id.clone());
         attrs.insert("dev".into(), device_spec.dev.clone());
+        if !device_spec.access.is_empty() {
+            attrs.insert(
+                "access".into(),
+                serde_json::to_string(&device_spec.access).expect("device access is serializable"),
+            );
+        }
         nodes.push(Node {
             id: device,
             kind: device_spec.kind,
@@ -233,4 +373,42 @@ pub fn build_graph(
 /// Discover this machine and build its graph.
 pub fn discover() -> (LocalMachine, Vec<Node>, Vec<Edge>) {
     build_graph(&describe(), 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_nvidia_identity_and_capabilities() {
+        let devices = parse_nvidia_devices(
+            "0, GPU-test, NVIDIA Test GPU, 00000000:01:00.0, 24564, 8.9, 610.57.04\n",
+        );
+        assert_eq!(devices.len(), 1);
+        let device = &devices[0];
+        assert_eq!(device.kind, ResourceClass::Gpu);
+        assert_eq!(device.id, "GPU-test");
+        assert_eq!(device.dev, "/dev/nvidia0");
+        assert_eq!(device.attrs.get("pci_bus_id"), Some(&"0000:01:00.0".into()));
+        assert_eq!(
+            device.attrs.get("memory_bytes"),
+            Some(&"25757220864".into())
+        );
+        assert_eq!(
+            device.attrs.get("cdi"),
+            Some(&"nvidia.com/gpu=GPU-test".into())
+        );
+        assert_eq!(device.attrs.get("whole_device"), Some(&"true".into()));
+    }
+
+    #[test]
+    fn malformed_nvidia_rows_are_ignored() {
+        assert!(parse_nvidia_devices("not,a,gpu\n").is_empty());
+        assert!(
+            parse_nvidia_devices(
+                "0, GPU-test, NVIDIA Test GPU, 00000000:01:00.0, not-a-number, 8.9, 610.57.04\n"
+            )
+            .is_empty()
+        );
+    }
 }

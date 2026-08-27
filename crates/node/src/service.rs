@@ -409,16 +409,21 @@ impl NodeService {
                 });
                 fresh
             });
-            let node = self.cluster.graph.node(id);
-            let unchanged = node.is_some_and(|node| {
-                node.kind == spec.kind && node.attrs.get("dev").is_some_and(|dev| dev == &spec.dev)
-            });
-            if unchanged {
-                continue;
-            }
-            let mut attrs = Attrs::new();
+            let mut attrs = spec.attrs.clone();
             attrs.insert("id".into(), spec.id.clone());
             attrs.insert("dev".into(), spec.dev.clone());
+            if !spec.access.is_empty() {
+                attrs.insert(
+                    "access".into(),
+                    serde_json::to_string(&spec.access).expect("device access is serializable"),
+                );
+            } else {
+                attrs.remove("access");
+            }
+            let node = self.cluster.graph.node(id);
+            if node.is_some_and(|node| node.kind == spec.kind && node.attrs == attrs) {
+                continue;
+            }
             nodes.push(Node {
                 id,
                 kind: spec.kind,
