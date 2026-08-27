@@ -69,7 +69,7 @@ fn auto_discovers_and_runs_a_real_nvidia_device_lease() {
     }
     assert_eq!(gpus.len(), 1, "test host is expected to expose one GPU");
     let gpu = service.cluster.graph.node(gpus[0]).expect("GPU node");
-    let uuid = gpu.attrs.get("uuid").expect("stable NVIDIA UUID");
+    let uuid = gpu.attrs.get("uuid").cloned().expect("stable NVIDIA UUID");
     assert_eq!(gpu.attrs.get("provider"), Some(&"nvidia".into()));
     assert!(gpu.attrs.contains_key("pci_bus_id"));
     assert!(gpu.attrs.contains_key("compute_capability"));
@@ -84,7 +84,7 @@ fn auto_discovers_and_runs_a_real_nvidia_device_lease() {
     let lease = LeaseId::from_u64(1);
     let access = service.lease_devices(lease);
     assert_eq!(access.len(), 1);
-    assert_eq!(access[0].id, *uuid);
+    assert_eq!(access[0].id, uuid);
     assert_eq!(access[0].dev, "/dev/nvidia0");
     assert!(access[0].paths.iter().any(|path| path == "/dev/nvidiactl"));
     assert!(access[0].paths.iter().any(|path| path == "/dev/nvidia-uvm"));
@@ -93,7 +93,7 @@ fn auto_discovers_and_runs_a_real_nvidia_device_lease() {
     assert!(wait_until(Duration::from_secs(2), || {
         service
             .lease_logs(lease)
-            .is_ok_and(|logs| logs.contains(uuid))
+            .is_ok_and(|logs| logs.contains(&uuid))
     }));
 
     service.revoke(lease).expect("revoke");
