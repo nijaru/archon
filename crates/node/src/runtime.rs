@@ -3,7 +3,7 @@
 //! inside a per-lease cgroup v2 group, so CPU and memory claims are real
 //! kernel limits. On macOS only lifecycle enforcement exists.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
@@ -329,12 +329,18 @@ fn wait_until(budget: std::time::Duration, mut check: impl FnMut() -> bool) -> b
     true
 }
 
-#[cfg(target_os = "linux")]
 impl Drop for ProcessRuntime {
     fn drop(&mut self) {
-        // Kill any surviving lease groups so a crashed agent cannot leak
-        // processes or cgroups.
-        let leases: Vec<LeaseId> = self.groups.keys().copied().collect();
+        // A dropped agent must not leak a workload while the controller
+        // reconciles the lease against a new agent generation.
+        #[cfg(target_os = "linux")]
+        let leases = {
+            let mut leases: BTreeSet<LeaseId> = self.children.keys().copied().collect();
+            leases.extend(self.groups.keys().copied());
+            leases
+        };
+        #[cfg(not(target_os = "linux"))]
+        let leases: BTreeSet<LeaseId> = self.children.keys().copied().collect();
         for lease in leases {
             let _ = self.terminate(lease);
         }

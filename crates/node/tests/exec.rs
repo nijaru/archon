@@ -2,9 +2,14 @@
 //! lease termination kills it. These exercise the same seam production
 //! enforcement will use.
 
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
 use archon_kernel::{
     CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
+use archon_node::protocol::LeaseLimits;
+use archon_node::runtime::ProcessRuntime;
 use archon_node::service::NodeService;
 
 fn boot() -> NodeService {
@@ -46,6 +51,67 @@ fn request(id: u64, command: Vec<String>) -> Request {
         storage: vec![],
         ports: vec![],
     }
+}
+
+fn process_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[test]
+fn dropping_runtime_terminates_uncontained_process() {
+    let pid_file = std::env::temp_dir().join(format!(
+        "archon-runtime-drop-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let command = vec![
+        "sh".into(),
+        "-c".into(),
+        "echo $$ > \"$1\"; exec sleep 30".into(),
+        "sh".into(),
+        pid_file.display().to_string(),
+    ];
+    let lease = LeaseId::from_u64(1);
+    let mut runtime = ProcessRuntime::new();
+    runtime
+        .activate(lease, &command, &LeaseLimits::default(), &[])
+        .expect("spawn process");
+    let pid_deadline = Instant::now() + Duration::from_secs(2);
+    let pid = loop {
+        if let Ok(value) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = value.trim().parse::<u32>()
+        {
+            break pid;
+        }
+        assert!(
+            Instant::now() < pid_deadline,
+            "process did not publish its pid"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        process_alive(pid),
+        "workload should be alive before runtime drop"
+    );
+
+    drop(runtime);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && process_alive(pid) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !process_alive(pid),
+        "dropping the runtime must terminate its process"
+    );
+    let _ = std::fs::remove_file(pid_file);
 }
 
 #[test]
