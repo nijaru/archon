@@ -16,7 +16,7 @@ mod select;
 mod types;
 
 pub use admit::{
-    Admission, BackfillCtx, KindUsage, admit, admit_backfill, admit_fair, owner_usage,
+    Admission, BackfillCtx, ClassUsage, admit, admit_backfill, admit_fair, owner_usage,
     refuse_reason,
 };
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
@@ -29,9 +29,10 @@ pub use occupancy::{Occupancy, occupancy_from_leases};
 pub use preempt::preempt_victims;
 pub use select::select;
 pub use types::{
-    Allocation, Attrs, Binding, BindingState, Claim, Dimension, Edge, EdgeKind, Endpoint,
-    EndpointPhase, Filter, Lease, LeaseState, Need, Node, NodeKind, PortPublish, Preference,
-    Quantity, Queued, Request, RequestClass, StorageMount, TopologyConstraint, qty, quantity_get,
+    Allocation, Attrs, Binding, BindingState, CapacityDimension, Claim, Edge, EdgeKind, Endpoint,
+    EndpointPhase, Filter, IdentifierError, Lease, LeaseState, Need, Node, PortPublish, Preference,
+    Quantity, Queued, Request, RequestClass, ResourceClass, StorageMount, TopologyConstraint, qty,
+    quantity_get,
 };
 
 impl Cluster {
@@ -49,7 +50,7 @@ impl Cluster {
 
     /// Budget-aware admission with per-owner, per-kind fair-share ceilings.
     /// Usage is always computed from this Cluster's own lease table.
-    pub fn admit_fair(&self, queue: &[Queued], fair_share: &KindUsage) -> Option<Admission> {
+    pub fn admit_fair(&self, queue: &[Queued], fair_share: &ClassUsage) -> Option<Admission> {
         admit_fair(
             &self.graph,
             &self.occupancy(),
@@ -62,7 +63,7 @@ impl Cluster {
 
     /// EASY-style backfill over the priority queue with per-owner, per-kind
     /// fair-share ceilings.
-    pub fn admit_backfill(&self, queue: &[Queued], fair_share: &KindUsage) -> Option<Admission> {
+    pub fn admit_backfill(&self, queue: &[Queued], fair_share: &ClassUsage) -> Option<Admission> {
         admit_backfill(
             &self.graph,
             &self.occupancy(),

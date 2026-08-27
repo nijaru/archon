@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::protocol::{read_request, write_response};
@@ -63,8 +63,8 @@ fn keep_alive_submit(service: &mut NodeService, id: u64) -> Option<RequestId> {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -177,8 +177,8 @@ fn submit_run_once(service: &mut NodeService, id: u64) -> Option<RequestId> {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -210,8 +210,8 @@ fn restarts_back_off_exponentially() {
         id: RequestId::from_u64(1),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -278,8 +278,8 @@ fn restart_cap_survives_generations() {
         id: RequestId::from_u64(1),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],

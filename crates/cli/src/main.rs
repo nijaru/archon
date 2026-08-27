@@ -393,8 +393,8 @@ fn demo(remote: Option<String>) {
         id: archon_kernel::RequestId::from_u64(1),
         class: archon_kernel::RequestClass::Batch,
         needs: vec![archon_kernel::Need {
-            kind: archon_kernel::NodeKind::Cpu,
-            quantity: archon_kernel::qty(archon_kernel::Dimension::Count, 1),
+            kind: archon_kernel::ResourceClass::Cpu,
+            quantity: archon_kernel::qty(archon_kernel::CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -437,7 +437,7 @@ fn print_machine(service: &NodeService) {
     let machine = service
         .cluster
         .graph
-        .nodes_of_kind(archon_kernel::NodeKind::Machine)
+        .nodes_of_class(archon_kernel::ResourceClass::Machine)
         .first()
         .copied();
     if let Some(machine) = machine {
@@ -451,20 +451,20 @@ fn print_machine(service: &NodeService) {
         let memory = service
             .cluster
             .graph
-            .nodes_of_kind(archon_kernel::NodeKind::Memory)
+            .nodes_of_class(archon_kernel::ResourceClass::Memory)
             .first()
             .and_then(|node| service.cluster.graph.node(*node))
             .and_then(|node| {
                 node.capacity
                     .iter()
-                    .find(|(dimension, _)| **dimension == archon_kernel::Dimension::Bytes)
+                    .find(|(dimension, _)| **dimension == archon_kernel::CapacityDimension::Bytes)
                     .map(|(_, amount)| amount / (1 << 30))
             })
             .unwrap_or(0);
         let cpus = service
             .cluster
             .graph
-            .nodes_of_kind(archon_kernel::NodeKind::Cpu)
+            .nodes_of_class(archon_kernel::ResourceClass::Cpu)
             .len();
         println!("archon: discovered {name} ({cpus} cpus, {memory} GiB)");
     }

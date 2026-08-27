@@ -1,6 +1,6 @@
 use archon_kernel::{
-    BindingId, Dimension, Effect, EndpointOp, Error, LeaseId, LeaseState, Need, NodeId, NodeKind,
-    OwnerId, ProviderId, Request, RequestClass, RequestId, TopologyConstraint, qty,
+    BindingId, CapacityDimension, Effect, EndpointOp, Error, LeaseId, LeaseState, Need, NodeId,
+    OwnerId, ProviderId, Request, RequestClass, RequestId, ResourceClass, TopologyConstraint, qty,
 };
 use archon_sim::{GIB, World, tiny_graph};
 
@@ -10,13 +10,13 @@ fn service_request() -> Request {
         class: RequestClass::Service,
         needs: vec![
             Need {
-                kind: NodeKind::Cpu,
-                quantity: qty(Dimension::Count, 1),
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
                 filters: vec![],
             },
             Need {
-                kind: NodeKind::Memory,
-                quantity: qty(Dimension::Bytes, GIB),
+                kind: ResourceClass::Memory,
+                quantity: qty(CapacityDimension::Bytes, GIB),
                 filters: vec![],
             },
         ],
@@ -359,7 +359,7 @@ fn quarantine_blocks_new_exclusive_lease() {
     let machines: Vec<NodeId> = world
         .cluster
         .graph
-        .nodes_of_kind(NodeKind::Machine)
+        .nodes_of_class(ResourceClass::Machine)
         .to_vec();
     for node in &machines {
         world

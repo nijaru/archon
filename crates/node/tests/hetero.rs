@@ -4,7 +4,7 @@
 use std::net::TcpListener;
 
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::protocol::{read_request, write_response};
@@ -72,8 +72,8 @@ fn submit(service: &mut NodeService, id: u64, cpus: u64) -> Option<RequestId> {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, cpus),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, cpus),
             filters: vec![],
         }],
         topology: vec![],
@@ -190,7 +190,7 @@ fn device_claims_resolve_to_host_paths() {
     let gpu = service
         .cluster
         .graph
-        .nodes_of_kind(archon_kernel::NodeKind::Gpu)
+        .nodes_of_class(archon_kernel::ResourceClass::Gpu)
         .iter()
         .copied()
         .find(|id| {
@@ -224,13 +224,13 @@ fn device_claims_resolve_to_host_paths() {
         class: RequestClass::Batch,
         needs: vec![
             Need {
-                kind: NodeKind::Cpu,
-                quantity: qty(Dimension::Count, 1),
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
                 filters: vec![],
             },
             Need {
-                kind: NodeKind::Gpu,
-                quantity: qty(Dimension::Count, 1),
+                kind: ResourceClass::Gpu,
+                quantity: qty(CapacityDimension::Count, 1),
                 filters: vec![],
             },
         ],
@@ -262,7 +262,7 @@ fn device_claims_resolve_to_host_paths() {
 /// A GPU declaration whose stable id is its host path.
 fn gpu_spec(dev: &str) -> archon_node::discover::DeviceSpec {
     archon_node::discover::DeviceSpec {
-        kind: archon_kernel::NodeKind::Gpu,
+        kind: archon_kernel::ResourceClass::Gpu,
         id: dev.to_string(),
         dev: dev.to_string(),
     }

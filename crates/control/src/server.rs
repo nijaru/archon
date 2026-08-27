@@ -6,7 +6,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 
 use archon_kernel::{
-    Command, Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, Command, LeaseId, Need, OwnerId, Request, RequestClass, RequestId,
+    ResourceClass, qty,
 };
 use archon_node::service::NodeService;
 
@@ -510,8 +511,8 @@ impl ControlPlane {
         let id = RequestId::from_u64(self.next_request);
         self.next_request += 1;
         let mut needs = vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, cpus.max(1)),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, cpus.max(1)),
             filters: vec![],
         }];
         if memory_mib > 0 {
@@ -522,15 +523,15 @@ impl ControlPlane {
                 };
             };
             needs.push(Need {
-                kind: NodeKind::Memory,
-                quantity: qty(Dimension::Bytes, bytes),
+                kind: ResourceClass::Memory,
+                quantity: qty(CapacityDimension::Bytes, bytes),
                 filters: vec![],
             });
         }
         if gpus > 0 {
             needs.push(Need {
-                kind: NodeKind::Gpu,
-                quantity: qty(Dimension::Count, gpus),
+                kind: ResourceClass::Gpu,
+                quantity: qty(CapacityDimension::Count, gpus),
                 filters: vec![],
             });
         }

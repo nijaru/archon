@@ -8,7 +8,7 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::protocol::LeaseLimits;
 use archon_node::runtime::{ProcessRuntime, WorkStatus};
@@ -51,13 +51,13 @@ fn request(id: u64, command: Vec<String>, memory_mib: u64) -> Request {
         class: RequestClass::Batch,
         needs: vec![
             Need {
-                kind: NodeKind::Cpu,
-                quantity: qty(Dimension::Count, 1),
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
                 filters: vec![],
             },
             Need {
-                kind: NodeKind::Memory,
-                quantity: qty(Dimension::Bytes, memory_mib * (1 << 20)),
+                kind: ResourceClass::Memory,
+                quantity: qty(CapacityDimension::Bytes, memory_mib * (1 << 20)),
                 filters: vec![],
             },
         ],

@@ -1,6 +1,6 @@
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeId, NodeKind, OwnerId, Preference, Request, RequestClass,
-    RequestId, qty,
+    CapacityDimension, LeaseId, Need, NodeId, OwnerId, Preference, Request, RequestClass,
+    RequestId, ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -22,8 +22,8 @@ fn cpu_request(id: u64, data: Vec<NodeId>) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Service,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -50,8 +50,8 @@ fn hold_cpu_at(world: &mut World, lease: u64, binding: u64) {
         id: RequestId::from_u64(lease),
         class: RequestClass::Service,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],

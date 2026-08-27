@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Error;
 use crate::ids::NodeId;
-use crate::types::{Edge, EdgeKind, Node, NodeKind};
+use crate::types::{Edge, EdgeKind, Node, ResourceClass};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -12,7 +12,7 @@ pub struct Graph {
     edges: Vec<Edge>,
     parent: BTreeMap<NodeId, NodeId>,
     children: BTreeMap<NodeId, Vec<NodeId>>,
-    by_kind: BTreeMap<NodeKind, Vec<NodeId>>,
+    by_class: BTreeMap<ResourceClass, Vec<NodeId>>,
 }
 
 impl Graph {
@@ -87,8 +87,8 @@ impl Graph {
         &self.edges
     }
 
-    pub fn nodes_of_kind(&self, kind: NodeKind) -> &[NodeId] {
-        self.by_kind.get(&kind).map_or(&[], Vec::as_slice)
+    pub fn nodes_of_class(&self, kind: ResourceClass) -> &[NodeId] {
+        self.by_class.get(&kind).map_or(&[], Vec::as_slice)
     }
 
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
@@ -119,7 +119,7 @@ impl Graph {
         out
     }
 
-    pub fn ancestor_of_kind(&self, id: NodeId, kind: NodeKind) -> Option<NodeId> {
+    pub fn ancestor_of_class(&self, id: NodeId, kind: ResourceClass) -> Option<NodeId> {
         if self.node(id).is_some_and(|node| node.kind == kind) {
             return Some(id);
         }
@@ -129,7 +129,7 @@ impl Graph {
     }
 
     pub fn machine_of(&self, id: NodeId) -> Option<NodeId> {
-        self.ancestor_of_kind(id, NodeKind::Machine)
+        self.ancestor_of_class(id, ResourceClass::Machine)
     }
 
     /// Whether any node in `id`'s ancestry (including itself) has a
@@ -163,11 +163,11 @@ impl Graph {
                 self.ancestors(right).contains(&left) || self.ancestors(left).contains(&right)
             }
             EdgeKind::SameNuma => {
-                same_ancestor(self, left, right, NodeKind::Numa)
+                same_ancestor(self, left, right, ResourceClass::Numa)
                     || self.has_edge(left, right, EdgeKind::SameNuma)
             }
             EdgeKind::SamePcie => {
-                same_ancestor(self, left, right, NodeKind::PcieRoot)
+                same_ancestor(self, left, right, ResourceClass::PcieRoot)
                     || self.has_edge(left, right, EdgeKind::SamePcie)
             }
             EdgeKind::Connected => self.has_edge(left, right, EdgeKind::Connected),
@@ -186,11 +186,11 @@ impl Graph {
     fn rebuild(&mut self) {
         self.parent.clear();
         self.children.clear();
-        self.by_kind.clear();
+        self.by_class.clear();
         for node in self.nodes.values() {
-            self.by_kind.entry(node.kind).or_default().push(node.id);
+            self.by_class.entry(node.kind).or_default().push(node.id);
         }
-        for ids in self.by_kind.values_mut() {
+        for ids in self.by_class.values_mut() {
             ids.sort();
         }
         for edge in &self.edges {
@@ -240,10 +240,10 @@ fn validate_contains(edges: &[Edge]) -> Result<(), Error> {
     Ok(())
 }
 
-fn same_ancestor(graph: &Graph, left: NodeId, right: NodeId, kind: NodeKind) -> bool {
+fn same_ancestor(graph: &Graph, left: NodeId, right: NodeId, kind: ResourceClass) -> bool {
     match (
-        graph.ancestor_of_kind(left, kind),
-        graph.ancestor_of_kind(right, kind),
+        graph.ancestor_of_class(left, kind),
+        graph.ancestor_of_class(right, kind),
     ) {
         (Some(a), Some(b)) => a == b,
         _ => false,

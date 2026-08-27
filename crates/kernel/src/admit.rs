@@ -6,8 +6,8 @@ use crate::ids::{LeaseId, NodeId, OwnerId};
 use crate::occupancy::{Occupancy, claims_by_node, lease_occupies, occupancy_from_leases};
 use crate::select::select;
 use crate::types::{
-    Allocation, Dimension, Lease, NodeKind, Quantity, Queued, Request, qty, quantity_add_assign,
-    quantity_get, quantity_le,
+    Allocation, CapacityDimension, Lease, Quantity, Queued, Request, ResourceClass, qty,
+    quantity_add_assign, quantity_get, quantity_le,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,7 +29,7 @@ pub fn admit(
         graph,
         occupancy,
         quarantine,
-        &KindUsage::new(),
+        &ClassUsage::new(),
         queue,
         &BTreeMap::new(),
     )
@@ -37,7 +37,7 @@ pub fn admit(
 
 /// Per-owner, per-kind consumption: the fair-share analogue of Slurm's
 /// trackable resources (TRES). Each node kind budgets independently.
-pub type KindUsage = BTreeMap<NodeKind, Quantity>;
+pub type ClassUsage = BTreeMap<ResourceClass, Quantity>;
 
 /// Budget-aware admission. `fair_share` is a per-owner, per-kind ceiling,
 /// not a reservation: an owner under budget is never blocked by another
@@ -47,7 +47,7 @@ pub fn admit_fair(
     graph: &Graph,
     occupancy: &Occupancy,
     quarantine: &std::collections::BTreeSet<crate::ids::NodeId>,
-    fair_share: &KindUsage,
+    fair_share: &ClassUsage,
     queue: &[Queued],
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
 ) -> Option<Admission> {
@@ -85,8 +85,8 @@ pub fn admit_fair(
 pub fn owner_usage(
     graph: &Graph,
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
-) -> BTreeMap<crate::ids::OwnerId, KindUsage> {
-    let mut usage: BTreeMap<crate::ids::OwnerId, KindUsage> = BTreeMap::new();
+) -> BTreeMap<crate::ids::OwnerId, ClassUsage> {
+    let mut usage: BTreeMap<crate::ids::OwnerId, ClassUsage> = BTreeMap::new();
     for lease in leases.values() {
         if lease.parent.is_some() {
             continue;
@@ -104,7 +104,7 @@ pub fn owner_usage(
             let kind = graph
                 .node(node)
                 .map(|node| node.kind)
-                .unwrap_or(NodeKind::Machine);
+                .unwrap_or(ResourceClass::Machine);
             quantity_add_assign(entry.entry(kind).or_default(), &quantity);
         }
     }
@@ -112,14 +112,14 @@ pub fn owner_usage(
 }
 
 /// Deterministic tiebreak only: total charge across kinds.
-fn usage_total(usage: &KindUsage) -> u64 {
+fn usage_total(usage: &ClassUsage) -> u64 {
     usage
         .values()
         .map(|quantity| quantity.values().sum::<u64>())
         .sum()
 }
 
-fn order_queue(queue: &[Queued], usage: &BTreeMap<OwnerId, KindUsage>) -> Vec<usize> {
+fn order_queue(queue: &[Queued], usage: &BTreeMap<OwnerId, ClassUsage>) -> Vec<usize> {
     let mut order: Vec<usize> = (0..queue.len()).collect();
     order.sort_by(|&left, &right| {
         let left_request = &queue[left].request;
@@ -167,7 +167,7 @@ pub fn admit_backfill(
     graph: &Graph,
     occupancy: &Occupancy,
     quarantine: &std::collections::BTreeSet<NodeId>,
-    fair_share: &KindUsage,
+    fair_share: &ClassUsage,
     queue: &[Queued],
     ctx: &BackfillCtx<'_>,
 ) -> Option<Admission> {
@@ -307,21 +307,27 @@ fn shadow_head(
 /// without a ceiling are unconstrained; an empty map disables the budget.
 /// Charges match what select grants: count-based needs claim at least one
 /// unit of their kind, memory claims bytes.
-pub fn within_budget(usage: KindUsage, request: &Request, fair_share: &KindUsage) -> bool {
+pub fn within_budget(usage: ClassUsage, request: &Request, fair_share: &ClassUsage) -> bool {
     if fair_share.is_empty() {
         return true;
     }
     let mut projected = usage;
     for need in &request.needs {
-        let charge = if need.kind == NodeKind::Memory {
+        let charge = if need.kind == ResourceClass::Memory {
             qty(
-                Dimension::Bytes,
-                quantity_get(&need.quantity, Dimension::Bytes),
+                CapacityDimension::Bytes,
+                quantity_get(&need.quantity, CapacityDimension::Bytes),
             )
+        } else if need
+            .quantity
+            .keys()
+            .any(|dimension| *dimension != CapacityDimension::Count)
+        {
+            need.quantity.clone()
         } else {
             qty(
-                Dimension::Count,
-                quantity_get(&need.quantity, Dimension::Count).max(1),
+                CapacityDimension::Count,
+                quantity_get(&need.quantity, CapacityDimension::Count).max(1),
             )
         };
         quantity_add_assign(projected.entry(need.kind).or_default(), &charge);

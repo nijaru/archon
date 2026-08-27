@@ -1,4 +1,6 @@
-use archon_kernel::{Attrs, Dimension, Edge, EdgeKind, Node, NodeId, NodeKind, Quantity, qty};
+use archon_kernel::{
+    Attrs, CapacityDimension, Edge, EdgeKind, Node, NodeId, Quantity, ResourceClass, qty,
+};
 
 pub const GIB: u64 = 1 << 30;
 
@@ -48,8 +50,8 @@ impl TinyGraph {
         let numa = self.machines[machine_index].numa;
         self.nodes.push(node(
             data,
-            NodeKind::DataObject,
-            qty(Dimension::Bytes, 4 * GIB),
+            ResourceClass::DataObject,
+            qty(CapacityDimension::Bytes, 4 * GIB),
         ));
         self.edges.push(Edge {
             from: data,
@@ -66,7 +68,7 @@ pub fn tiny_graph(machines: usize) -> TinyGraph {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let rack = ids.node();
-    nodes.push(node(rack, NodeKind::Rack, Quantity::new()));
+    nodes.push(node(rack, ResourceClass::Rack, Quantity::new()));
 
     let mut machine_ids = Vec::new();
     for index in 0..machines {
@@ -84,26 +86,30 @@ pub fn tiny_graph(machines: usize) -> TinyGraph {
         nodes.extend([
             labeled(
                 machine,
-                NodeKind::Machine,
+                ResourceClass::Machine,
                 Quantity::new(),
                 "name",
                 &format!("m{label}"),
             ),
-            node(socket, NodeKind::Socket, Quantity::new()),
-            node(numa, NodeKind::Numa, Quantity::new()),
-            node(cpu0, NodeKind::Cpu, qty(Dimension::Count, 1)),
-            node(cpu1, NodeKind::Cpu, qty(Dimension::Count, 1)),
-            node(memory, NodeKind::Memory, qty(Dimension::Bytes, 8 * GIB)),
-            node(pcie, NodeKind::PcieRoot, Quantity::new()),
+            node(socket, ResourceClass::Socket, Quantity::new()),
+            node(numa, ResourceClass::Numa, Quantity::new()),
+            node(cpu0, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+            node(cpu1, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+            node(
+                memory,
+                ResourceClass::Memory,
+                qty(CapacityDimension::Bytes, 8 * GIB),
+            ),
+            node(pcie, ResourceClass::PcieRoot, Quantity::new()),
             labeled(
                 gpu,
-                NodeKind::Gpu,
-                qty(Dimension::Count, 1),
+                ResourceClass::Gpu,
+                qty(CapacityDimension::Count, 1),
                 "model",
                 if index % 2 == 0 { "h100" } else { "a100" },
             ),
-            node(nic, NodeKind::Nic, qty(Dimension::Count, 1)),
-            node(nvme, NodeKind::Nvme, qty(Dimension::Count, 1)),
+            node(nic, ResourceClass::Nic, qty(CapacityDimension::Count, 1)),
+            node(nvme, ResourceClass::Nvme, qty(CapacityDimension::Count, 1)),
         ]);
         contain(
             &mut edges,
@@ -137,7 +143,7 @@ pub fn tiny_graph(machines: usize) -> TinyGraph {
     }
 }
 
-fn node(id: NodeId, kind: NodeKind, capacity: Quantity) -> Node {
+fn node(id: NodeId, kind: ResourceClass, capacity: Quantity) -> Node {
     Node {
         id,
         kind,
@@ -146,7 +152,7 @@ fn node(id: NodeId, kind: NodeKind, capacity: Quantity) -> Node {
     }
 }
 
-fn labeled(id: NodeId, kind: NodeKind, capacity: Quantity, key: &str, value: &str) -> Node {
+fn labeled(id: NodeId, kind: ResourceClass, capacity: Quantity, key: &str, value: &str) -> Node {
     let mut attrs = Attrs::new();
     attrs.insert(key.into(), value.into());
     Node {

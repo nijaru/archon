@@ -1,5 +1,6 @@
 use archon_kernel::{
-    Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, LeaseState, Need, OwnerId, Request, RequestClass, RequestId,
+    ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -23,13 +24,13 @@ fn multi_member(id: u64, priority: u32) -> Request {
         class: RequestClass::Batch,
         needs: vec![
             Need {
-                kind: NodeKind::Gpu,
-                quantity: qty(Dimension::Count, 2),
+                kind: ResourceClass::Gpu,
+                quantity: qty(CapacityDimension::Count, 2),
                 filters: vec![],
             },
             Need {
-                kind: NodeKind::Cpu,
-                quantity: qty(Dimension::Count, 2),
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 2),
                 filters: vec![],
             },
         ],
@@ -53,8 +54,8 @@ fn gpu_hold(world: &mut World, lease: u64, expires_at: u64) {
         id: RequestId::from_u64(lease),
         class: RequestClass::Service,
         needs: vec![Need {
-            kind: NodeKind::Gpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Gpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -110,8 +111,8 @@ fn multi_member_request_places_atomically_or_not_at_all() {
         id: RequestId::from_u64(3),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],

@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use archon_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
 use archon_control::server::ControlPlane;
 use archon_kernel::{
-    Command, Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass,
-    RequestId, qty,
+    CapacityDimension, Command, LeaseId, LeaseState, Need, OwnerId, Request, RequestClass,
+    RequestId, ResourceClass, qty,
 };
 use archon_node::service::NodeService;
 
@@ -39,8 +39,8 @@ fn submit_sleep(service: &mut NodeService, id: u64, lifetime: u64) {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],

@@ -60,7 +60,7 @@ pub fn resolve_claim(graph: &Graph, claim: &Claim) -> Result<Claim, Error> {
     let node = graph
         .node(claim.node)
         .ok_or(Error::UnknownNode(claim.node))?;
-    if node.kind == crate::types::NodeKind::DataObject {
+    if node.kind == crate::types::ResourceClass::DataObject {
         return Err(Error::UnclaimableNode { node: claim.node });
     }
     let quantity = if claim.quantity.is_empty() {

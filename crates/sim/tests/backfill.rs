@@ -1,5 +1,5 @@
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -15,14 +15,14 @@ fn boot() -> World {
     world
 }
 
-fn request(id: u64, kind: NodeKind, count: u64, lifetime: u64, priority: u32) -> Request {
+fn request(id: u64, kind: ResourceClass, count: u64, lifetime: u64, priority: u32) -> Request {
     spread_request(id, kind, count, lifetime, priority, false)
 }
 
 /// `spread = false` keeps the need's claims on one machine.
 fn spread_request(
     id: u64,
-    kind: NodeKind,
+    kind: ResourceClass,
     count: u64,
     lifetime: u64,
     priority: u32,
@@ -33,7 +33,7 @@ fn spread_request(
         class: RequestClass::Batch,
         needs: vec![Need {
             kind,
-            quantity: qty(Dimension::Count, count),
+            quantity: qty(CapacityDimension::Count, count),
             filters: vec![],
         }],
         topology: vec![],
@@ -54,7 +54,7 @@ fn spread_request(
 fn hold_gpu(world: &mut World, lease: u64, expires_at: u64) {
     world
         .place(
-            &request(lease, NodeKind::Gpu, 1, 100, 50),
+            &request(lease, ResourceClass::Gpu, 1, 100, 50),
             LeaseId::from_u64(lease),
             OwnerId::from_u64(lease),
             None,
@@ -76,11 +76,14 @@ fn backfill_starts_job_that_finishes_before_shadow() {
     hold_gpu(&mut world, 1, 1_000);
     // Head wants both GPUs; the held one frees at 1_000.
     world.enqueue(
-        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        spread_request(2, ResourceClass::Gpu, 2, 100, 100, false),
         OwnerId::from_u64(2),
     );
     // Low-priority job needs one GPU and finishes at 11, long before 1_000.
-    world.enqueue(request(3, NodeKind::Gpu, 1, 10, 1), OwnerId::from_u64(3));
+    world.enqueue(
+        request(3, ResourceClass::Gpu, 1, 10, 1),
+        OwnerId::from_u64(3),
+    );
     assert_eq!(
         world
             .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))
@@ -96,12 +99,15 @@ fn backfill_skips_job_that_would_delay_the_head() {
     let mut world = boot();
     hold_gpu(&mut world, 1, 1_000);
     world.enqueue(
-        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        spread_request(2, ResourceClass::Gpu, 2, 100, 100, false),
         OwnerId::from_u64(2),
     );
     // Long GPU job finishes at 5_001, after the head's shadow, and claims a
     // GPU the head would take: it must wait.
-    world.enqueue(request(3, NodeKind::Gpu, 1, 5_000, 1), OwnerId::from_u64(3));
+    world.enqueue(
+        request(3, ResourceClass::Gpu, 1, 5_000, 1),
+        OwnerId::from_u64(3),
+    );
     assert!(
         world
             .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))
@@ -109,7 +115,10 @@ fn backfill_skips_job_that_would_delay_the_head() {
             .is_none()
     );
     // A short GPU job behind it still backfills.
-    world.enqueue(request(4, NodeKind::Gpu, 1, 10, 1), OwnerId::from_u64(4));
+    world.enqueue(
+        request(4, ResourceClass::Gpu, 1, 10, 1),
+        OwnerId::from_u64(4),
+    );
     assert_eq!(
         world
             .admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4))
@@ -125,11 +134,14 @@ fn non_conflicting_job_backfills_past_the_shadow() {
     let mut world = boot();
     hold_gpu(&mut world, 1, 1_000);
     world.enqueue(
-        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        spread_request(2, ResourceClass::Gpu, 2, 100, 100, false),
         OwnerId::from_u64(2),
     );
     // CPU-only job never claims a node the GPU head would take.
-    world.enqueue(request(3, NodeKind::Cpu, 1, 5_000, 1), OwnerId::from_u64(3));
+    world.enqueue(
+        request(3, ResourceClass::Cpu, 1, 5_000, 1),
+        OwnerId::from_u64(3),
+    );
     assert_eq!(
         world
             .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))
@@ -141,8 +153,14 @@ fn non_conflicting_job_backfills_past_the_shadow() {
 #[test]
 fn unsatisfiable_head_does_not_block() {
     let mut world = boot();
-    world.enqueue(request(1, NodeKind::Gpu, 5, 100, 100), OwnerId::from_u64(1));
-    world.enqueue(request(2, NodeKind::Gpu, 1, 100, 1), OwnerId::from_u64(2));
+    world.enqueue(
+        request(1, ResourceClass::Gpu, 5, 100, 100),
+        OwnerId::from_u64(1),
+    );
+    world.enqueue(
+        request(2, ResourceClass::Gpu, 1, 100, 1),
+        OwnerId::from_u64(2),
+    );
     assert_eq!(
         world
             .admit_next_backfill(LeaseId::from_u64(2), OwnerId::from_u64(2))
@@ -157,18 +175,21 @@ fn reservation_expiry_feeds_the_shadow() {
     let mut world = boot();
     world
         .reserve(
-            &request(1, NodeKind::Gpu, 1, 100, 50),
+            &request(1, ResourceClass::Gpu, 1, 100, 50),
             LeaseId::from_u64(1),
             OwnerId::from_u64(1),
             50,
         )
         .unwrap();
     world.enqueue(
-        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        spread_request(2, ResourceClass::Gpu, 2, 100, 100, false),
         OwnerId::from_u64(2),
     );
     // Finishes at 101, past the reservation shadow of 50, on a claimed GPU.
-    world.enqueue(request(3, NodeKind::Gpu, 1, 100, 1), OwnerId::from_u64(3));
+    world.enqueue(
+        request(3, ResourceClass::Gpu, 1, 100, 1),
+        OwnerId::from_u64(3),
+    );
     assert!(
         world
             .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))
@@ -176,7 +197,10 @@ fn reservation_expiry_feeds_the_shadow() {
             .is_none()
     );
     // Finishes at 11, before 50.
-    world.enqueue(request(4, NodeKind::Gpu, 1, 10, 1), OwnerId::from_u64(4));
+    world.enqueue(
+        request(4, ResourceClass::Gpu, 1, 10, 1),
+        OwnerId::from_u64(4),
+    );
     assert_eq!(
         world
             .admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4))
@@ -195,12 +219,15 @@ fn unproven_shadow_admits_only_disjoint_jobs() {
 
     // Head needs both GPUs; capacity frees only when the fence ack lands.
     world.enqueue(
-        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        spread_request(2, ResourceClass::Gpu, 2, 100, 100, false),
         OwnerId::from_u64(2),
     );
     // A long GPU job claims a node the head would take: must wait even though
     // the stale occupancy looks overdue.
-    world.enqueue(request(3, NodeKind::Gpu, 1, 5_000, 1), OwnerId::from_u64(3));
+    world.enqueue(
+        request(3, ResourceClass::Gpu, 1, 5_000, 1),
+        OwnerId::from_u64(3),
+    );
     assert!(
         world
             .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))
@@ -208,7 +235,10 @@ fn unproven_shadow_admits_only_disjoint_jobs() {
             .is_none()
     );
     // A CPU job shares nothing with the head: safe to backfill.
-    world.enqueue(request(4, NodeKind::Cpu, 1, 5_000, 1), OwnerId::from_u64(4));
+    world.enqueue(
+        request(4, ResourceClass::Cpu, 1, 5_000, 1),
+        OwnerId::from_u64(4),
+    );
     assert_eq!(
         world
             .admit_next_backfill(LeaseId::from_u64(4), OwnerId::from_u64(4))
@@ -222,10 +252,13 @@ fn backfilled_lease_expires_before_shadow_and_frees_capacity() {
     let mut world = boot();
     hold_gpu(&mut world, 1, 1_000);
     world.enqueue(
-        spread_request(2, NodeKind::Gpu, 2, 100, 100, false),
+        spread_request(2, ResourceClass::Gpu, 2, 100, 100, false),
         OwnerId::from_u64(2),
     );
-    world.enqueue(request(3, NodeKind::Gpu, 1, 10, 1), OwnerId::from_u64(3));
+    world.enqueue(
+        request(3, ResourceClass::Gpu, 1, 10, 1),
+        OwnerId::from_u64(3),
+    );
     let admitted = world
         .admit_next_backfill(LeaseId::from_u64(3), OwnerId::from_u64(3))
         .unwrap()
@@ -254,7 +287,7 @@ fn quarantine_blocked_head_still_protects_capacity() {
     let graph_machines: Vec<_> = world
         .cluster
         .graph
-        .nodes_of_kind(NodeKind::Machine)
+        .nodes_of_class(ResourceClass::Machine)
         .to_vec();
     // Quarantine one machine: its GPU and CPUs are hard-filtered.
     world
@@ -264,10 +297,16 @@ fn quarantine_blocked_head_still_protects_capacity() {
         .unwrap();
     // Head needs both GPUs; one is behind quarantine, so it cannot select —
     // but quarantine is temporary, so the head must not be treated as dead.
-    world.enqueue(request(1, NodeKind::Gpu, 2, 100, 100), OwnerId::from_u64(1));
+    world.enqueue(
+        request(1, ResourceClass::Gpu, 2, 100, 100),
+        OwnerId::from_u64(1),
+    );
     // A long GPU job claims the free GPU: it must wait, because it would
     // delay the head once the machine unquarantines.
-    world.enqueue(request(2, NodeKind::Gpu, 1, 5_000, 1), OwnerId::from_u64(2));
+    world.enqueue(
+        request(2, ResourceClass::Gpu, 1, 5_000, 1),
+        OwnerId::from_u64(2),
+    );
     assert!(
         world
             .admit_next_backfill(LeaseId::from_u64(2), OwnerId::from_u64(2))

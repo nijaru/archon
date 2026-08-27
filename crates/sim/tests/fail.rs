@@ -1,5 +1,6 @@
 use archon_kernel::{
-    Dimension, Error, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, Error, LeaseId, Need, OwnerId, Request, RequestClass, RequestId,
+    ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -20,8 +21,8 @@ fn gpu_request(id: u64, priority: u32) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Gpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Gpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -84,7 +85,7 @@ fn failed_machine_quarantines_and_releases() {
     let other = world
         .cluster
         .graph
-        .nodes_of_kind(NodeKind::Machine)
+        .nodes_of_class(ResourceClass::Machine)
         .iter()
         .find(|id| **id != machine)
         .copied()
@@ -96,7 +97,7 @@ fn failed_machine_quarantines_and_releases() {
         world
             .cluster
             .graph
-            .nodes_of_kind(NodeKind::Machine)
+            .nodes_of_class(ResourceClass::Machine)
             .iter()
             .all(|id| world.cluster.quarantine.contains(id))
     );
@@ -159,7 +160,7 @@ fn other_machine_keeps_running() {
     let other = world
         .cluster
         .graph
-        .nodes_of_kind(NodeKind::Machine)
+        .nodes_of_class(ResourceClass::Machine)
         .iter()
         .find(|id| **id != machine)
         .copied()

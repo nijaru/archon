@@ -11,8 +11,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, NodeId, NodeKind, OwnerId,
-    ProviderId, Queued, Request, RequestId, quantity_get,
+    BindingId, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, NodeId, OwnerId,
+    ProviderId, Queued, Request, RequestId, ResourceClass, quantity_get,
 };
 
 type CommandSink = Box<dyn FnMut(&Command) + Send>;
@@ -266,7 +266,7 @@ impl NodeService {
         let named = |cluster: &Cluster, instance: &str| {
             cluster
                 .graph
-                .nodes_of_kind(NodeKind::Machine)
+                .nodes_of_class(ResourceClass::Machine)
                 .iter()
                 .copied()
                 .find(|id| {
@@ -369,7 +369,7 @@ impl NodeService {
         machine: NodeId,
         devices: &[crate::discover::DeviceSpec],
     ) -> Result<(), Error> {
-        use archon_kernel::{Attrs, Dimension, Edge, EdgeKind, Node, qty};
+        use archon_kernel::{Attrs, CapacityDimension, Edge, EdgeKind, Node, qty};
 
         let mut existing: BTreeMap<String, NodeId> = self
             .cluster
@@ -378,7 +378,10 @@ impl NodeService {
             .iter()
             .filter_map(|child| {
                 let node = self.cluster.graph.node(*child)?;
-                if !matches!(node.kind, NodeKind::Gpu | NodeKind::Nic | NodeKind::Nvme) {
+                if !matches!(
+                    node.kind,
+                    ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+                ) {
                     return None;
                 }
                 node.attrs.get("id").map(|id| (id.clone(), *child))
@@ -420,7 +423,7 @@ impl NodeService {
                 id,
                 kind: spec.kind,
                 attrs,
-                capacity: qty(Dimension::Count, 1),
+                capacity: qty(CapacityDimension::Count, 1),
             });
         }
         if nodes.is_empty() && edges.is_empty() {
@@ -815,7 +818,7 @@ impl NodeService {
     /// Host device paths bound by a lease's device-kind claims, resolved
     /// through the graph's `dev` attributes.
     pub fn lease_devices(&self, lease: LeaseId) -> Vec<crate::protocol::DeviceAccess> {
-        use archon_kernel::NodeKind;
+        use archon_kernel::ResourceClass;
         let Some(allocation_lease) = self.cluster.leases.get(&lease) else {
             return Vec::new();
         };
@@ -825,7 +828,10 @@ impl NodeService {
             .iter()
             .filter(|claim| {
                 self.cluster.graph.node(claim.node).is_some_and(|node| {
-                    matches!(node.kind, NodeKind::Gpu | NodeKind::Nic | NodeKind::Nvme)
+                    matches!(
+                        node.kind,
+                        ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+                    )
                 })
             })
             .filter_map(|claim| {
@@ -1168,11 +1174,11 @@ impl NodeService {
             .claims;
         for claim in claims {
             match self.cluster.graph.node(claim.node).map(|node| node.kind) {
-                Some(NodeKind::Cpu) => {
-                    limits.cpu_count += quantity_get(&claim.quantity, Dimension::Count);
+                Some(ResourceClass::Cpu) => {
+                    limits.cpu_count += quantity_get(&claim.quantity, CapacityDimension::Count);
                 }
-                Some(NodeKind::Memory) => {
-                    limits.memory_bytes += quantity_get(&claim.quantity, Dimension::Bytes);
+                Some(ResourceClass::Memory) => {
+                    limits.memory_bytes += quantity_get(&claim.quantity, CapacityDimension::Bytes);
                 }
                 _ => {}
             }

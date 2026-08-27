@@ -3,7 +3,7 @@
 //! enforcement will use.
 
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::service::NodeService;
 
@@ -29,8 +29,8 @@ fn request(id: u64, command: Vec<String>) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],

@@ -1,9 +1,9 @@
 use archon_kernel::{
-    Allocation, Claim, Cluster, Command, Dimension, Edge, EdgeKind, LeaseId, Need, Node, NodeId,
-    NodeKind, OwnerId, Quantity, Request, RequestClass, RequestId, qty,
+    Allocation, CapacityDimension, Claim, Cluster, Command, Edge, EdgeKind, LeaseId, Need, Node,
+    NodeId, OwnerId, Quantity, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 
-fn node(id: u64, kind: NodeKind, capacity: Quantity) -> Node {
+fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> Node {
     Node {
         id: NodeId::from_u64(id),
         kind,
@@ -26,12 +26,12 @@ fn graph() -> Cluster {
     cluster
         .apply(Command::ApplyGraph {
             nodes: vec![
-                node(1, NodeKind::Machine, Quantity::new()),
-                node(2, NodeKind::Numa, Quantity::new()),
-                node(3, NodeKind::Cpu, qty(Dimension::Count, 1)),
-                node(4, NodeKind::Cpu, qty(Dimension::Count, 1)),
-                node(5, NodeKind::Memory, qty(Dimension::Bytes, 8)),
-                node(6, NodeKind::Gpu, qty(Dimension::Count, 1)),
+                node(1, ResourceClass::Machine, Quantity::new()),
+                node(2, ResourceClass::Numa, Quantity::new()),
+                node(3, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+                node(4, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+                node(5, ResourceClass::Memory, qty(CapacityDimension::Bytes, 8)),
+                node(6, ResourceClass::Gpu, qty(CapacityDimension::Count, 1)),
             ],
             edges: vec![
                 contain(1, 2),
@@ -73,7 +73,7 @@ fn replay_rebuilds_graph() {
         cluster.digest().graph_revision,
         replayed.digest().graph_revision
     );
-    assert_eq!(cluster.graph.nodes_of_kind(NodeKind::Cpu).len(), 2);
+    assert_eq!(cluster.graph.nodes_of_class(ResourceClass::Cpu).len(), 2);
 }
 
 #[test]
@@ -88,8 +88,8 @@ fn selects_service_and_batch() {
             .allocate(&request(
                 class,
                 vec![Need {
-                    kind: NodeKind::Cpu,
-                    quantity: qty(Dimension::Count, 2),
+                    kind: ResourceClass::Cpu,
+                    quantity: qty(CapacityDimension::Count, 2),
                     filters: vec![],
                 }],
             ))
@@ -105,7 +105,7 @@ fn exclusive_claims_do_not_overlap() {
     let allocation = Allocation {
         claims: vec![Claim {
             node: NodeId::from_u64(3),
-            quantity: qty(Dimension::Count, 1),
+            quantity: qty(CapacityDimension::Count, 1),
         }],
         graph_revision: cluster.graph.revision,
         explanation: "fixed".into(),
@@ -157,7 +157,7 @@ fn child_cannot_escape_parent() {
             allocation: Allocation {
                 claims: vec![Claim {
                     node: NodeId::from_u64(3),
-                    quantity: qty(Dimension::Count, 1),
+                    quantity: qty(CapacityDimension::Count, 1),
                 }],
                 graph_revision: cluster.graph.revision,
                 explanation: "parent".into(),
@@ -198,7 +198,7 @@ fn child_cannot_escape_parent() {
             allocation: Allocation {
                 claims: vec![Claim {
                     node: NodeId::from_u64(6),
-                    quantity: qty(Dimension::Count, 1),
+                    quantity: qty(CapacityDimension::Count, 1),
                 }],
                 graph_revision: cluster.graph.revision,
                 explanation: "child".into(),
@@ -230,12 +230,20 @@ fn machine_local_multi_need_stays_on_one_machine() {
     cluster
         .apply(Command::ApplyGraph {
             nodes: vec![
-                node(1, NodeKind::Machine, Quantity::new()),
-                node(10, NodeKind::Cpu, qty(Dimension::Count, 1)),
-                node(11, NodeKind::Memory, qty(Dimension::Bytes, 2 << 30)),
-                node(2, NodeKind::Machine, Quantity::new()),
-                node(20, NodeKind::Cpu, qty(Dimension::Count, 2)),
-                node(21, NodeKind::Memory, qty(Dimension::Bytes, 1 << 30)),
+                node(1, ResourceClass::Machine, Quantity::new()),
+                node(10, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+                node(
+                    11,
+                    ResourceClass::Memory,
+                    qty(CapacityDimension::Bytes, 2 << 30),
+                ),
+                node(2, ResourceClass::Machine, Quantity::new()),
+                node(20, ResourceClass::Cpu, qty(CapacityDimension::Count, 2)),
+                node(
+                    21,
+                    ResourceClass::Memory,
+                    qty(CapacityDimension::Bytes, 1 << 30),
+                ),
             ],
             edges: vec![
                 edge(m1, cpu1),
@@ -252,13 +260,13 @@ fn machine_local_multi_need_stays_on_one_machine() {
         class: RequestClass::Batch,
         needs: vec![
             Need {
-                kind: NodeKind::Cpu,
-                quantity: qty(Dimension::Count, 1),
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
                 filters: vec![],
             },
             Need {
-                kind: NodeKind::Memory,
-                quantity: qty(Dimension::Bytes, (2 << 30) - 1),
+                kind: ResourceClass::Memory,
+                quantity: qty(CapacityDimension::Bytes, (2 << 30) - 1),
                 filters: vec![],
             },
         ],

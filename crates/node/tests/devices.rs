@@ -3,7 +3,7 @@
 //! resolving through the current path.
 
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::discover::{DeviceSpec, MachineDescription};
@@ -17,7 +17,7 @@ fn description(instance: &str, gpu_dev: &str) -> MachineDescription {
         cpus: 2,
         memory_bytes: 0,
         devices: vec![DeviceSpec {
-            kind: NodeKind::Gpu,
+            kind: ResourceClass::Gpu,
             id: "gpu0".into(),
             dev: gpu_dev.into(),
         }],
@@ -29,8 +29,8 @@ fn gpu_request() -> Request {
         id: RequestId::from_u64(1),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Gpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Gpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -60,7 +60,7 @@ fn device_identity_survives_re_registration_with_new_path() {
     let gpu = *service
         .cluster
         .graph
-        .nodes_of_kind(NodeKind::Gpu)
+        .nodes_of_class(ResourceClass::Gpu)
         .first()
         .expect("declared gpu exists");
     assert_eq!(
@@ -85,7 +85,11 @@ fn device_identity_survives_re_registration_with_new_path() {
     assert_eq!(attrs.get("dev"), Some(&"/dev/gpuB".to_string()));
     assert_eq!(attrs.get("id"), Some(&"gpu0".to_string()));
     assert_eq!(
-        service.cluster.graph.nodes_of_kind(NodeKind::Gpu).len(),
+        service
+            .cluster
+            .graph
+            .nodes_of_class(ResourceClass::Gpu)
+            .len(),
         1,
         "no duplicate device node"
     );
@@ -121,7 +125,7 @@ fn re_registration_adds_and_refreshes_without_spurious_revisions() {
     // One path refresh plus one brand-new device.
     let mut updated = description("inst-add", "/dev/gpuC");
     updated.devices.push(DeviceSpec {
-        kind: NodeKind::Nvme,
+        kind: ResourceClass::Nvme,
         id: "nvme0".into(),
         dev: "/dev/nvme0n1".into(),
     });
@@ -132,11 +136,15 @@ fn re_registration_adds_and_refreshes_without_spurious_revisions() {
         )
         .expect("re-registration with changes");
     assert_eq!(
-        service.cluster.graph.nodes_of_kind(NodeKind::Nvme).len(),
+        service
+            .cluster
+            .graph
+            .nodes_of_class(ResourceClass::Nvme)
+            .len(),
         1,
         "new device added"
     );
-    let gpus = service.cluster.graph.nodes_of_kind(NodeKind::Gpu);
+    let gpus = service.cluster.graph.nodes_of_class(ResourceClass::Gpu);
     assert_eq!(gpus.len(), 1);
     assert_eq!(
         service

@@ -1,5 +1,5 @@
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -23,8 +23,8 @@ fn cpu_request(id: u64) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Service,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -70,7 +70,7 @@ fn healthy_machine_is_preferred() {
     let machines: Vec<_> = world
         .cluster
         .graph
-        .nodes_of_kind(archon_kernel::NodeKind::Machine)
+        .nodes_of_class(archon_kernel::ResourceClass::Machine)
         .to_vec();
     let degraded = machines[0];
     assert_eq!(
@@ -113,7 +113,7 @@ fn runtime_degrade_avoids_machine_without_touching_running_leases() {
     let machines: Vec<_> = world
         .cluster
         .graph
-        .nodes_of_kind(archon_kernel::NodeKind::Machine)
+        .nodes_of_class(archon_kernel::ResourceClass::Machine)
         .to_vec();
     let other = *machines.iter().find(|id| **id != first).unwrap();
 

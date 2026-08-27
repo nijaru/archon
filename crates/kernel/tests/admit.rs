@@ -1,10 +1,10 @@
 use archon_kernel::{
-    Cluster, Command, Dimension, Need, Node, NodeId, NodeKind, OwnerId, Quantity, Queued, Request,
-    RequestClass, RequestId, admit, qty,
+    CapacityDimension, Cluster, Command, Need, Node, NodeId, OwnerId, Quantity, Queued, Request,
+    RequestClass, RequestId, ResourceClass, admit, qty,
 };
 use std::collections::BTreeSet;
 
-fn node(id: u64, kind: NodeKind, capacity: Quantity) -> Node {
+fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> Node {
     Node {
         id: NodeId::from_u64(id),
         kind,
@@ -18,9 +18,9 @@ fn cluster() -> Cluster {
     cluster
         .apply(Command::ApplyGraph {
             nodes: vec![
-                node(1, NodeKind::Machine, Quantity::new()),
-                node(2, NodeKind::Cpu, qty(Dimension::Count, 1)),
-                node(3, NodeKind::Cpu, qty(Dimension::Count, 1)),
+                node(1, ResourceClass::Machine, Quantity::new()),
+                node(2, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+                node(3, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
             ],
             edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(1),
@@ -49,8 +49,8 @@ fn cpu_request(id: u64, count: u64, priority: u32) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, count),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, count),
             filters: vec![],
         }],
         topology: vec![],

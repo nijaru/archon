@@ -1,6 +1,6 @@
 use archon_kernel::{
-    Dimension, Filter, LeaseId, Need, NodeKind, OwnerId, Preference, Request, RequestClass,
-    RequestId, qty,
+    CapacityDimension, Filter, LeaseId, Need, OwnerId, Preference, Request, RequestClass,
+    RequestId, ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -23,8 +23,8 @@ fn cpu_request(id: u64, preferences: Vec<Preference>) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Service,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -47,8 +47,8 @@ fn gpu_request(preferences: Vec<Preference>, filters: Vec<Filter>) -> Request {
         id: RequestId::from_u64(9),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Gpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Gpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters,
         }],
         topology: vec![],

@@ -4,7 +4,8 @@
 //! walk paths against accidental unbounded growth.
 
 use archon_kernel::{
-    Dimension, KindUsage, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, ClassUsage, LeaseId, Need, OwnerId, Request, RequestClass, RequestId,
+    ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -29,8 +30,8 @@ fn gpu_request(id: u64, count: u64) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Gpu,
-            quantity: qty(Dimension::Count, count),
+            kind: ResourceClass::Gpu,
+            quantity: qty(CapacityDimension::Count, count),
             filters: vec![],
         }],
         topology: vec![],
@@ -103,7 +104,7 @@ fn large_graph_admits_places_and_replays() {
 #[test]
 fn fair_share_and_backfill_terminate_at_scale() {
     let (mut world, _machines) = boot();
-    let ceiling = KindUsage::from([(NodeKind::Gpu, qty(Dimension::Count, 3))]);
+    let ceiling = ClassUsage::from([(ResourceClass::Gpu, qty(CapacityDimension::Count, 3))]);
     // One owner floods the queue; the per-kind ceiling caps its concurrency.
     for id in 1..=60 {
         world.enqueue(gpu_request(id, 1), OwnerId::from_u64(1));

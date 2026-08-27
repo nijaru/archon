@@ -1,9 +1,9 @@
 use archon_kernel::{
-    BindingId, Cluster, Command, Dimension, Effect, Error, LeaseId, LeaseState, Need, NodeId,
-    NodeKind, OwnerId, ProviderId, Quantity, Request, RequestClass, RequestId, qty,
+    BindingId, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, LeaseState, Need,
+    NodeId, OwnerId, ProviderId, Quantity, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 
-fn node(id: u64, kind: NodeKind, capacity: Quantity) -> archon_kernel::Node {
+fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> archon_kernel::Node {
     archon_kernel::Node {
         id: NodeId::from_u64(id),
         kind,
@@ -17,9 +17,9 @@ fn graph() -> Cluster {
     cluster
         .apply(Command::ApplyGraph {
             nodes: vec![
-                node(1, NodeKind::Machine, Quantity::new()),
-                node(2, NodeKind::Cpu, qty(Dimension::Count, 1)),
-                node(3, NodeKind::Cpu, qty(Dimension::Count, 1)),
+                node(1, ResourceClass::Machine, Quantity::new()),
+                node(2, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+                node(3, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
             ],
             edges: vec![
                 archon_kernel::Edge {
@@ -44,7 +44,7 @@ fn cpu_claim(cluster: &Cluster, node: u64) -> archon_kernel::Allocation {
     archon_kernel::Allocation {
         claims: vec![archon_kernel::Claim {
             node: NodeId::from_u64(node),
-            quantity: qty(Dimension::Count, 1),
+            quantity: qty(CapacityDimension::Count, 1),
         }],
         graph_revision: cluster.graph.revision,
         explanation: "test".into(),
@@ -469,7 +469,11 @@ fn failed_apply_graph_is_atomic_and_replay_consistent() {
     let before = cluster.digest();
     let err = cluster
         .apply(Command::ApplyGraph {
-            nodes: vec![node(9, NodeKind::Nvme, qty(Dimension::Count, 1))],
+            nodes: vec![node(
+                9,
+                ResourceClass::Nvme,
+                qty(CapacityDimension::Count, 1),
+            )],
             edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(9),
                 to: NodeId::from_u64(99),
@@ -603,7 +607,7 @@ fn capacity_cannot_shrink_below_occupied_units() {
     // Node 2 holds one occupied CPU; shrinking it to zero must be refused.
     let err = cluster
         .apply(Command::ApplyGraph {
-            nodes: vec![node(2, NodeKind::Cpu, Quantity::new())],
+            nodes: vec![node(2, ResourceClass::Cpu, Quantity::new())],
             edges: vec![],
         })
         .unwrap_err();
@@ -612,7 +616,11 @@ fn capacity_cannot_shrink_below_occupied_units() {
     // Growing capacity is fine.
     cluster
         .apply(Command::ApplyGraph {
-            nodes: vec![node(2, NodeKind::Cpu, qty(Dimension::Count, 4))],
+            nodes: vec![node(
+                2,
+                ResourceClass::Cpu,
+                qty(CapacityDimension::Count, 4),
+            )],
             edges: vec![],
         })
         .unwrap();
@@ -652,8 +660,8 @@ fn backfill_honors_the_fair_share_ceiling() {
             id: RequestId::from_u64(2),
             class: RequestClass::Batch,
             needs: vec![Need {
-                kind: NodeKind::Cpu,
-                quantity: qty(Dimension::Count, 1),
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
                 filters: vec![],
             }],
             topology: vec![],
@@ -674,11 +682,12 @@ fn backfill_honors_the_fair_share_ceiling() {
     }];
     // Owner 1 already holds one CPU; a 1-CPU ceiling blocks its request even
     // though capacity is free.
-    let fair = archon_kernel::KindUsage::from([(NodeKind::Cpu, qty(Dimension::Count, 1))]);
+    let fair =
+        archon_kernel::ClassUsage::from([(ResourceClass::Cpu, qty(CapacityDimension::Count, 1))]);
     assert!(cluster.admit_backfill(&queue, &fair).is_none());
     assert!(
         cluster
-            .admit_backfill(&queue, &archon_kernel::KindUsage::new())
+            .admit_backfill(&queue, &archon_kernel::ClassUsage::new())
             .is_some()
     );
 }
@@ -696,11 +705,11 @@ fn duplicate_node_claims_are_rejected() {
         claims: vec![
             archon_kernel::Claim {
                 node: NodeId::from_u64(2),
-                quantity: qty(Dimension::Count, 1),
+                quantity: qty(CapacityDimension::Count, 1),
             },
             archon_kernel::Claim {
                 node: NodeId::from_u64(2),
-                quantity: qty(Dimension::Count, 1),
+                quantity: qty(CapacityDimension::Count, 1),
             },
         ],
         graph_revision: cluster.graph.revision,
@@ -751,8 +760,8 @@ fn partial_memory_roots_sum_instead_of_taking_the_max() {
     cluster
         .apply(Command::ApplyGraph {
             nodes: vec![
-                node(1, NodeKind::Machine, Quantity::new()),
-                node(2, NodeKind::Memory, qty(Dimension::Bytes, 100)),
+                node(1, ResourceClass::Machine, Quantity::new()),
+                node(2, ResourceClass::Memory, qty(CapacityDimension::Bytes, 100)),
             ],
             edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(1),
@@ -776,7 +785,7 @@ fn partial_memory_roots_sum_instead_of_taking_the_max() {
                 allocation: archon_kernel::Allocation {
                     claims: vec![archon_kernel::Claim {
                         node: NodeId::from_u64(2),
-                        quantity: qty(Dimension::Bytes, 40),
+                        quantity: qty(CapacityDimension::Bytes, 40),
                     }],
                     graph_revision: cluster.graph.revision,
                     explanation: "mem".into(),
@@ -796,7 +805,7 @@ fn partial_memory_roots_sum_instead_of_taking_the_max() {
             allocation: archon_kernel::Allocation {
                 claims: vec![archon_kernel::Claim {
                     node: NodeId::from_u64(2),
-                    quantity: qty(Dimension::Bytes, 40),
+                    quantity: qty(CapacityDimension::Bytes, 40),
                 }],
                 graph_revision: cluster.graph.revision,
                 explanation: "mem".into(),
@@ -811,7 +820,11 @@ fn partial_memory_roots_sum_instead_of_taking_the_max() {
     // And shrinking capacity below the 80 occupied bytes is refused.
     let err = cluster
         .apply(Command::ApplyGraph {
-            nodes: vec![node(2, NodeKind::Memory, qty(Dimension::Bytes, 50))],
+            nodes: vec![node(
+                2,
+                ResourceClass::Memory,
+                qty(CapacityDimension::Bytes, 50),
+            )],
             edges: vec![],
         })
         .unwrap_err();
@@ -834,7 +847,11 @@ fn promotion_survives_unrelated_graph_updates() {
     // An unrelated additive update advances the revision.
     cluster
         .apply(Command::ApplyGraph {
-            nodes: vec![node(9, NodeKind::Nvme, qty(Dimension::Count, 1))],
+            nodes: vec![node(
+                9,
+                ResourceClass::Nvme,
+                qty(CapacityDimension::Count, 1),
+            )],
             edges: vec![],
         })
         .unwrap();
@@ -863,8 +880,8 @@ fn data_objects_cannot_be_claimed() {
         .apply(Command::ApplyGraph {
             nodes: vec![node(
                 7,
-                NodeKind::DataObject,
-                qty(Dimension::Bytes, 1 << 30),
+                ResourceClass::DataObject,
+                qty(CapacityDimension::Bytes, 1 << 30),
             )],
             edges: vec![],
         })
@@ -876,7 +893,7 @@ fn data_objects_cannot_be_claimed() {
             allocation: archon_kernel::Allocation {
                 claims: vec![archon_kernel::Claim {
                     node: NodeId::from_u64(7),
-                    quantity: qty(Dimension::Bytes, 1 << 30),
+                    quantity: qty(CapacityDimension::Bytes, 1 << 30),
                 }],
                 graph_revision: cluster.graph.revision,
                 explanation: "data".into(),
@@ -896,7 +913,11 @@ fn digest_distinguishes_capacity_and_edge_changes() {
     let before = cluster.digest();
     cluster
         .apply(Command::ApplyGraph {
-            nodes: vec![node(2, NodeKind::Cpu, qty(Dimension::Count, 8))],
+            nodes: vec![node(
+                2,
+                ResourceClass::Cpu,
+                qty(CapacityDimension::Count, 8),
+            )],
             edges: vec![],
         })
         .unwrap();

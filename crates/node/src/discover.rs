@@ -5,7 +5,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use archon_kernel::{Attrs, Dimension, Edge, EdgeKind, Node, NodeKind, Quantity, qty};
+use archon_kernel::{Attrs, CapacityDimension, Edge, EdgeKind, Node, Quantity, ResourceClass, qty};
 
 pub struct LocalMachine {
     #[allow(dead_code)]
@@ -46,7 +46,7 @@ pub struct MachineDescription {
 /// access-path changes, plus the current host path it is reachable through.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceSpec {
-    pub kind: NodeKind,
+    pub kind: ResourceClass,
     pub id: String,
     pub dev: String,
 }
@@ -82,9 +82,9 @@ fn declared_devices() -> Vec<DeviceSpec> {
                 }
             };
             let kind = match kind.trim().to_lowercase().as_str() {
-                "gpu" => archon_kernel::NodeKind::Gpu,
-                "nic" => archon_kernel::NodeKind::Nic,
-                "nvme" => archon_kernel::NodeKind::Nvme,
+                "gpu" => archon_kernel::ResourceClass::Gpu,
+                "nic" => archon_kernel::ResourceClass::Nic,
+                "nvme" => archon_kernel::ResourceClass::Nvme,
                 other => {
                     eprintln!("archon: ignoring unknown device kind {other:?}");
                     return None;
@@ -161,15 +161,15 @@ pub fn build_graph(
     let mut nodes = vec![
         Node {
             id: machine,
-            kind: NodeKind::Machine,
+            kind: ResourceClass::Machine,
             attrs: name,
             capacity: Quantity::new(),
         },
         Node {
             id: memory,
-            kind: NodeKind::Memory,
+            kind: ResourceClass::Memory,
             attrs: Attrs::new(),
-            capacity: qty(Dimension::Bytes, description.memory_bytes),
+            capacity: qty(CapacityDimension::Bytes, description.memory_bytes),
         },
     ];
     for device_spec in &description.devices {
@@ -181,15 +181,15 @@ pub fn build_graph(
             id: device,
             kind: device_spec.kind,
             attrs,
-            capacity: qty(Dimension::Count, 1),
+            capacity: qty(CapacityDimension::Count, 1),
         });
     }
     for cpu in &cpus {
         nodes.push(Node {
             id: *cpu,
-            kind: NodeKind::Cpu,
+            kind: ResourceClass::Cpu,
             attrs: Attrs::new(),
-            capacity: qty(Dimension::Count, 1),
+            capacity: qty(CapacityDimension::Count, 1),
         });
     }
     let mut edges = vec![Edge {

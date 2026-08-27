@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::protocol::{read_request, write_response};
@@ -76,8 +76,8 @@ fn submit_sleep(service: &mut NodeService, id: u64) -> RequestId {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -168,10 +168,18 @@ fn agent_re_registration_reconciles_live_work() {
 
     // A DIFFERENT instance id claiming the same display name is a distinct
     // machine, not a takeover — no flap.
-    let machines_before = service.cluster.graph.nodes_of_kind(NodeKind::Machine).len();
+    let machines_before = service
+        .cluster
+        .graph
+        .nodes_of_class(ResourceClass::Machine)
+        .len();
     let impostor = spawn_named_agent("inst-worker-2", "worker");
     register_instance(&mut service, "inst-worker-2", "worker", &impostor);
-    let machines_after = service.cluster.graph.nodes_of_kind(NodeKind::Machine).len();
+    let machines_after = service
+        .cluster
+        .graph
+        .nodes_of_class(ResourceClass::Machine)
+        .len();
     assert_eq!(machines_after, machines_before + 1);
 
     // Control-plane restart: replay restores the graph including agent_id
@@ -182,14 +190,14 @@ fn agent_re_registration_reconciles_live_work() {
     let machines_before_replay = recovered
         .cluster
         .graph
-        .nodes_of_kind(NodeKind::Machine)
+        .nodes_of_class(ResourceClass::Machine)
         .len();
     let replacement = spawn_named_agent("inst-worker-2", "worker");
     register_instance(&mut recovered, "inst-worker-2", "worker", &replacement);
     let machines_after_replay = recovered
         .cluster
         .graph
-        .nodes_of_kind(NodeKind::Machine)
+        .nodes_of_class(ResourceClass::Machine)
         .len();
     assert_eq!(
         machines_after_replay, machines_before_replay,

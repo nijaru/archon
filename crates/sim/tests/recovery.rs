@@ -4,8 +4,8 @@
 //! expired-but-unfenced claims occupied until the fences land.
 
 use archon_kernel::{
-    BindingId, Dimension, Error, LeaseId, LeaseState, Need, NodeKind, OwnerId, ProviderId, Request,
-    RequestClass, RequestId, qty,
+    BindingId, CapacityDimension, Error, LeaseId, LeaseState, Need, OwnerId, ProviderId, Request,
+    RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -26,8 +26,8 @@ fn cpu_request(id: u64) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 2),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 2),
             filters: vec![],
         }],
         topology: vec![],

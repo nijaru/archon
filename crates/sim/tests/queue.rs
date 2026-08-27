@@ -1,5 +1,5 @@
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -15,13 +15,19 @@ fn boot() -> World {
     world
 }
 
-fn request(id: u64, class: RequestClass, kind: NodeKind, count: u64, priority: u32) -> Request {
+fn request(
+    id: u64,
+    class: RequestClass,
+    kind: ResourceClass,
+    count: u64,
+    priority: u32,
+) -> Request {
     Request {
         id: RequestId::from_u64(id),
         class,
         needs: vec![Need {
             kind,
-            quantity: qty(Dimension::Count, count),
+            quantity: qty(CapacityDimension::Count, count),
             filters: vec![],
         }],
         topology: vec![],
@@ -50,12 +56,12 @@ fn take(world: &mut World, lease: u64) -> RequestId {
 fn priority_then_time() {
     let mut world = boot();
     world.enqueue(
-        request(1, RequestClass::Service, NodeKind::Cpu, 1, 1),
+        request(1, RequestClass::Service, ResourceClass::Cpu, 1, 1),
         OwnerId::from_u64(1),
     );
     world.set_now(2);
     world.enqueue(
-        request(2, RequestClass::Service, NodeKind::Cpu, 1, 10),
+        request(2, RequestClass::Service, ResourceClass::Cpu, 1, 10),
         OwnerId::from_u64(2),
     );
     assert_eq!(take(&mut world, 1), RequestId::from_u64(2));
@@ -66,15 +72,15 @@ fn priority_then_time() {
 fn waits_then_places_after_release() {
     let mut world = boot();
     world.enqueue(
-        request(1, RequestClass::Batch, NodeKind::Gpu, 1, 1),
+        request(1, RequestClass::Batch, ResourceClass::Gpu, 1, 1),
         OwnerId::from_u64(1),
     );
     world.enqueue(
-        request(2, RequestClass::Batch, NodeKind::Gpu, 1, 1),
+        request(2, RequestClass::Batch, ResourceClass::Gpu, 1, 1),
         OwnerId::from_u64(2),
     );
     world.enqueue(
-        request(3, RequestClass::Batch, NodeKind::Gpu, 1, 1),
+        request(3, RequestClass::Batch, ResourceClass::Gpu, 1, 1),
         OwnerId::from_u64(3),
     );
     take(&mut world, 1);
@@ -101,11 +107,11 @@ fn waits_then_places_after_release() {
 fn waiting_large_request_does_not_block_other_kind() {
     let mut world = boot();
     world.enqueue(
-        request(1, RequestClass::Batch, NodeKind::Gpu, 4, 100),
+        request(1, RequestClass::Batch, ResourceClass::Gpu, 4, 100),
         OwnerId::from_u64(1),
     );
     world.enqueue(
-        request(2, RequestClass::Service, NodeKind::Cpu, 1, 1),
+        request(2, RequestClass::Service, ResourceClass::Cpu, 1, 1),
         OwnerId::from_u64(2),
     );
     assert_eq!(take(&mut world, 1), RequestId::from_u64(2));

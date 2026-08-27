@@ -223,7 +223,7 @@ impl World {
     ) -> Result<Option<RequestId>, Error> {
         let Some(admission) = self
             .cluster
-            .admit_backfill(&self.queue, &archon_kernel::KindUsage::new())
+            .admit_backfill(&self.queue, &archon_kernel::ClassUsage::new())
         else {
             return Ok(None);
         };
@@ -250,7 +250,7 @@ impl World {
         &mut self,
         lease: LeaseId,
         owner: OwnerId,
-        fair_share: &archon_kernel::KindUsage,
+        fair_share: &archon_kernel::ClassUsage,
     ) -> Result<Option<RequestId>, Error> {
         let Some(admission) = self.cluster.admit_fair(&self.queue, fair_share) else {
             return Ok(None);
@@ -410,7 +410,7 @@ impl World {
             .graph
             .node(machine)
             .ok_or(Error::UnknownNode(machine))?;
-        if node.kind != archon_kernel::NodeKind::Machine {
+        if node.kind != archon_kernel::ResourceClass::Machine {
             return Err(Error::Invalid("fail_machine requires a machine node"));
         }
         self.apply(Command::QuarantineNode { node: machine })?;

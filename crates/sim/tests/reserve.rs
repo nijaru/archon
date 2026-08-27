@@ -1,5 +1,6 @@
 use archon_kernel::{
-    Dimension, LeaseId, LeaseState, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, LeaseState, Need, OwnerId, Request, RequestClass, RequestId,
+    ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -22,8 +23,8 @@ fn gpu_request(id: u64, count: u64, priority: u32) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Gpu,
-            quantity: qty(Dimension::Count, count),
+            kind: ResourceClass::Gpu,
+            quantity: qty(CapacityDimension::Count, count),
             filters: vec![],
         }],
         topology: vec![],
@@ -46,8 +47,8 @@ fn cpu_request(id: u64, priority: u32) -> Request {
         id: RequestId::from_u64(id),
         class: RequestClass::Service,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -175,12 +176,12 @@ fn promoted_reservation_runs_the_ordinary_lifecycle() {
         .allocation
         .claims
         .iter()
-        .find(|claim| world.cluster.graph.node(claim.node).unwrap().kind == NodeKind::Gpu)
+        .find(|claim| world.cluster.graph.node(claim.node).unwrap().kind == ResourceClass::Gpu)
         .unwrap()
         .node;
     assert_eq!(
         world.cluster.occupancy().used_on(active_gpu),
-        qty(Dimension::Count, 1),
+        qty(CapacityDimension::Count, 1),
         "promoted lease must occupy its claimed GPU"
     );
 }
@@ -231,7 +232,7 @@ fn reservation_consumes_its_own_kind_budget() {
     let usage = archon_kernel::owner_usage(&world.cluster.graph, &world.cluster.leases);
     let charged = usage
         .get(&OwnerId::from_u64(1))
-        .and_then(|per_kind| per_kind.get(&NodeKind::Cpu))
+        .and_then(|per_kind| per_kind.get(&ResourceClass::Cpu))
         .map(|q| q.len())
         .unwrap_or(0);
     assert_eq!(
@@ -239,9 +240,9 @@ fn reservation_consumes_its_own_kind_budget() {
         "reserved leases must charge their owner by kind"
     );
 
-    let cpu_ceiling = archon_kernel::KindUsage::from([(
-        archon_kernel::NodeKind::Cpu,
-        archon_kernel::qty(archon_kernel::Dimension::Count, 1),
+    let cpu_ceiling = archon_kernel::ClassUsage::from([(
+        archon_kernel::ResourceClass::Cpu,
+        archon_kernel::qty(archon_kernel::CapacityDimension::Count, 1),
     )]);
     world.enqueue(cpu_request(2, 1), OwnerId::from_u64(1));
     assert!(
@@ -273,9 +274,9 @@ fn reservation_leaves_other_kind_budgets_untouched() {
         .unwrap();
     // The owner is at its CPU reservation, but only CPU budgets constrain
     // CPU requests: its GPU request admits under a GPU-only ceiling.
-    let gpu_ceiling = archon_kernel::KindUsage::from([(
-        archon_kernel::NodeKind::Gpu,
-        archon_kernel::qty(archon_kernel::Dimension::Count, 1),
+    let gpu_ceiling = archon_kernel::ClassUsage::from([(
+        archon_kernel::ResourceClass::Gpu,
+        archon_kernel::qty(archon_kernel::CapacityDimension::Count, 1),
     )]);
     world.enqueue(gpu_request(2, 1, 1), OwnerId::from_u64(1));
     assert_eq!(

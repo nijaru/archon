@@ -5,8 +5,8 @@ use crate::graph::Graph;
 use crate::ids::NodeId;
 use crate::occupancy::Occupancy;
 use crate::types::{
-    Allocation, Claim, Dimension, EdgeKind, Need, NodeKind, Preference, Request, RequestClass, qty,
-    quantity_get,
+    Allocation, CapacityDimension, Claim, EdgeKind, Need, Preference, Request, RequestClass,
+    ResourceClass, qty, quantity_get,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +97,7 @@ fn select_one_machine(
     mode: PackMode,
     quarantine: &BTreeSet<NodeId>,
 ) -> Result<Allocation, Error> {
-    let machines = graph.nodes_of_kind(NodeKind::Machine);
+    let machines = graph.nodes_of_class(ResourceClass::Machine);
     for &machine in machines {
         if quarantine.contains(&machine)
             || graph
@@ -209,30 +209,34 @@ fn select_need_in(
             explanation: format!("no {:?} node within the allowed set", need.kind),
         });
     }
-    if need.kind == NodeKind::Memory {
-        let want = quantity_get(&need.quantity, Dimension::Bytes);
-        if want == 0 {
+    if is_consumable_need(need) {
+        let wanted = consumable_quantity(need);
+        if wanted.is_empty() || wanted.values().all(|amount| *amount == 0) {
             return Err(Error::Refused {
-                explanation: "memory need has zero bytes".into(),
+                explanation: if need.kind == ResourceClass::Memory {
+                    "memory need has zero bytes".into()
+                } else {
+                    format!("need {:?} has no positive capacity", need.kind)
+                },
             });
         }
+        let memory_want = quantity_get(&wanted, CapacityDimension::Bytes);
         let ctx = ScoreCtx {
             graph,
             occupancy,
             request,
             already,
             mode,
-            memory_want: want,
+            memory_want,
         };
         for node in rank(&ctx, &[], &candidates)? {
-            let remaining = occupancy.remaining(graph, node)?;
-            if quantity_get(&remaining, Dimension::Bytes) < want {
-                continue;
-            }
             let claim = Claim {
                 node,
-                quantity: qty(Dimension::Bytes, want),
+                quantity: wanted.clone(),
             };
+            if !occupancy.can_cover(graph, &claim)? {
+                continue;
+            }
             let mut trial = already.to_vec();
             trial.push(vec![claim.clone()]);
             if topology_holds(graph, &trial, request) {
@@ -256,14 +260,18 @@ fn select_need_in(
             }
         }
         return Err(Error::Refused {
-            explanation: format!("no memory node has {want} free bytes"),
+            explanation: if need.kind == ResourceClass::Memory {
+                format!("no memory node has {memory_want} free bytes")
+            } else {
+                format!("no {:?} node has the requested capacity", need.kind)
+            },
         });
     }
 
     // A need's claims are machine-local by default: one workload's compute
     // cannot span hosts. Requests with machine_local=false (explicit
     // multi-member groups) may spread across machines as before.
-    let count = quantity_get(&need.quantity, Dimension::Count).max(1);
+    let count = quantity_get(&need.quantity, CapacityDimension::Count).max(1);
     let ctx = ScoreCtx {
         graph,
         occupancy,
@@ -296,7 +304,7 @@ fn select_need_in(
             }
             let claim = Claim {
                 node,
-                quantity: qty(Dimension::Count, 1),
+                quantity: qty(CapacityDimension::Count, 1),
             };
             let mut trial = already.to_vec();
             let mut group = chosen.clone();
@@ -346,7 +354,7 @@ fn select_spread(
         }
         let claim = Claim {
             node,
-            quantity: qty(Dimension::Count, 1),
+            quantity: qty(CapacityDimension::Count, 1),
         };
         let mut trial = already.to_vec();
         let mut group = chosen.clone();
@@ -378,13 +386,13 @@ fn candidates(
     need: &Need,
     quarantine: &BTreeSet<NodeId>,
 ) -> Result<Vec<NodeId>, Error> {
-    if need.kind == NodeKind::DataObject {
+    if need.kind == ResourceClass::DataObject {
         return Err(Error::Refused {
             explanation: "data objects are locality hints, not claimable resources".into(),
         });
     }
     let mut out = Vec::new();
-    for id in graph.nodes_of_kind(need.kind) {
+    for id in graph.nodes_of_class(need.kind) {
         let node = graph.node(*id).ok_or(Error::UnknownNode(*id))?;
         if quarantine.contains(&node.id)
             || graph
@@ -414,14 +422,30 @@ fn candidates(
     Ok(out)
 }
 
-fn need_unit(need: &Need) -> crate::types::Quantity {
-    if need.kind == NodeKind::Memory {
+fn is_consumable_need(need: &Need) -> bool {
+    need.kind == ResourceClass::Memory
+        || need
+            .quantity
+            .keys()
+            .any(|dimension| *dimension != CapacityDimension::Count)
+}
+
+fn consumable_quantity(need: &Need) -> crate::types::Quantity {
+    if need.kind == ResourceClass::Memory {
         qty(
-            Dimension::Bytes,
-            quantity_get(&need.quantity, Dimension::Bytes),
+            CapacityDimension::Bytes,
+            quantity_get(&need.quantity, CapacityDimension::Bytes),
         )
     } else {
-        qty(Dimension::Count, 1)
+        need.quantity.clone()
+    }
+}
+
+fn need_unit(need: &Need) -> crate::types::Quantity {
+    if is_consumable_need(need) {
+        consumable_quantity(need)
+    } else {
+        qty(CapacityDimension::Count, 1)
     }
 }
 
@@ -487,8 +511,11 @@ fn score_node(ctx: &ScoreCtx<'_>, chosen: &[Claim], node: NodeId) -> Result<i64,
     if ctx.memory_want > 0 {
         // Bounded so fragmentation preference stays below the locality and
         // health tiers regardless of node size.
-        let leftover = (quantity_get(&ctx.occupancy.remaining(ctx.graph, node)?, Dimension::Bytes)
-            .saturating_sub(ctx.memory_want)
+        let leftover = (quantity_get(
+            &ctx.occupancy.remaining(ctx.graph, node)?,
+            CapacityDimension::Bytes,
+        )
+        .saturating_sub(ctx.memory_want)
             / (1 << 20))
             .min(4_000) as i64;
         match ctx.mode {

@@ -1,4 +1,4 @@
-use archon_kernel::{Dimension, KindUsage, NodeKind, OwnerId, qty};
+use archon_kernel::{CapacityDimension, ClassUsage, OwnerId, ResourceClass, qty};
 use archon_sim::{World, tiny_graph};
 
 fn boot() -> World {
@@ -28,8 +28,8 @@ fn cpu_request_local(
         id: archon_kernel::RequestId::from_u64(id),
         class: archon_kernel::RequestClass::Service,
         needs: vec![archon_kernel::Need {
-            kind: archon_kernel::NodeKind::Cpu,
-            quantity: qty(Dimension::Count, count),
+            kind: archon_kernel::ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, count),
             filters: vec![],
         }],
         topology: vec![],
@@ -105,7 +105,7 @@ fn fair_share_ceiling_lets_small_owners_through() {
     world.enqueue(cpu_request(4, 1, 10), OwnerId::from_u64(3));
     // Fair-share ceiling of 2 CPUs per owner: owner 1 is over budget and is
     // skipped, so both small owners are served.
-    let fair_share = KindUsage::from([(NodeKind::Cpu, qty(Dimension::Count, 2))]);
+    let fair_share = ClassUsage::from([(ResourceClass::Cpu, qty(CapacityDimension::Count, 2))]);
     assert_eq!(
         world
             .admit_next_fair(
@@ -167,7 +167,7 @@ fn empty_ceiling_matches_plain_admission() {
     let mut world = boot();
     world.enqueue(cpu_request(1, 1, 10), OwnerId::from_u64(1));
     world.enqueue(cpu_request(2, 1, 10), OwnerId::from_u64(2));
-    let empty = KindUsage::new();
+    let empty = ClassUsage::new();
     assert_eq!(
         world
             .admit_next_fair(

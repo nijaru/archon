@@ -36,7 +36,7 @@ pub struct Digest {
     pub now: u64,
     pub agreed: bool,
     pub graph_revision: u64,
-    pub graph_nodes: BTreeMap<NodeId, (crate::types::NodeKind, Quantity, crate::types::Attrs)>,
+    pub graph_nodes: BTreeMap<NodeId, (crate::types::ResourceClass, Quantity, crate::types::Attrs)>,
     pub graph_edges: Vec<(NodeId, NodeId, crate::types::EdgeKind)>,
     pub leases: BTreeMap<LeaseId, LeaseDigest>,
     pub bindings: BTreeMap<BindingId, BindingDigest>,
@@ -1318,7 +1318,7 @@ impl Cluster {
             .graph
             .node(machine)
             .ok_or(Error::UnknownNode(machine))?;
-        if node.kind != crate::types::NodeKind::Machine {
+        if node.kind != crate::types::ResourceClass::Machine {
             return Err(Error::Invalid("agent session requires a machine node"));
         }
         // Sessions are process generations: a delayed hello from an older

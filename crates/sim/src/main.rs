@@ -1,5 +1,5 @@
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, Request, RequestClass, RequestId, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_sim::{World, tiny_graph};
 
@@ -20,13 +20,13 @@ fn main() {
         class: RequestClass::Service,
         needs: vec![
             Need {
-                kind: NodeKind::Cpu,
-                quantity: qty(Dimension::Count, 1),
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
                 filters: vec![],
             },
             Need {
-                kind: NodeKind::Memory,
-                quantity: qty(Dimension::Bytes, archon_sim::GIB),
+                kind: ResourceClass::Memory,
+                quantity: qty(CapacityDimension::Bytes, archon_sim::GIB),
                 filters: vec![],
             },
         ],

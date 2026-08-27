@@ -9,8 +9,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    Dimension, LeaseId, Need, NodeKind, OwnerId, PortPublish, Request, RequestClass, RequestId,
-    StorageMount, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, PortPublish, Request, RequestClass, RequestId,
+    ResourceClass, StorageMount, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::protocol::{read_request, write_response};
@@ -88,8 +88,8 @@ fn submit_container(
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],
@@ -283,8 +283,8 @@ fn submit_request_template(id: u64, command: Vec<String>, dir: &std::path::Path)
         id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![Need {
-            kind: NodeKind::Cpu,
-            quantity: qty(Dimension::Count, 1),
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, 1),
             filters: vec![],
         }],
         topology: vec![],

@@ -1,39 +1,211 @@
 use std::collections::BTreeMap;
+use std::fmt;
+use std::str::FromStr;
 
 use crate::ids::{BindingId, LeaseId, NodeId, OwnerId, ProviderId};
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum NodeKind {
-    Machine,
-    Rack,
-    PowerDomain,
-    Socket,
-    Numa,
-    Cpu,
-    Memory,
-    PcieRoot,
-    Gpu,
-    Nic,
-    Nvme,
-    Region,
-    Datacenter,
-    DataObject,
+const MAX_IDENTIFIER_LEN: usize = 63;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum IdentifierError {
+    Empty,
+    TooLong,
+    InvalidCharacter { index: usize },
+    InvalidBoundary,
 }
 
-impl NodeKind {
-    pub const fn default_dimension(self) -> Option<Dimension> {
+impl fmt::Debug for IdentifierError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for IdentifierError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Cpu | Self::Gpu | Self::Nic | Self::Nvme => Some(Dimension::Count),
-            Self::Memory => Some(Dimension::Bytes),
+            Self::Empty => write!(f, "identifier must not be empty"),
+            Self::TooLong => write!(f, "identifier exceeds {MAX_IDENTIFIER_LEN} bytes"),
+            Self::InvalidCharacter { index } => {
+                write!(
+                    f,
+                    "identifier contains an invalid character at byte {index}"
+                )
+            }
+            Self::InvalidBoundary => {
+                write!(f, "identifier must start and end with a letter or digit")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IdentifierError {}
+
+fn validate_identifier(value: &str) -> Result<([u8; MAX_IDENTIFIER_LEN], u8), IdentifierError> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return Err(IdentifierError::Empty);
+    }
+    if bytes.len() > MAX_IDENTIFIER_LEN {
+        return Err(IdentifierError::TooLong);
+    }
+    if !bytes[0].is_ascii_alphanumeric() || !bytes[bytes.len() - 1].is_ascii_alphanumeric() {
+        return Err(IdentifierError::InvalidBoundary);
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        if !byte.is_ascii_lowercase()
+            && !byte.is_ascii_digit()
+            && !matches!(byte, b'-' | b'_' | b'.' | b'/')
+        {
+            return Err(IdentifierError::InvalidCharacter { index });
+        }
+    }
+    let mut out = [0; MAX_IDENTIFIER_LEN];
+    out[..bytes.len()].copy_from_slice(bytes);
+    Ok((out, bytes.len() as u8))
+}
+
+macro_rules! validated_identifier {
+    ($name:ident { $( $constant:ident = $value:literal ),+ $(,)? }) => {
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name {
+            bytes: [u8; MAX_IDENTIFIER_LEN],
+            len: u8,
+        }
+
+        #[allow(non_upper_case_globals)]
+        impl $name {
+            const fn from_static(value: &'static str) -> Self {
+                let source = value.as_bytes();
+                let mut bytes = [0; MAX_IDENTIFIER_LEN];
+                let mut index = 0;
+                while index < source.len() {
+                    bytes[index] = source[index];
+                    index += 1;
+                }
+                Self {
+                    bytes,
+                    len: source.len() as u8,
+                }
+            }
+
+            $(pub const $constant: Self = Self::from_static($value);)+
+
+            pub fn new(value: &str) -> Result<Self, IdentifierError> {
+                let (bytes, len) = validate_identifier(value)?;
+                Ok(Self { bytes, len })
+            }
+
+            pub fn as_str(&self) -> &str {
+                // The inline representation is validated at construction and
+                // all constants are ASCII literals.
+                std::str::from_utf8(&self.bytes[..self.len as usize])
+                    .expect("validated identifier is UTF-8")
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_tuple(stringify!($name)).field(&self.as_str()).finish()
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = IdentifierError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::new(value)
+            }
+        }
+
+        impl TryFrom<&str> for $name {
+            type Error = IdentifierError;
+
+            fn try_from(value: &str) -> Result<Self, Self::Error> {
+                Self::new(value)
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = IdentifierError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::new(&value)
+            }
+        }
+
+        #[cfg(feature = "serde")]
+        impl serde::Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        #[cfg(feature = "serde")]
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+                Self::new(&value).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+validated_identifier!(ResourceClass {
+    Machine = "machine",
+    Rack = "rack",
+    PowerDomain = "power-domain",
+    Socket = "socket",
+    Numa = "numa",
+    Cpu = "cpu",
+    Memory = "memory",
+    PcieRoot = "pcie-root",
+    Gpu = "gpu",
+    Nic = "nic",
+    Nvme = "nvme",
+    Region = "region",
+    Datacenter = "datacenter",
+    DataObject = "data-object",
+});
+
+impl ResourceClass {
+    pub const fn default_dimension(self) -> Option<CapacityDimension> {
+        match self {
+            Self::Cpu | Self::Gpu | Self::Nic | Self::Nvme => Some(CapacityDimension::Count),
+            Self::Memory => Some(CapacityDimension::Bytes),
             _ => None,
         }
     }
 
     pub const fn is_enforced(self) -> bool {
-        matches!(
+        !matches!(
             self,
-            Self::Cpu | Self::Memory | Self::Gpu | Self::Nic | Self::Nvme
+            Self::Machine
+                | Self::Rack
+                | Self::PowerDomain
+                | Self::Socket
+                | Self::Numa
+                | Self::PcieRoot
+                | Self::Region
+                | Self::Datacenter
+                | Self::DataObject
         )
     }
 }
@@ -48,23 +220,21 @@ pub enum EdgeKind {
     CachedOn,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Dimension {
-    Count,
-    Bytes,
-}
+validated_identifier!(CapacityDimension {
+    Count = "count",
+    Bytes = "bytes",
+});
 
-pub type Quantity = BTreeMap<Dimension, u64>;
+pub type Quantity = BTreeMap<CapacityDimension, u64>;
 pub type Attrs = BTreeMap<String, String>;
 
-pub fn qty(dimension: Dimension, amount: u64) -> Quantity {
+pub fn qty(dimension: CapacityDimension, amount: u64) -> Quantity {
     let mut quantity = Quantity::new();
     quantity.insert(dimension, amount);
     quantity
 }
 
-pub fn quantity_get(quantity: &Quantity, dimension: Dimension) -> u64 {
+pub fn quantity_get(quantity: &Quantity, dimension: CapacityDimension) -> u64 {
     quantity.get(&dimension).copied().unwrap_or(0)
 }
 
@@ -103,7 +273,7 @@ pub fn quantity_add_assign(left: &mut Quantity, right: &Quantity) {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Node {
     pub id: NodeId,
-    pub kind: NodeKind,
+    pub kind: ResourceClass,
     pub attrs: Attrs,
     pub capacity: Quantity,
 }
@@ -134,7 +304,7 @@ pub struct Filter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Need {
-    pub kind: NodeKind,
+    pub kind: ResourceClass,
     pub quantity: Quantity,
     pub filters: Vec<Filter>,
 }
