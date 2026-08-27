@@ -129,7 +129,11 @@ impl ProcessRuntime {
         let [program, args @ ..] = command else {
             return Err(format!("lease {lease} has no command to execute"));
         };
-        if !devices.is_empty() && !self.warned_unenforced_devices {
+        #[cfg(target_os = "linux")]
+        let devices_unenforced = self.cgroup_root.is_none();
+        #[cfg(not(target_os = "linux"))]
+        let devices_unenforced = true;
+        if !devices.is_empty() && devices_unenforced && !self.warned_unenforced_devices {
             self.warned_unenforced_devices = true;
             eprintln!("archon: device claims are tracked but not enforced by this runtime");
         }

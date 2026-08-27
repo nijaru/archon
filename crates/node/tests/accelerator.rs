@@ -97,7 +97,16 @@ fn auto_discovers_and_runs_a_real_nvidia_device_lease() {
     assert!(access[0].paths.iter().any(|path| path == "/dev/nvidiactl"));
     assert!(access[0].paths.iter().any(|path| path == "/dev/nvidia-uvm"));
 
-    assert!(service.is_running(lease), "GPU lease workload must run");
+    let running = service.is_running(lease);
+    if !running {
+        let logs = service
+            .lease_logs(lease)
+            .unwrap_or_else(|err| format!("log error: {err}"));
+        panic!(
+            "GPU lease workload must run; state={:?}, logs={logs:?}",
+            service.cluster.leases.get(&lease).map(|lease| &lease.state)
+        );
+    }
     assert!(wait_until(Duration::from_secs(2), || {
         service
             .lease_logs(lease)
