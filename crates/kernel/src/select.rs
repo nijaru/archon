@@ -5,8 +5,8 @@ use crate::graph::Graph;
 use crate::ids::NodeId;
 use crate::occupancy::Occupancy;
 use crate::types::{
-    Allocation, CapacityDimension, Claim, EdgeKind, Need, Preference, Request, RequestClass,
-    ResourceClass, qty, quantity_get,
+    Allocation, CapacityDimension, Claim, Need, Preference, Request, RequestClass, ResourceClass,
+    TopologyRelation, qty, quantity_get,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -477,10 +477,15 @@ fn score_node(ctx: &ScoreCtx<'_>, chosen: &[Claim], node: NodeId) -> Result<i64,
                 score -= 10 * load;
             }
         }
-        if extras
-            .iter()
-            .any(|claim| ctx.graph.related(node, claim.node, EdgeKind::SameNuma))
-            && ctx.mode == PackMode::Pack
+        if extras.iter().any(|claim| {
+            ctx.graph.satisfies(
+                node,
+                claim.node,
+                TopologyRelation::SameAncestor {
+                    class: ResourceClass::Numa,
+                },
+            )
+        }) && ctx.mode == PackMode::Pack
         {
             score += 50;
         }
@@ -552,7 +557,7 @@ fn topology_holds(graph: &Graph, picked: &[Vec<Claim>], request: &Request) -> bo
         }
         for left in &picked[constraint.left] {
             for right in &picked[constraint.right] {
-                if !graph.related(left.node, right.node, constraint.kind) {
+                if !graph.satisfies(left.node, right.node, constraint.relation) {
                     return false;
                 }
             }

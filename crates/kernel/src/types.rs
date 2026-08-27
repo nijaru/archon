@@ -214,8 +214,19 @@ impl ResourceClass {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EdgeKind {
     Contains,
-    SameNuma,
-    SamePcie,
+    Connected,
+    CachedOn,
+}
+
+/// A placement relationship evaluated against the graph's containment and
+/// sparse connectivity facts. This stays separate from `EdgeKind` so a new
+/// ancestor class does not require a new stored-edge variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TopologyRelation {
+    SameAncestor { class: ResourceClass },
+    DifferentAncestor { class: ResourceClass },
+    Contains,
     Connected,
     CachedOn,
 }
@@ -314,7 +325,7 @@ pub struct Need {
 pub struct TopologyConstraint {
     pub left: usize,
     pub right: usize,
-    pub kind: EdgeKind,
+    pub relation: TopologyRelation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

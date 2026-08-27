@@ -929,7 +929,7 @@ fn digest_distinguishes_capacity_and_edge_changes() {
             edges: vec![archon_kernel::Edge {
                 from: NodeId::from_u64(2),
                 to: NodeId::from_u64(3),
-                kind: archon_kernel::EdgeKind::SameNuma,
+                kind: archon_kernel::EdgeKind::Connected,
                 attrs: Default::default(),
             }],
         })

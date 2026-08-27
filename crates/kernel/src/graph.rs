@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Error;
 use crate::ids::NodeId;
-use crate::types::{Edge, EdgeKind, Node, ResourceClass};
+use crate::types::{Edge, EdgeKind, Node, ResourceClass, TopologyRelation};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -157,18 +157,33 @@ impl Graph {
             .find(|ancestor| degraded(*ancestor))
     }
 
+    /// Evaluates a placement relationship from containment and sparse
+    /// connectivity facts. Ancestor relationships are derived, so adding a
+    /// new resource class does not require a new edge or kernel variant.
+    pub fn satisfies(&self, left: NodeId, right: NodeId, relation: TopologyRelation) -> bool {
+        match relation {
+            TopologyRelation::SameAncestor { class } => same_ancestor(self, left, right, class),
+            TopologyRelation::DifferentAncestor { class } => match (
+                self.ancestor_of_class(left, class),
+                self.ancestor_of_class(right, class),
+            ) {
+                (Some(left), Some(right)) => left != right,
+                _ => false,
+            },
+            TopologyRelation::Contains => {
+                self.ancestors(right).contains(&left) || self.ancestors(left).contains(&right)
+            }
+            TopologyRelation::Connected => self.has_edge(left, right, EdgeKind::Connected),
+            TopologyRelation::CachedOn => self.has_edge(left, right, EdgeKind::CachedOn),
+        }
+    }
+
+    /// Evaluates a sparse stored relationship. Containment relationships are
+    /// derived from the hierarchy instead of duplicated as explicit edges.
     pub fn related(&self, left: NodeId, right: NodeId, kind: EdgeKind) -> bool {
         match kind {
             EdgeKind::Contains => {
                 self.ancestors(right).contains(&left) || self.ancestors(left).contains(&right)
-            }
-            EdgeKind::SameNuma => {
-                same_ancestor(self, left, right, ResourceClass::Numa)
-                    || self.has_edge(left, right, EdgeKind::SameNuma)
-            }
-            EdgeKind::SamePcie => {
-                same_ancestor(self, left, right, ResourceClass::PcieRoot)
-                    || self.has_edge(left, right, EdgeKind::SamePcie)
             }
             EdgeKind::Connected => self.has_edge(left, right, EdgeKind::Connected),
             EdgeKind::CachedOn => self.has_edge(left, right, EdgeKind::CachedOn),

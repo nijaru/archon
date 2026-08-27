@@ -1,6 +1,7 @@
 use archon_kernel::{
     BindingId, CapacityDimension, Effect, EndpointOp, Error, LeaseId, LeaseState, Need, NodeId,
-    OwnerId, ProviderId, Request, RequestClass, RequestId, ResourceClass, TopologyConstraint, qty,
+    OwnerId, ProviderId, Request, RequestClass, RequestId, ResourceClass, TopologyConstraint,
+    TopologyRelation, qty,
 };
 use archon_sim::{GIB, World, tiny_graph};
 
@@ -23,7 +24,9 @@ fn service_request() -> Request {
         topology: vec![TopologyConstraint {
             left: 0,
             right: 1,
-            kind: archon_kernel::EdgeKind::SameNuma,
+            relation: TopologyRelation::SameAncestor {
+                class: ResourceClass::Numa,
+            },
         }],
         preferences: vec![],
         data: vec![],

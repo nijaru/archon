@@ -1,6 +1,6 @@
 use archon_kernel::{
-    CapacityDimension, Cluster, Command, IdentifierError, Need, NodeId, Request, RequestClass,
-    ResourceClass, qty,
+    CapacityDimension, Cluster, Command, Edge, EdgeKind, Graph, IdentifierError, Need, NodeId,
+    Request, RequestClass, ResourceClass, TopologyRelation, qty,
 };
 
 fn request(kind: ResourceClass, dimension: CapacityDimension, amount: u64) -> Request {
@@ -52,6 +52,81 @@ fn identifiers_are_validated_and_preserve_well_known_values() {
         ResourceClass::new(&"a".repeat(64)),
         Err(IdentifierError::TooLong)
     );
+}
+
+#[test]
+fn generic_topology_relations_derive_from_containment() {
+    let mut graph = Graph::new();
+    let left_machine = NodeId::from_u64(1);
+    let right_machine = NodeId::from_u64(2);
+    let left_device = NodeId::from_u64(3);
+    let right_device = NodeId::from_u64(4);
+    graph
+        .apply(
+            vec![
+                archon_kernel::Node {
+                    id: left_machine,
+                    kind: ResourceClass::Machine,
+                    attrs: Default::default(),
+                    capacity: Default::default(),
+                },
+                archon_kernel::Node {
+                    id: right_machine,
+                    kind: ResourceClass::Machine,
+                    attrs: Default::default(),
+                    capacity: Default::default(),
+                },
+                archon_kernel::Node {
+                    id: left_device,
+                    kind: ResourceClass::Gpu,
+                    attrs: Default::default(),
+                    capacity: qty(CapacityDimension::Count, 1),
+                },
+                archon_kernel::Node {
+                    id: right_device,
+                    kind: ResourceClass::Gpu,
+                    attrs: Default::default(),
+                    capacity: qty(CapacityDimension::Count, 1),
+                },
+            ],
+            vec![
+                Edge {
+                    from: left_machine,
+                    to: left_device,
+                    kind: EdgeKind::Contains,
+                    attrs: Default::default(),
+                },
+                Edge {
+                    from: right_machine,
+                    to: right_device,
+                    kind: EdgeKind::Contains,
+                    attrs: Default::default(),
+                },
+            ],
+        )
+        .unwrap();
+
+    assert!(graph.satisfies(
+        left_device,
+        left_machine,
+        TopologyRelation::SameAncestor {
+            class: ResourceClass::Machine,
+        }
+    ));
+    assert!(graph.satisfies(
+        left_device,
+        right_device,
+        TopologyRelation::DifferentAncestor {
+            class: ResourceClass::Machine,
+        }
+    ));
+    assert!(!graph.satisfies(
+        left_device,
+        right_device,
+        TopologyRelation::SameAncestor {
+            class: ResourceClass::Machine,
+        }
+    ));
 }
 
 #[test]
