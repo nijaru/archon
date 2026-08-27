@@ -245,6 +245,7 @@ fn claimed_devices_are_enforced_by_cgroup_device_filter() {
         id: "gpu0".into(),
         dev: "/dev/null".into(),
         paths: Vec::new(),
+        cdi: None,
     }];
     runtime
         .activate(

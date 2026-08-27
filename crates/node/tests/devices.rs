@@ -31,6 +31,9 @@ fn provider_support_paths_follow_one_device_claim() {
     let mut service = NodeService::new();
     let mut description = description("inst-paths", "/dev/null");
     description.devices[0].access = vec!["/dev/zero".into()];
+    description.devices[0]
+        .attrs
+        .insert("cdi".into(), "nvidia.com/gpu=gpu0".into());
     service
         .register_agent(
             description,
@@ -42,6 +45,7 @@ fn provider_support_paths_follow_one_device_claim() {
     let devices = service.lease_devices(LeaseId::from_u64(1));
     assert_eq!(devices[0].dev, "/dev/null");
     assert_eq!(devices[0].paths, vec!["/dev/zero"]);
+    assert_eq!(devices[0].cdi.as_deref(), Some("nvidia.com/gpu=gpu0"));
     service.revoke(LeaseId::from_u64(1)).expect("revoke");
 }
 

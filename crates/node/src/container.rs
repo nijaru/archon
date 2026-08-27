@@ -29,6 +29,12 @@ pub struct ContainerRuntime {
     containers: BTreeMap<LeaseId, String>,
     /// Engine is podman: volume mounts need the SELinux relabel suffix.
     relabels: bool,
+    /// Explicit opt-in for provider-native CDI names. The default remains
+    /// direct host-device paths so stale runtime CDI metadata cannot silently
+    /// change attachment behavior.
+    use_cdi: bool,
+    /// Optional Podman CDI search path, used only when explicitly configured.
+    cdi_spec_dir: Option<String>,
 }
 
 static CONTAINER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -48,11 +54,24 @@ impl ContainerRuntime {
                     .contains("podman")
             })
             .unwrap_or(false);
+        let use_cdi = std::env::var("ARCHON_CONTAINER_USE_CDI")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes"
+                )
+            })
+            .unwrap_or(false);
+        let cdi_spec_dir = (use_cdi && relabels)
+            .then(|| std::env::var("ARCHON_CDI_SPEC_DIR").ok())
+            .flatten();
         Self {
             engine,
             namespace: format!("{}-{}-{seq}", std::process::id(), lease_namespace_salt()),
             containers: BTreeMap::new(),
             relabels,
+            use_cdi,
+            cdi_spec_dir,
         }
     }
 
@@ -67,6 +86,9 @@ impl ContainerRuntime {
         let name = self.name(lease);
         let count = cfg.limits.cpu_count;
         let mut cmd = Command::new(&self.engine);
+        if let Some(dir) = &self.cdi_spec_dir {
+            cmd.arg("--cdi-spec-dir").arg(dir);
+        }
         cmd.arg("run")
             // No --rm: the adapter removes containers on teardown, and a
             // removed container's exit code is unreadable, which would
@@ -83,8 +105,14 @@ impl ContainerRuntime {
             cmd.arg(format!("--memory={}b", cfg.limits.memory_bytes));
         }
         for device in cfg.devices {
-            for path in std::iter::once(&device.dev).chain(device.paths.iter()) {
-                cmd.arg(format!("--device={path}:{path}"));
+            if self.use_cdi
+                && let Some(cdi) = &device.cdi
+            {
+                cmd.arg(format!("--device={cdi}"));
+            } else {
+                for path in std::iter::once(&device.dev).chain(device.paths.iter()) {
+                    cmd.arg(format!("--device={path}:{path}"));
+                }
             }
         }
         for mount in cfg.storage {

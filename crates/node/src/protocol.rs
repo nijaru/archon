@@ -13,16 +13,21 @@ use serde::{Deserialize, Serialize};
 /// Connection greeting: role declaration, sent as the first framed
 /// message after the Noise handshake authenticates and encrypts the link.
 /// One claimed device handed to an execution adapter: its stable `id`
-/// (survives re-registration) and the host path it is currently reachable
-/// through. Adapters enforce access per runtime — containers via
-/// `--device`, processes via their own device provider (e.g. cgroup-device
-/// eBPF filters) keyed on the same id.
+/// (survives re-registration), the host path it is currently reachable
+/// through, and an optional provider-native attachment name. Adapters enforce
+/// access per runtime — containers via `--device` (a CDI name when opted in),
+/// processes via their own device provider (e.g. cgroup-device eBPF filters)
+/// keyed on the same id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceAccess {
     pub id: String,
     pub dev: String,
     #[serde(default)]
     pub paths: Vec<String>,
+    /// Provider-native container attachment, such as
+    /// `nvidia.com/gpu=GPU-...`.
+    #[serde(default)]
+    pub cdi: Option<String>,
 }
 
 impl DeviceAccess {
@@ -40,6 +45,7 @@ impl DeviceAccess {
             id: attrs.get("id").cloned().unwrap_or_else(|| dev.clone()),
             dev: dev.clone(),
             paths,
+            cdi: attrs.get("cdi").cloned(),
         })
     }
 }
