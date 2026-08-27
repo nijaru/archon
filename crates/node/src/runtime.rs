@@ -16,6 +16,8 @@ use crate::protocol::LeaseLimits;
 use crate::cgroup::CgroupGroup;
 #[cfg(target_os = "linux")]
 use crate::linux_process::{self, LinuxChild};
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 
 enum TrackedChild {
     Standard(Child),
@@ -199,6 +201,26 @@ impl ProcessRuntime {
                 log_file.try_clone().map_err(|err| err.to_string())?,
             ))
             .stderr(Stdio::from(log_file));
+        #[cfg(target_os = "linux")]
+        {
+            let parent_pid = unsafe { libc::getpid() };
+            // SAFETY: `pre_exec` runs in the freshly forked child before any
+            // user code or allocator state is touched.
+            unsafe {
+                child_command.pre_exec(move || {
+                    if libc::getppid() != parent_pid {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "agent exited before workload setup",
+                        ));
+                    }
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         let child = child_command
             .spawn()
             .map_err(|err| format!("spawn {program}: {err}"))?;

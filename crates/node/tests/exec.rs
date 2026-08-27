@@ -62,6 +62,77 @@ fn process_alive(pid: u32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn runtime_child_owner() {
+    let Ok(pid_file) = std::env::var("ARCHON_RUNTIME_DEATH_HELPER") else {
+        return;
+    };
+    let command = vec![
+        "sh".into(),
+        "-c".into(),
+        "echo $$ > \"$1\"; exec sleep 120".into(),
+        "sh".into(),
+        pid_file,
+    ];
+    let mut runtime = ProcessRuntime::new();
+    runtime
+        .activate(LeaseId::from_u64(1), &command, &LeaseLimits::default(), &[])
+        .expect("spawn process");
+    std::thread::sleep(Duration::from_secs(120));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn agent_death_kills_uncontained_workload() {
+    let pid_file = std::env::temp_dir().join(format!(
+        "archon-runtime-death-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let mut owner = Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", "runtime_child_owner", "--nocapture"])
+        .env("ARCHON_RUNTIME_DEATH_HELPER", &pid_file)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn runtime owner");
+    let pid_deadline = Instant::now() + Duration::from_secs(5);
+    let workload_pid = loop {
+        if let Ok(value) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = value.trim().parse::<u32>()
+        {
+            break pid;
+        }
+        assert!(
+            Instant::now() < pid_deadline,
+            "workload did not publish its pid"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(process_alive(workload_pid));
+
+    owner.kill().expect("kill runtime owner");
+    let _ = owner.wait();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && process_alive(workload_pid) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if process_alive(workload_pid) {
+        let _ = Command::new("kill")
+            .args(["-KILL", &workload_pid.to_string()])
+            .status();
+    }
+    let _ = std::fs::remove_file(pid_file);
+    assert!(
+        !process_alive(workload_pid),
+        "agent death must kill its uncontained workload"
+    );
+}
+
 #[test]
 fn dropping_runtime_terminates_uncontained_process() {
     let pid_file = std::env::temp_dir().join(format!(

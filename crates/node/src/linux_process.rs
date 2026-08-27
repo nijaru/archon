@@ -138,6 +138,7 @@ pub(crate) fn spawn(
     // SAFETY: pipe2 initialized both descriptors on success, and this
     // process now owns them.
     let error_write = unsafe { OwnedFd::from_raw_fd(pipe[1]) };
+    let parent_pid = unsafe { libc::getpid() };
     let mut clone_args = CloneArgs {
         flags: CLONE_INTO_CGROUP,
         pidfd: 0,
@@ -171,8 +172,20 @@ pub(crate) fn spawn(
     }
     if result == 0 {
         // SAFETY: the child owns a private copy of these descriptors. The
-        // close/dup2/exec operations are the only work done before exec.
+        // parent-death setup and close/dup2/exec operations are the only work
+        // done before exec.
         unsafe {
+            if libc::getppid() != parent_pid {
+                report_child_error(error_write.as_raw_fd(), libc::ESRCH);
+            }
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                report_child_error(
+                    error_write.as_raw_fd(),
+                    io::Error::last_os_error()
+                        .raw_os_error()
+                        .unwrap_or(libc::EIO),
+                );
+            }
             libc::close(error_read.as_raw_fd());
             redirect_fd_or_exit(
                 stdin.as_raw_fd(),
