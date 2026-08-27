@@ -124,7 +124,10 @@ impl LeaseAgent {
                 };
                 match result {
                     Ok(()) => AgentResponse::Activated { binding },
-                    Err(reason) => self.failed(binding, &reason),
+                    Err(reason) => {
+                        eprintln!("archon: activation for binding {binding} failed: {reason}");
+                        self.failed(binding, &reason)
+                    }
                 }
             }
             AgentRequest::Release { binding, lease, .. } => {
