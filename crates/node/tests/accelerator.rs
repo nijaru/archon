@@ -13,9 +13,9 @@ use archon_kernel::{
 };
 use archon_node::service::NodeService;
 
-fn gpu_request() -> Request {
+fn gpu_request(id: u64) -> Request {
     Request {
-        id: RequestId::from_u64(1),
+        id: RequestId::from_u64(id),
         class: RequestClass::Batch,
         needs: vec![
             Need {
@@ -84,7 +84,7 @@ fn auto_discovers_and_runs_a_real_nvidia_device_lease() {
     assert_eq!(gpu.attrs.get("whole_device"), Some(&"true".into()));
     assert!(gpu.attrs.contains_key("cdi"));
 
-    service.submit(gpu_request(), OwnerId::from_u64(1));
+    service.submit(gpu_request(1), OwnerId::from_u64(1));
     assert_eq!(
         service.admit_one().expect("admit"),
         Some(RequestId::from_u64(1))
@@ -113,6 +113,23 @@ fn auto_discovers_and_runs_a_real_nvidia_device_lease() {
             .is_ok_and(|logs| logs.contains(&uuid))
     }));
 
+    service.submit(gpu_request(2), OwnerId::from_u64(2));
+    assert_eq!(
+        service.admit_one().expect("competing admission"),
+        None,
+        "a competing whole-device claim must wait",
+    );
+
     service.revoke(lease).expect("revoke");
     assert!(wait_until(Duration::from_secs(2), || !service.is_running(lease)));
+    assert_eq!(
+        service.admit_one().expect("admit queued competitor"),
+        Some(RequestId::from_u64(2)),
+    );
+    let replacement = LeaseId::from_u64(2);
+    assert!(
+        service.is_running(replacement),
+        "queued GPU lease must run after release"
+    );
+    service.revoke(replacement).expect("revoke replacement");
 }
