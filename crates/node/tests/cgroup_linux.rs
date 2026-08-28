@@ -190,6 +190,12 @@ fn lease_claims_become_kernel_limits() {
     assert_eq!(cpu_max.trim(), "100000 100000", "1 cpu claim = one core");
     let memory_max = fs::read_to_string(format!("{group}/memory.max")).unwrap();
     assert_eq!(memory_max.trim(), (64 * (1 << 20)).to_string());
+    let swap_max = fs::read_to_string(format!("{group}/memory.swap.max")).unwrap();
+    assert_eq!(
+        swap_max.trim(),
+        "0",
+        "memory claims must not spill into swap"
+    );
     let procs = fs::read_to_string(format!("{group}/cgroup.procs")).unwrap();
     assert!(!procs.trim().is_empty(), "sleep must run inside the group");
 

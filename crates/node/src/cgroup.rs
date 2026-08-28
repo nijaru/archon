@@ -50,6 +50,10 @@ impl CgroupGroup {
         }
         if limits.memory_bytes > 0 {
             group.write("memory.max", &limits.memory_bytes.to_string())?;
+            // A memory Claim is a hard resident-memory boundary. Do not let
+            // an unbounded host swap configuration turn it into an
+            // effectively larger, unaccounted allocation.
+            group.write("memory.swap.max", "0")?;
         }
         Ok(group)
     }
