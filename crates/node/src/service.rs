@@ -200,7 +200,9 @@ impl NodeService {
     /// Register this machine as an agent of the controller; cgroup
     /// enforcement when a root is given (Linux only).
     pub fn register_local(&mut self, cgroup_root: Option<String>) -> Result<NodeId, Error> {
-        let description = crate::discover::describe();
+        let description = crate::discover::try_describe().map_err(|reason| Error::Refused {
+            explanation: format!("local device discovery incomplete: {reason}"),
+        })?;
         #[cfg(target_os = "linux")]
         let runtime = match cgroup_root {
             Some(root) => ProcessRuntime::new().with_cgroup_root(root),

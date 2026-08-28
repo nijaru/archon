@@ -330,7 +330,16 @@ fn dial_in(
                             continue;
                         }
                     };
-                let description = archon_node::discover::describe();
+                let description = match archon_node::discover::try_describe() {
+                    Ok(description) => description,
+                    Err(err) => {
+                        eprintln!(
+                            "archon: device discovery incomplete; registration deferred: {err}"
+                        );
+                        std::thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                };
                 let greeting = archon_control::api::Greeting::Agent {
                     instance_id: instance_id.clone(),
                     name: name.clone().unwrap_or(description.name),

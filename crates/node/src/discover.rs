@@ -61,27 +61,47 @@ pub struct DeviceSpec {
     pub attrs: Attrs,
 }
 
-pub fn describe() -> MachineDescription {
+fn description_with_devices(devices: Vec<DeviceSpec>) -> MachineDescription {
     MachineDescription {
         instance_id: String::new(),
         name: hostname(),
         cpus: std::thread::available_parallelism().map_or(1, |n| n.get()) as u64,
         memory_bytes: total_memory_bytes(),
-        devices: discovered_devices(),
+        devices,
     }
 }
 
-fn discovered_devices() -> Vec<DeviceSpec> {
+/// Discover this machine with an authoritative device inventory. Registration
+/// paths use this form so an uncertain provider query can never masquerade as
+/// an authoritative empty inventory and retire/fail previously known devices.
+pub fn try_describe() -> Result<MachineDescription, String> {
+    discovered_devices().map(description_with_devices)
+}
+
+/// Best-effort one-shot discovery for callers that do not reconcile an
+/// existing machine. Agent registration must use `try_describe` instead.
+pub fn describe() -> MachineDescription {
+    match try_describe() {
+        Ok(description) => description,
+        Err(err) => {
+            eprintln!("archon: device discovery incomplete: {err}");
+            description_with_devices(Vec::new())
+        }
+    }
+}
+
+fn discovered_devices() -> Result<Vec<DeviceSpec>, String> {
     if std::env::var_os("ARCHON_DEVICES").is_some() {
-        return declared_devices();
+        return Ok(declared_devices());
     }
     nvidia_devices()
 }
 
 /// Discover NVIDIA devices through the vendor's stable management query.
-/// Failure to run the optional provider leaves the host with no automatic
-/// device claims; explicit `ARCHON_DEVICES` declarations remain available.
-fn nvidia_devices() -> Vec<DeviceSpec> {
+/// An absent `nvidia-smi` means the optional provider is not installed. Once
+/// the provider is present, query failure is uncertainty rather than proof
+/// that all previously known GPUs disappeared.
+fn nvidia_devices() -> Result<Vec<DeviceSpec>, String> {
     let output = match Command::new("nvidia-smi")
         .args([
             "--query-gpu=index,uuid,name,pci.bus_id,memory.total,compute_cap,driver_version",
@@ -89,21 +109,43 @@ fn nvidia_devices() -> Vec<DeviceSpec> {
         ])
         .output()
     {
-        Ok(output) if output.status.success() => output,
-        Ok(output) => {
-            eprintln!(
-                "archon: nvidia-smi discovery failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-            return Vec::new();
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(err) => {
-            eprintln!("archon: cannot run nvidia-smi discovery: {err}");
-            return Vec::new();
-        }
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(format!("cannot run nvidia-smi discovery: {err}")),
     };
-    parse_nvidia_devices(&String::from_utf8_lossy(&output.stdout))
+    interpret_nvidia_query(
+        output.status.success(),
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+fn interpret_nvidia_query(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Result<Vec<DeviceSpec>, String> {
+    if !success {
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        return Err(if detail.is_empty() {
+            "nvidia-smi discovery failed".into()
+        } else {
+            format!("nvidia-smi discovery failed: {detail}")
+        });
+    }
+
+    let devices = parse_nvidia_devices(stdout);
+    if devices.is_empty() && !stdout.trim().is_empty() {
+        return Err(format!(
+            "nvidia-smi returned no valid GPU inventory rows: {}",
+            stdout.trim()
+        ));
+    }
+    Ok(devices)
 }
 
 fn parse_nvidia_devices(output: &str) -> Vec<DeviceSpec> {
@@ -410,5 +452,16 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn uncertain_nvidia_query_is_not_an_authoritative_empty_inventory() {
+        let failed = interpret_nvidia_query(false, "", "driver unavailable").unwrap_err();
+        assert!(failed.contains("driver unavailable"));
+
+        let malformed = interpret_nvidia_query(true, "No devices were found\n", "").unwrap_err();
+        assert!(malformed.contains("no valid GPU inventory rows"));
+
+        assert!(interpret_nvidia_query(true, "", "").unwrap().is_empty());
     }
 }
