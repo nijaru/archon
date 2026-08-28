@@ -1,0 +1,393 @@
+name: Provider device lifecycle fix
+
+on:
+  push:
+    branches:
+      - fix/provider-device-lifecycle
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.event.head_commit.message == 'chore: stage provider lifecycle fix validation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/provider-device-lifecycle
+          fetch-depth: 0
+
+      - name: Apply lifecycle fix and tests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          service_path = Path('crates/node/src/service.rs')
+          text = service_path.read_text()
+          start = text.index('    /// Re-align a known machine\'s device nodes with its current declaration.')
+          end = text.index('    fn with_agents(', start)
+          replacement = '''    /// Re-align a known machine's provider-owned device inventory with its
+              /// current declaration. Stable ids retain their NodeId across path/fact
+              /// refreshes. A previously known id omitted by the provider remains as a
+              /// tombstone-like Graph node but becomes unavailable; any live lease that
+              /// claims it fails and fences before the resource can be reused.
+              fn reconcile_device_subtree(
+                  &mut self,
+                  machine: NodeId,
+                  devices: &[crate::discover::DeviceSpec],
+              ) -> Result<(), Error> {
+                  use archon_kernel::{
+                      Attrs, CapacityDimension, Edge, EdgeKind, LeaseState, Node, NodeState, qty,
+                  };
+
+                  let mut existing: BTreeMap<String, NodeId> = self
+                      .cluster
+                      .graph
+                      .children(machine)
+                      .iter()
+                      .filter_map(|child| {
+                          let node = self.cluster.graph.node(*child)?;
+                          if !matches!(
+                              node.kind,
+                              ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+                          ) {
+                              return None;
+                          }
+                          node.attrs.get("id").map(|id| (id.clone(), *child))
+                      })
+                      .collect();
+
+                  let mut base = self
+                      .cluster
+                      .graph
+                      .nodes()
+                      .map(|node| node.id.as_u64())
+                      .max()
+                      .unwrap_or(0);
+                  let mut nodes = Vec::new();
+                  let mut edges = Vec::new();
+                  let mut returning = BTreeSet::new();
+                  let mut seen = BTreeSet::new();
+
+                  for spec in devices {
+                      if !seen.insert(spec.id.clone()) {
+                          return Err(Error::Refused {
+                              explanation: format!(
+                                  "provider reported duplicate stable device id {:?}",
+                                  spec.id
+                              ),
+                          });
+                      }
+
+                      let id = if let Some(id) = existing.remove(&spec.id) {
+                          let node = self.cluster.graph.node(id).ok_or(Error::UnknownNode(id))?;
+                          if node.kind != spec.kind {
+                              return Err(Error::Refused {
+                                  explanation: format!(
+                                      "device {:?} changed resource class; replacement requires a new stable id",
+                                      spec.id
+                                  ),
+                              });
+                          }
+                          match self.cluster.node_state(id) {
+                              Some(NodeState::Retired) => {
+                                  return Err(Error::Refused {
+                                      explanation: format!(
+                                          "device {:?} is retired; replacement requires a new stable id",
+                                          spec.id
+                                      ),
+                                  });
+                              }
+                              Some(NodeState::Unavailable | NodeState::Joining) => {
+                                  returning.insert(id);
+                              }
+                              _ => {}
+                          }
+                          id
+                      } else {
+                          base += 1;
+                          let fresh = NodeId::from_u64(base);
+                          edges.push(Edge {
+                              from: machine,
+                              to: fresh,
+                              kind: EdgeKind::Contains,
+                              attrs: Attrs::new(),
+                          });
+                          fresh
+                      };
+
+                      let mut attrs = spec.attrs.clone();
+                      attrs.insert("id".into(), spec.id.clone());
+                      attrs.insert("dev".into(), spec.dev.clone());
+                      if !spec.access.is_empty() {
+                          attrs.insert(
+                              "access".into(),
+                              serde_json::to_string(&spec.access)
+                                  .expect("device access is serializable"),
+                          );
+                      } else {
+                          attrs.remove("access");
+                      }
+                      let node = self.cluster.graph.node(id);
+                      if node.is_some_and(|node| node.kind == spec.kind && node.attrs == attrs) {
+                          continue;
+                      }
+                      nodes.push(Node {
+                          id,
+                          kind: spec.kind,
+                          attrs,
+                          capacity: qty(CapacityDimension::Count, 1),
+                      });
+                  }
+
+                  if !nodes.is_empty() || !edges.is_empty() {
+                      self.commit(Command::ApplyGraph { nodes, edges })?;
+                  }
+
+                  let disappeared: BTreeSet<NodeId> = existing.into_values().collect();
+                  for node in &disappeared {
+                      if matches!(
+                          self.cluster.node_state(*node),
+                          Some(NodeState::Schedulable | NodeState::Joining)
+                      ) {
+                          self.commit(Command::SetNodeState {
+                              node: *node,
+                              state: NodeState::Unavailable,
+                          })?;
+                      }
+                  }
+
+                  let affected: BTreeSet<LeaseId> = self
+                      .cluster
+                      .leases
+                      .values()
+                      .filter(|lease| {
+                          matches!(
+                              lease.state,
+                              LeaseState::Reserved | LeaseState::Preparing | LeaseState::Active
+                          ) && lease
+                              .allocation
+                              .claims
+                              .iter()
+                              .any(|claim| disappeared.contains(&claim.node))
+                      })
+                      .map(|lease| lease.id)
+                      .collect();
+                  for lease in affected {
+                      self.commit(Command::FailLease {
+                          lease,
+                          reason: "provider resource disappeared".into(),
+                      })?;
+                  }
+
+                  for node in returning {
+                      if self.cluster.node_state(node) == Some(NodeState::Unavailable) {
+                          self.commit(Command::SetNodeState {
+                              node,
+                              state: NodeState::Joining,
+                          })?;
+                      }
+                      let open_binding = self
+                          .cluster
+                          .bindings
+                          .values()
+                          .any(|binding| binding.node == node && !binding.state.is_closed());
+                      if !open_binding && self.cluster.node_state(node) == Some(NodeState::Joining) {
+                          self.commit(Command::SetNodeState {
+                              node,
+                              state: NodeState::Schedulable,
+                          })?;
+                      }
+                  }
+
+                  Ok(())
+              }
+
+          '''
+          # Normalize the indentation embedded above to the file's four-space impl level.
+          import textwrap
+          replacement = textwrap.dedent(replacement)
+          replacement = ''.join(('    ' + line if line.strip() else line) for line in replacement.splitlines(True))
+          text = text[:start] + replacement + text[end:]
+          service_path.write_text(text)
+
+          tests_path = Path('crates/node/tests/devices.rs')
+          tests = tests_path.read_text()
+          tests = tests.replace(
+              '    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,\n',
+              '    CapacityDimension, LeaseId, LeaseState, Need, NodeState, OwnerId, Request, RequestClass,\n    RequestId, ResourceClass, qty,\n',
+              1,
+          )
+          marker = '\n#[test]\nfn provider_disappearance_blocks_placement_and_same_id_reappears()'
+          assert marker not in tests
+          tests += r'''
+
+#[test]
+fn provider_disappearance_blocks_placement_and_same_id_reappears() {
+    let mut service = NodeService::new();
+    service
+        .register_agent(
+            description("inst-disappear", "/dev/gpuA"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("first registration");
+    let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
+
+    let mut missing = description("inst-disappear", "/dev/gpuA");
+    missing.devices.clear();
+    service
+        .register_agent(
+            missing,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("provider reports disappearance");
+
+    assert_eq!(service.cluster.node_state(gpu), Some(NodeState::Unavailable));
+    assert_eq!(
+        service.cluster.graph.nodes_of_class(ResourceClass::Gpu),
+        vec![gpu],
+        "disappearance preserves the stable identity record"
+    );
+    service.submit(gpu_request(), OwnerId::from_u64(1));
+    assert_eq!(
+        service.admit_one().unwrap(),
+        None,
+        "missing provider capacity must not accept new claims"
+    );
+
+    service
+        .register_agent(
+            description("inst-disappear", "/dev/gpuB"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("same stable device returns");
+
+    assert_eq!(service.cluster.node_state(gpu), Some(NodeState::Schedulable));
+    assert_eq!(service.cluster.graph.nodes_of_class(ResourceClass::Gpu), vec![gpu]);
+    assert_eq!(
+        service.cluster.graph.node(gpu).unwrap().attrs.get("dev"),
+        Some(&"/dev/gpuB".to_string())
+    );
+    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+    service.revoke(LeaseId::from_u64(1)).expect("cleanup");
+}
+
+#[test]
+fn provider_disappearance_fails_and_fences_a_live_device_claim() {
+    let mut service = NodeService::new();
+    service
+        .register_agent(
+            description("inst-live", "/dev/null"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("first registration");
+    let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
+    service.submit(gpu_request(), OwnerId::from_u64(1));
+    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+    service
+        .drive(std::time::Duration::from_secs(1))
+        .expect("activate workload");
+    assert_eq!(
+        service.cluster.leases.get(&LeaseId::from_u64(1)).unwrap().state,
+        LeaseState::Active
+    );
+
+    let mut missing = description("inst-live", "/dev/null");
+    missing.devices.clear();
+    service
+        .register_agent(
+            missing,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("provider reports disappearance");
+
+    assert_eq!(service.cluster.node_state(gpu), Some(NodeState::Unavailable));
+    assert_eq!(
+        service.cluster.leases.get(&LeaseId::from_u64(1)).unwrap().state,
+        LeaseState::Failed,
+        "work using vanished hardware follows the workload-failure path"
+    );
+    service
+        .drive(std::time::Duration::from_secs(1))
+        .expect("fence old binding");
+    assert!(
+        !service.cluster.occupies(LeaseId::from_u64(1)),
+        "claim remains occupied until the binding fence is acknowledged"
+    );
+
+    service
+        .register_agent(
+            description("inst-live", "/dev/zero"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("same stable device returns after fencing");
+    assert_eq!(service.cluster.node_state(gpu), Some(NodeState::Schedulable));
+    assert_eq!(service.cluster.graph.nodes_of_class(ResourceClass::Gpu), vec![gpu]);
+}
+
+#[test]
+fn replacement_at_the_same_path_gets_a_new_identity() {
+    let mut service = NodeService::new();
+    service
+        .register_agent(
+            description("inst-replace", "/dev/gpuA"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("first registration");
+    let original = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
+
+    let mut replacement = description("inst-replace", "/dev/gpuA");
+    replacement.devices[0].id = "gpu1".into();
+    service
+        .register_agent(
+            replacement,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("replacement registration");
+
+    let gpus = service.cluster.graph.nodes_of_class(ResourceClass::Gpu);
+    assert_eq!(gpus.len(), 2);
+    assert_eq!(service.cluster.node_state(original), Some(NodeState::Unavailable));
+    let fresh = *gpus.iter().find(|node| **node != original).expect("new node");
+    assert_eq!(service.cluster.node_state(fresh), Some(NodeState::Schedulable));
+    assert_eq!(
+        service.cluster.graph.node(original).unwrap().attrs.get("id"),
+        Some(&"gpu0".to_string())
+    );
+    assert_eq!(
+        service.cluster.graph.node(fresh).unwrap().attrs.get("id"),
+        Some(&"gpu1".to_string())
+    );
+    assert_eq!(
+        service.cluster.graph.node(fresh).unwrap().attrs.get("dev"),
+        Some(&"/dev/gpuA".to_string()),
+        "host-path reuse does not reuse the retired provider identity"
+    );
+}
+'''
+          tests_path.write_text(tests)
+          PY
+
+          cargo fmt --all
+
+      - name: Verify targeted device lifecycle tests
+        run: cargo test -p archon-node --test devices
+
+      - name: Verify workspace gates
+        run: |
+          cargo fmt --all -- --check
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo run -p archon-sim
+
+      - name: Commit verified fix
+        shell: bash
+        run: |
+          rm .github/workflows/provider-device-lifecycle-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/node/src/service.rs crates/node/tests/devices.rs .github/workflows/provider-device-lifecycle-fix.yml
+          git commit -m "fix(node): reconcile provider device lifecycle"
+          git push origin HEAD:fix/provider-device-lifecycle
