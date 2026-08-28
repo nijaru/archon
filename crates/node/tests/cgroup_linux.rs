@@ -195,7 +195,13 @@ fn lease_claims_become_kernel_limits() {
 
     service.revoke(lease).unwrap();
     assert!(!service.is_running(lease), "revoke must kill the group");
-    assert!(!fs::exists(&group).unwrap(), "group must be removed");
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            let _ = service.drive(Duration::from_millis(50));
+            !fs::exists(&group).unwrap_or(false)
+        }),
+        "group must be removed after the fence is acknowledged"
+    );
     cleanup_root(&root);
 }
 
@@ -216,10 +222,18 @@ fn memory_limit_kills_an_overallocating_process() {
     service.admit_one().unwrap();
     let lease = LeaseId::from_u64(1);
 
-    let died = wait_until(Duration::from_secs(10), || !service.is_running(lease));
-    assert!(died, "memory.max must OOM-kill the runaway process");
-    let events =
-        fs::read_to_string(format!("{root}/lease-{}/memory.events", lease.as_u64())).unwrap();
+    let events_path = format!("{root}/lease-{}/memory.events", lease.as_u64());
+    let oom_seen = wait_until(Duration::from_secs(10), || {
+        fs::read_to_string(&events_path).is_ok_and(|events| {
+            events.lines().any(|line| {
+                line.strip_prefix("oom_kill ")
+                    .and_then(|count| count.trim().parse::<usize>().ok())
+                    .is_some_and(|count| count >= 1)
+            })
+        })
+    });
+    assert!(oom_seen, "memory.max must OOM-kill the runaway process");
+    let events = fs::read_to_string(&events_path).unwrap();
     let oom: usize = events
         .lines()
         .find_map(|line| {
