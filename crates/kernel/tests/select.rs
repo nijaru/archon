@@ -1,6 +1,7 @@
 use archon_kernel::{
     Allocation, CapacityDimension, Claim, Cluster, Command, Edge, EdgeKind, LeaseId, Need, Node,
-    NodeId, OwnerId, Quantity, Request, RequestClass, RequestId, ResourceClass, qty,
+    NodeId, OwnerId, Quantity, Request, RequestClass, RequestId, ResourceClass, TopologyConstraint,
+    TopologyRelation, qty,
 };
 
 fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> Node {
@@ -309,4 +310,104 @@ fn edge(from: NodeId, to: NodeId) -> archon_kernel::Edge {
         kind: archon_kernel::EdgeKind::Contains,
         attrs: Default::default(),
     }
+}
+
+#[test]
+fn explanation_reports_topology_that_changes_machine_choice() {
+    let mut cluster = Cluster::new();
+    cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![
+                node(100, ResourceClass::Machine, Quantity::new()),
+                node(101, ResourceClass::Numa, Quantity::new()),
+                node(102, ResourceClass::Numa, Quantity::new()),
+                node(103, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+                node(104, ResourceClass::Gpu, qty(CapacityDimension::Count, 1)),
+                node(200, ResourceClass::Machine, Quantity::new()),
+                node(201, ResourceClass::Numa, Quantity::new()),
+                node(202, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+                node(203, ResourceClass::Gpu, qty(CapacityDimension::Count, 1)),
+            ],
+            edges: vec![
+                contain(100, 101),
+                contain(100, 102),
+                contain(101, 103),
+                contain(102, 104),
+                contain(200, 201),
+                contain(201, 202),
+                contain(201, 203),
+            ],
+        })
+        .unwrap();
+    let mut request = request(
+        RequestClass::Batch,
+        vec![
+            Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            },
+            Need {
+                kind: ResourceClass::Gpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            },
+        ],
+    );
+    request.topology.push(TopologyConstraint {
+        left: 0,
+        right: 1,
+        relation: TopologyRelation::SameAncestor {
+            class: ResourceClass::Numa,
+        },
+    });
+
+    let allocation = cluster
+        .allocate(&request)
+        .expect("second machine satisfies NUMA locality");
+    assert!(
+        allocation
+            .claims
+            .iter()
+            .all(|claim| { cluster.graph.machine_of(claim.node) == Some(NodeId::from_u64(200)) })
+    );
+    assert!(
+        allocation
+            .explanation
+            .contains("topology[0] same-ancestor(numa) constrained placement")
+    );
+    assert!(allocation.explanation.contains("rejected"));
+    assert!(allocation.explanation.contains("under numa"));
+}
+
+#[test]
+fn explanation_omits_topology_that_did_not_change_candidate_choice() {
+    let cluster = graph();
+    let mut request = request(
+        RequestClass::Batch,
+        vec![
+            Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            },
+            Need {
+                kind: ResourceClass::Gpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            },
+        ],
+    );
+    request.topology.push(TopologyConstraint {
+        left: 0,
+        right: 1,
+        relation: TopologyRelation::SameAncestor {
+            class: ResourceClass::Numa,
+        },
+    });
+
+    let allocation = cluster
+        .allocate(&request)
+        .expect("first choice already satisfies topology");
+    assert!(!allocation.explanation.contains("topology[0]"));
 }
