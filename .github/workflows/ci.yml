@@ -22,9 +22,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - name: Apply normalized topology patch
+      - name: Apply normalized host inventory patch
         run: |
           python3 .github/scripts/normalized_host_topology.py
+          python3 .github/scripts/normalized_host_topology_fixes.py
           cargo fmt --all
       - name: Targeted node tests
         run: |
@@ -42,8 +43,9 @@ jobs:
         run: |
           git checkout origin/main -- .github/workflows/ci.yml
           rm .github/scripts/normalized_host_topology.py
+          rm .github/scripts/normalized_host_topology_fixes.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "feat(node): carry normalized host topology"
+          git commit -m "feat(node): carry normalized host inventory"
           git push origin HEAD:feat/normalized-host-topology
