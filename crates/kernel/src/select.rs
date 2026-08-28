@@ -24,6 +24,24 @@ struct ScoreCtx<'a> {
     memory_want: u64,
 }
 
+#[derive(Clone, Copy)]
+struct TopologyFailure {
+    constraint: usize,
+    left: NodeId,
+    right: NodeId,
+}
+
+#[derive(Default)]
+struct TopologyTrace {
+    failures: BTreeMap<usize, TopologyFailure>,
+}
+
+impl TopologyTrace {
+    fn record(&mut self, failure: TopologyFailure) {
+        self.failures.entry(failure.constraint).or_insert(failure);
+    }
+}
+
 pub fn select(
     graph: &Graph,
     occupancy: &Occupancy,
@@ -55,8 +73,9 @@ pub fn select(
     };
     let mut picked: Vec<Vec<Claim>> = Vec::new();
     let mut notes = Vec::new();
+    let mut topology_trace = TopologyTrace::default();
     for need in &request.needs {
-        let (claims, need_notes) = select_need(&ctx, need, &picked)?;
+        let (claims, need_notes) = select_need(&ctx, need, &picked, &mut topology_trace)?;
         notes.extend(need_notes);
         picked.push(claims);
     }
@@ -69,14 +88,15 @@ pub fn select(
             explanation: "topology constraints were not satisfied".into(),
         });
     }
+    notes.extend(topology_notes(graph, &picked, request, &topology_trace));
+    let claim_count = claims.len();
     Ok(Allocation {
         claims,
         graph_revision: graph.revision,
         explanation: format!(
-            "{:?} {:?} selected {} claims{}",
+            "{:?} {:?} selected {claim_count} claims{}",
             request.class,
             mode,
-            notes.len(),
             if notes.is_empty() {
                 String::new()
             } else {
@@ -98,6 +118,7 @@ fn select_one_machine(
     quarantine: &BTreeSet<NodeId>,
 ) -> Result<Allocation, Error> {
     let machines = graph.nodes_of_class(ResourceClass::Machine);
+    let mut topology_trace = TopologyTrace::default();
     for &machine in machines {
         if quarantine.contains(&machine)
             || graph
@@ -121,7 +142,7 @@ fn select_one_machine(
         let mut notes = Vec::new();
         let mut fits = true;
         for need in &request.needs {
-            match select_need_in(&ctx, need, &picked, Some(&allowed)) {
+            match select_need_in(&ctx, need, &picked, Some(&allowed), &mut topology_trace) {
                 Ok((claims, need_notes)) => {
                     picked.push(claims);
                     notes.extend(need_notes);
@@ -139,14 +160,20 @@ fn select_one_machine(
         for group in &picked {
             claims.extend(group.iter().cloned());
         }
+        notes.extend(topology_notes(graph, &picked, request, &topology_trace));
+        let claim_count = claims.len();
         return Ok(Allocation {
             claims,
             graph_revision: graph.revision,
             explanation: format!(
-                "{:?} {:?} selected {} claims on {machine}",
+                "{:?} {:?} selected {claim_count} claims on {machine}{}",
                 request.class,
                 mode,
-                notes.len()
+                if notes.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", notes.join("; "))
+                }
             ),
         });
     }
@@ -181,8 +208,9 @@ fn select_need(
     ctx: &SelectCtx<'_>,
     need: &Need,
     already: &[Vec<Claim>],
+    topology_trace: &mut TopologyTrace,
 ) -> Result<(Vec<Claim>, Vec<String>), Error> {
-    select_need_in(ctx, need, already, None)
+    select_need_in(ctx, need, already, None, topology_trace)
 }
 
 /// `allowed` restricts the candidate nodes (whole-machine placement).
@@ -191,6 +219,7 @@ fn select_need_in(
     need: &Need,
     already: &[Vec<Claim>],
     allowed: Option<&std::collections::BTreeSet<NodeId>>,
+    topology_trace: &mut TopologyTrace,
 ) -> Result<(Vec<Claim>, Vec<String>), Error> {
     let SelectCtx {
         graph,
@@ -239,7 +268,7 @@ fn select_need_in(
             }
             let mut trial = already.to_vec();
             trial.push(vec![claim.clone()]);
-            if topology_holds(graph, &trial, request) {
+            if topology_holds_traced(graph, &trial, request, topology_trace) {
                 let score = score_node(&ctx, &[], node)?;
                 return Ok((
                     vec![claim],
@@ -281,7 +310,7 @@ fn select_need_in(
         memory_want: 0,
     };
     if !request.machine_local {
-        return select_spread(graph, request, already, need, &ctx, candidates, count);
+        return select_spread(already, need, &ctx, candidates, count, topology_trace);
     }
     let ranked = rank(&ctx, &[], &candidates)?;
     let mut machines: Vec<NodeId> = Vec::new();
@@ -310,7 +339,7 @@ fn select_need_in(
             let mut group = chosen.clone();
             group.push(claim.clone());
             trial.push(group);
-            if topology_holds(graph, &trial, request) {
+            if topology_holds_traced(graph, &trial, request, topology_trace) {
                 let score = score_node(&ctx, &chosen, node)?;
                 let local = request.data.iter().any(|data| graph.caches(node, *data));
                 let degraded = graph.degraded_ancestor(node).is_some();
@@ -337,14 +366,15 @@ fn select_need_in(
 /// The legacy spread path: claims may land on any machine, in ranked
 /// order, subject only to topology constraints.
 fn select_spread(
-    graph: &Graph,
-    request: &Request,
     already: &[Vec<Claim>],
     need: &Need,
     ctx: &ScoreCtx<'_>,
     candidates: Vec<NodeId>,
     count: u64,
+    topology_trace: &mut TopologyTrace,
 ) -> Result<(Vec<Claim>, Vec<String>), Error> {
+    let graph = ctx.graph;
+    let request = ctx.request;
     let mut chosen: Vec<Claim> = Vec::new();
     let mut notes = Vec::new();
     let ranked = rank(ctx, &chosen, &candidates)?;
@@ -360,7 +390,7 @@ fn select_spread(
         let mut group = chosen.clone();
         group.push(claim.clone());
         trial.push(group);
-        if topology_holds(graph, &trial, request) {
+        if topology_holds_traced(graph, &trial, request, topology_trace) {
             let score = score_node(ctx, &chosen, node)?;
             let local = request.data.iter().any(|data| graph.caches(node, *data));
             let degraded = graph.degraded_ancestor(node).is_some();
@@ -548,28 +578,151 @@ fn machine_load(graph: &Graph, occupancy: &Occupancy, machine: NodeId, extra: &[
         .count() as u64
 }
 
-fn topology_holds(graph: &Graph, picked: &[Vec<Claim>], request: &Request) -> bool {
+fn topology_failure(
+    graph: &Graph,
+    picked: &[Vec<Claim>],
+    request: &Request,
+) -> Option<TopologyFailure> {
     // Constraints referencing needs not yet selected cannot be evaluated
     // mid-placement; select() refuses malformed requests up front.
-    for constraint in &request.topology {
+    for (index, constraint) in request.topology.iter().enumerate() {
         if constraint.left >= picked.len() || constraint.right >= picked.len() {
             continue;
         }
         for left in &picked[constraint.left] {
             for right in &picked[constraint.right] {
                 if !graph.satisfies(left.node, right.node, constraint.relation) {
-                    return false;
+                    return Some(TopologyFailure {
+                        constraint: index,
+                        left: left.node,
+                        right: right.node,
+                    });
                 }
             }
         }
     }
+    None
+}
+
+fn claims_are_unique(picked: &[Vec<Claim>]) -> bool {
     let mut seen = BTreeSet::new();
-    for group in picked {
-        for claim in group {
-            if !seen.insert(claim.node) {
-                return false;
-            }
-        }
+    picked
+        .iter()
+        .flat_map(|group| group.iter())
+        .all(|claim| seen.insert(claim.node))
+}
+
+fn topology_holds_traced(
+    graph: &Graph,
+    picked: &[Vec<Claim>],
+    request: &Request,
+    trace: &mut TopologyTrace,
+) -> bool {
+    if !claims_are_unique(picked) {
+        return false;
     }
-    true
+    match topology_failure(graph, picked, request) {
+        Some(failure) => {
+            trace.record(failure);
+            false
+        }
+        None => true,
+    }
+}
+
+fn topology_holds(graph: &Graph, picked: &[Vec<Claim>], request: &Request) -> bool {
+    claims_are_unique(picked) && topology_failure(graph, picked, request).is_none()
+}
+
+fn claim_nodes(claims: &[Claim]) -> String {
+    claims
+        .iter()
+        .map(|claim| claim.node.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn ancestor_nodes(graph: &Graph, claims: &[Claim], class: ResourceClass) -> String {
+    claims
+        .iter()
+        .filter_map(|claim| graph.ancestor_of_class(claim.node, class))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|node| node.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn topology_notes(
+    graph: &Graph,
+    picked: &[Vec<Claim>],
+    request: &Request,
+    trace: &TopologyTrace,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    for (index, failure) in &trace.failures {
+        let Some(constraint) = request.topology.get(*index) else {
+            continue;
+        };
+        let Some(left) = picked.get(constraint.left) else {
+            continue;
+        };
+        let Some(right) = picked.get(constraint.right) else {
+            continue;
+        };
+        let selected = match constraint.relation {
+            TopologyRelation::SameAncestor { class } => format!(
+                "selected need[{}]={} and need[{}]={} under {class} {}",
+                constraint.left,
+                claim_nodes(left),
+                constraint.right,
+                claim_nodes(right),
+                ancestor_nodes(graph, left, class),
+            ),
+            TopologyRelation::DifferentAncestor { class } => format!(
+                "selected need[{}]={} under {class} {} and need[{}]={} under {class} {}",
+                constraint.left,
+                claim_nodes(left),
+                ancestor_nodes(graph, left, class),
+                constraint.right,
+                claim_nodes(right),
+                ancestor_nodes(graph, right, class),
+            ),
+            TopologyRelation::Contains => format!(
+                "selected containment-related need[{}]={} and need[{}]={}",
+                constraint.left,
+                claim_nodes(left),
+                constraint.right,
+                claim_nodes(right),
+            ),
+            TopologyRelation::Connected => format!(
+                "selected connected need[{}]={} and need[{}]={}",
+                constraint.left,
+                claim_nodes(left),
+                constraint.right,
+                claim_nodes(right),
+            ),
+            TopologyRelation::CachedOn => format!(
+                "selected cache-related need[{}]={} and need[{}]={}",
+                constraint.left,
+                claim_nodes(left),
+                constraint.right,
+                claim_nodes(right),
+            ),
+        };
+        let relation = match constraint.relation {
+            TopologyRelation::SameAncestor { class } => format!("same-ancestor({class})"),
+            TopologyRelation::DifferentAncestor { class } => {
+                format!("different-ancestor({class})")
+            }
+            TopologyRelation::Contains => "contains".into(),
+            TopologyRelation::Connected => "connected".into(),
+            TopologyRelation::CachedOn => "cached-on".into(),
+        };
+        notes.push(format!(
+            "topology[{index}] {relation} constrained placement (rejected {} vs {}); {selected}",
+            failure.left, failure.right
+        ));
+    }
+    notes
 }
