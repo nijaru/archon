@@ -213,9 +213,19 @@ fn memory_limit_kills_an_overallocating_process() {
     }
     cleanup_root(&root);
     let mut service = NodeService::local(Some(root.clone()));
-    // tail /dev/zero allocates without bound; the 16 MiB limit must OOM it.
+    // Charging pages in tmpfs makes the 16 MiB limit OOM the workload
+    // without depending on a utility's buffering behavior.
+    let spill = format!("/dev/shm/archon-oom-{}", std::process::id());
     service.submit(
-        request(1, vec!["tail".into(), "/dev/zero".into()], 16),
+        request(
+            1,
+            vec![
+                "sh".into(),
+                "-c".into(),
+                format!("dd if=/dev/zero of={spill} bs=1M count=64 status=none"),
+            ],
+            16,
+        ),
         OwnerId::from_u64(1),
     );
     service.cluster.set_now(1);
@@ -234,6 +244,7 @@ fn memory_limit_kills_an_overallocating_process() {
     });
     assert!(oom_seen, "memory.max must OOM-kill the runaway process");
     let events = fs::read_to_string(&events_path).unwrap();
+    let _ = fs::remove_file(&spill);
     let oom: usize = events
         .lines()
         .find_map(|line| {
