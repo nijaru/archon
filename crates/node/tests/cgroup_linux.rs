@@ -102,7 +102,7 @@ fn first_instruction_runs_inside_the_lease_cgroup() {
             &[
                 "sh".into(),
                 "-c".into(),
-                "grep -qx '0::/archon-test/lease-1' /proc/self/cgroup".into(),
+                "grep -qx '0::/archon-test-first-instruction/lease-1' /proc/self/cgroup".into(),
             ],
             &LeaseLimits {
                 cpu_count: 1,
@@ -152,7 +152,7 @@ fn failed_launch_removes_the_lease_cgroup() {
         &[],
     );
     assert!(error.is_err());
-    assert!(!fs::exists(format!("{root}/lease-{lease}")).unwrap());
+    assert!(!fs::exists(format!("{root}/lease-{}", lease.as_u64())).unwrap());
     cleanup_root(&root);
 }
 
@@ -172,7 +172,7 @@ fn lease_claims_become_kernel_limits() {
     service.admit_one().unwrap();
     let lease = LeaseId::from_u64(1);
 
-    let group = format!("{root}/lease-{lease}");
+    let group = format!("{root}/lease-{}", lease.as_u64());
     // Activation is asynchronous: drive the service until the group
     // materializes (the same pumping is_running performs).
     let group_file = format!("{group}/cpu.max");
@@ -218,7 +218,8 @@ fn memory_limit_kills_an_overallocating_process() {
 
     let died = wait_until(Duration::from_secs(10), || !service.is_running(lease));
     assert!(died, "memory.max must OOM-kill the runaway process");
-    let events = fs::read_to_string(format!("{root}/lease-{lease}/memory.events")).unwrap();
+    let events =
+        fs::read_to_string(format!("{root}/lease-{}/memory.events", lease.as_u64())).unwrap();
     let oom: usize = events
         .lines()
         .find_map(|line| {
