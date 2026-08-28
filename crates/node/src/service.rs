@@ -263,6 +263,34 @@ impl NodeService {
         description: crate::discover::MachineDescription,
         executor: Box<dyn LeaseExecutor>,
     ) -> Result<NodeId, Error> {
+        let mut device_ids = BTreeSet::new();
+        for device in &description.devices {
+            if device.id.trim().is_empty() || device.dev.trim().is_empty() {
+                return Err(Error::Refused {
+                    explanation: "device stable id and path must be non-empty".into(),
+                });
+            }
+            if !matches!(
+                device.kind,
+                ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+            ) {
+                return Err(Error::Refused {
+                    explanation: format!(
+                        "resource class {:?} is not valid in a device inventory",
+                        device.kind
+                    ),
+                });
+            }
+            if !device_ids.insert(device.id.clone()) {
+                return Err(Error::Refused {
+                    explanation: format!(
+                        "provider reported duplicate stable device id {:?}",
+                        device.id
+                    ),
+                });
+            }
+        }
+
         // Identity is the agent's instance id, stored in the machine's
         // attrs so it survives control-plane restarts via replay.
         let named = |cluster: &Cluster, instance: &str| {
@@ -402,18 +430,8 @@ impl NodeService {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         let mut returning = BTreeSet::new();
-        let mut seen = BTreeSet::new();
 
         for spec in devices {
-            if !seen.insert(spec.id.clone()) {
-                return Err(Error::Refused {
-                    explanation: format!(
-                        "provider reported duplicate stable device id {:?}",
-                        spec.id
-                    ),
-                });
-            }
-
             let id = if let Some(id) = existing.remove(&spec.id) {
                 let node = self.cluster.graph.node(id).ok_or(Error::UnknownNode(id))?;
                 if node.kind != spec.kind {

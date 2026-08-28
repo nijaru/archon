@@ -372,3 +372,43 @@ fn replacement_at_the_same_path_gets_a_new_identity() {
         "host-path reuse does not reuse the old provider identity"
     );
 }
+
+#[test]
+fn initial_registration_rejects_invalid_device_inventory() {
+    let mut service = NodeService::new();
+    let mut duplicate = description("inst-invalid", "/dev/gpuA");
+    duplicate.devices.push(duplicate.devices[0].clone());
+    assert!(
+        service
+            .register_agent(
+                duplicate,
+                Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            )
+            .is_err()
+    );
+    assert!(
+        service
+            .cluster
+            .graph
+            .nodes_of_class(ResourceClass::Machine)
+            .is_empty()
+    );
+
+    let mut invalid_kind = description("inst-invalid-kind", "/dev/gpuA");
+    invalid_kind.devices[0].kind = ResourceClass::Cpu;
+    assert!(
+        service
+            .register_agent(
+                invalid_kind,
+                Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            )
+            .is_err()
+    );
+    assert!(
+        service
+            .cluster
+            .graph
+            .nodes_of_class(ResourceClass::Machine)
+            .is_empty()
+    );
+}
