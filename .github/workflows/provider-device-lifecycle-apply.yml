@@ -1,0 +1,44 @@
+name: Apply provider device lifecycle fix
+
+on:
+  push:
+    branches:
+      - fix/provider-device-lifecycle
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/provider-device-lifecycle
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply patch
+        run: |
+          python3 .github/scripts/provider_device_lifecycle_fix.py
+          cargo fmt --all
+      - name: Targeted tests
+        run: cargo test -p archon-node --test devices
+      - name: Workspace gates
+        run: |
+          cargo fmt --all -- --check
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo run -p archon-sim
+      - name: Commit verified fix
+        run: |
+          rm .github/workflows/provider-device-lifecycle-fix.yml
+          rm .github/workflows/provider-device-lifecycle-apply.yml
+          rm .github/scripts/provider_device_lifecycle_fix.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(node): reconcile provider device lifecycle"
+          git push origin HEAD:fix/provider-device-lifecycle
