@@ -277,11 +277,15 @@ fn load_program(prog: &[Insn]) -> io::Result<i64> {
             attr.write_u32(28, log.len() as u32); // log_size
             attr.write_u64(32, log.as_mut_ptr() as usize as u64); // log_buf
             let err = bpf_syscall(BPF_PROG_LOAD, &attr).unwrap_err();
+            let kind = err.kind();
             let detail = String::from_utf8_lossy(&log);
-            Err(io::Error::other(format!(
-                "bpf(BPF_PROG_LOAD, cgroup_device): {err}: {}",
-                detail.trim_end_matches('\0').trim()
-            )))
+            Err(io::Error::new(
+                kind,
+                format!(
+                    "bpf(BPF_PROG_LOAD, cgroup_device): {err}: {}",
+                    detail.trim_end_matches('\0').trim()
+                ),
+            ))
         }
     }
 }

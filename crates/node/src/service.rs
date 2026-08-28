@@ -359,17 +359,19 @@ impl NodeService {
         }
     }
 
-    /// Re-align a known machine's device nodes with its current declaration.
-    /// Devices match by stable `id` attr: matched ids keep their NodeId (so
-    /// live claims survive) and only their `dev` attr refreshes; unknown ids
-    /// become fresh capacity-1 nodes under the machine. Emits nothing when
-    /// the declaration already matches the graph.
+    /// Re-align a known machine's provider-owned device inventory with its
+    /// current declaration. Stable ids retain their NodeId across path/fact
+    /// refreshes. A previously known id omitted by the provider remains as a
+    /// tombstone-like Graph node but becomes unavailable; any live lease that
+    /// claims it fails and fences before the resource can be reused.
     fn reconcile_device_subtree(
         &mut self,
         machine: NodeId,
         devices: &[crate::discover::DeviceSpec],
     ) -> Result<(), Error> {
-        use archon_kernel::{Attrs, CapacityDimension, Edge, EdgeKind, Node, qty};
+        use archon_kernel::{
+            Attrs, CapacityDimension, Edge, EdgeKind, LeaseState, Node, NodeState, qty,
+        };
 
         let mut existing: BTreeMap<String, NodeId> = self
             .cluster
@@ -397,8 +399,45 @@ impl NodeService {
             .unwrap_or(0);
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
+        let mut returning = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+
         for spec in devices {
-            let id = existing.remove(&spec.id).unwrap_or_else(|| {
+            if !seen.insert(spec.id.clone()) {
+                return Err(Error::Refused {
+                    explanation: format!(
+                        "provider reported duplicate stable device id {:?}",
+                        spec.id
+                    ),
+                });
+            }
+
+            let id = if let Some(id) = existing.remove(&spec.id) {
+                let node = self.cluster.graph.node(id).ok_or(Error::UnknownNode(id))?;
+                if node.kind != spec.kind {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "device {:?} changed resource class; replacement requires a new stable id",
+                            spec.id
+                        ),
+                    });
+                }
+                match self.cluster.node_state(id) {
+                    Some(NodeState::Retired) => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "device {:?} is retired; replacement requires a new stable id",
+                                spec.id
+                            ),
+                        });
+                    }
+                    Some(NodeState::Unavailable | NodeState::Joining) => {
+                        returning.insert(id);
+                    }
+                    _ => {}
+                }
+                id
+            } else {
                 base += 1;
                 let fresh = NodeId::from_u64(base);
                 edges.push(Edge {
@@ -408,7 +447,8 @@ impl NodeService {
                     attrs: Attrs::new(),
                 });
                 fresh
-            });
+            };
+
             let mut attrs = spec.attrs.clone();
             attrs.insert("id".into(), spec.id.clone());
             attrs.insert("dev".into(), spec.dev.clone());
@@ -431,10 +471,68 @@ impl NodeService {
                 capacity: qty(CapacityDimension::Count, 1),
             });
         }
-        if nodes.is_empty() && edges.is_empty() {
-            return Ok(());
+
+        if !nodes.is_empty() || !edges.is_empty() {
+            self.commit(Command::ApplyGraph { nodes, edges })?;
         }
-        self.commit(Command::ApplyGraph { nodes, edges })
+
+        let disappeared: BTreeSet<NodeId> = existing.into_values().collect();
+        for node in &disappeared {
+            if matches!(
+                self.cluster.node_state(*node),
+                Some(NodeState::Schedulable | NodeState::Joining)
+            ) {
+                self.commit(Command::SetNodeState {
+                    node: *node,
+                    state: NodeState::Unavailable,
+                })?;
+            }
+        }
+
+        let affected: BTreeSet<LeaseId> = self
+            .cluster
+            .leases
+            .values()
+            .filter(|lease| {
+                matches!(
+                    lease.state,
+                    LeaseState::Reserved | LeaseState::Preparing | LeaseState::Active
+                ) && lease
+                    .allocation
+                    .claims
+                    .iter()
+                    .any(|claim| disappeared.contains(&claim.node))
+            })
+            .map(|lease| lease.id)
+            .collect();
+        for lease in affected {
+            self.commit(Command::FailLease {
+                lease,
+                reason: "provider resource disappeared".into(),
+            })?;
+        }
+
+        for node in returning {
+            if self.cluster.node_state(node) == Some(NodeState::Unavailable) {
+                self.commit(Command::SetNodeState {
+                    node,
+                    state: NodeState::Joining,
+                })?;
+            }
+            let open_binding = self
+                .cluster
+                .bindings
+                .values()
+                .any(|binding| binding.node == node && !binding.state.is_closed());
+            if !open_binding && self.cluster.node_state(node) == Some(NodeState::Joining) {
+                self.commit(Command::SetNodeState {
+                    node,
+                    state: NodeState::Schedulable,
+                })?;
+            }
+        }
+
+        Ok(())
     }
 
     fn with_agents(agents: BTreeMap<NodeId, AgentHandle>) -> Self {
