@@ -239,6 +239,9 @@ fn memory_limit_kills_an_overallocating_process() {
 
     let events_path = format!("{root}/lease-{}/memory.events", lease.as_u64());
     let oom_seen = wait_until(Duration::from_secs(10), || {
+        // `admit_one` queues asynchronous effects; drive them while waiting
+        // so the agent has a chance to create the cgroup and launch awk.
+        let _ = service.drive(Duration::from_millis(50));
         fs::read_to_string(&events_path).is_ok_and(|events| {
             events.lines().any(|line| {
                 line.strip_prefix("oom_kill ")
