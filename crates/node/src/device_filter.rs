@@ -29,7 +29,7 @@ const BPF_PROG_ATTACH: libc::c_int = 8;
 
 // Program types / attach types (linux/bpf.h).
 const BPF_PROG_TYPE_CGROUP_DEVICE: libc::c_int = 15;
-const BPF_CGROUP_DEVICE: libc::c_int = 9;
+const BPF_CGROUP_DEVICE: libc::c_int = 6;
 
 // bpf_cgroup_dev_ctx access bits (linux/bpf.h).
 const DEVCG_ACC_READ: u32 = 1;
