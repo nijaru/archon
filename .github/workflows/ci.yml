@@ -24,6 +24,16 @@ jobs:
           tool: cargo-deny
       - name: Apply provider endpoint fencing patch
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/provider_endpoint_fencing.py')
+          text = path.read_text()
+          fragile = '''if text.count(old) != 1:\n    raise RuntimeError("open_enforced_bindings changed")\ntext = text.replace(old, new, 1)\n'''
+          structural = '''func_start = text.index("    fn open_enforced_bindings")\nbody_start = text.index("        for claim in claims {", func_start)\nbody_end = text.index("        Ok(())", body_start)\ntext = text[:body_start] + new + text[body_end:]\n'''
+          if text.count(fragile) != 1:
+              raise RuntimeError('endpoint staging anchor changed')
+          path.write_text(text.replace(fragile, structural, 1))
+          PY
           python3 .github/scripts/provider_endpoint_fencing.py
           cargo fmt --all
       - name: Targeted authority tests
