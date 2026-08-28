@@ -406,17 +406,17 @@ impl NodeService {
         let mut existing: BTreeMap<String, NodeId> = self
             .cluster
             .graph
-            .children(machine)
-            .iter()
+            .descendants(machine)
+            .into_iter()
             .filter_map(|child| {
-                let node = self.cluster.graph.node(*child)?;
+                let node = self.cluster.graph.node(child)?;
                 if !matches!(
                     node.kind,
                     ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
                 ) {
                     return None;
                 }
-                node.attrs.get("id").map(|id| (id.clone(), *child))
+                node.attrs.get("id").map(|id| (id.clone(), child))
             })
             .collect();
 
