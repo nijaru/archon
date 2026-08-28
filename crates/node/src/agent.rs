@@ -163,7 +163,12 @@ impl LeaseAgent {
     }
 
     fn hello(&self) -> AgentResponse {
-        let description = crate::discover::describe();
+        let description = match crate::discover::try_describe() {
+            Ok(description) => description,
+            Err(reason) => {
+                return self.failed_none(&format!("device discovery incomplete: {reason}"));
+            }
+        };
         AgentResponse::Welcome {
             name: description.name,
             cpus: description.cpus,

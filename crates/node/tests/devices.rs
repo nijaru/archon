@@ -3,7 +3,8 @@
 //! resolving through the current path.
 
 use archon_kernel::{
-    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
+    CapacityDimension, LeaseId, LeaseState, Need, NodeState, OwnerId, Request, RequestClass,
+    RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::discover::{DeviceSpec, MachineDescription};
@@ -183,5 +184,231 @@ fn re_registration_adds_and_refreshes_without_spurious_revisions() {
             .get("dev"),
         Some(&"/dev/gpuC".to_string()),
         "path refreshed in place"
+    );
+}
+
+#[test]
+fn provider_disappearance_blocks_placement_and_same_id_reappears() {
+    let mut service = NodeService::new();
+    service
+        .register_agent(
+            description("inst-disappear", "/dev/gpuA"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("first registration");
+    let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
+
+    let mut missing = description("inst-disappear", "/dev/gpuA");
+    missing.devices.clear();
+    service
+        .register_agent(
+            missing,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("provider reports disappearance");
+
+    assert_eq!(
+        service.cluster.node_state(gpu),
+        Some(NodeState::Unavailable)
+    );
+    assert_eq!(
+        service.cluster.graph.nodes_of_class(ResourceClass::Gpu),
+        vec![gpu],
+        "disappearance preserves the stable identity record"
+    );
+    service.submit(gpu_request(), OwnerId::from_u64(1));
+    assert_eq!(
+        service.admit_one().unwrap(),
+        None,
+        "missing provider capacity must not accept new claims"
+    );
+
+    service
+        .register_agent(
+            description("inst-disappear", "/dev/gpuB"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("same stable device returns");
+
+    assert_eq!(
+        service.cluster.node_state(gpu),
+        Some(NodeState::Schedulable)
+    );
+    assert_eq!(
+        service.cluster.graph.nodes_of_class(ResourceClass::Gpu),
+        vec![gpu]
+    );
+    assert_eq!(
+        service.cluster.graph.node(gpu).unwrap().attrs.get("dev"),
+        Some(&"/dev/gpuB".to_string())
+    );
+    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+    service.revoke(LeaseId::from_u64(1)).expect("cleanup");
+}
+
+#[test]
+fn provider_disappearance_fails_and_fences_a_live_device_claim() {
+    let mut service = NodeService::new();
+    service
+        .register_agent(
+            description("inst-live", "/dev/null"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("first registration");
+    let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
+    service.submit(gpu_request(), OwnerId::from_u64(1));
+    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+    service
+        .drive(std::time::Duration::from_secs(1))
+        .expect("activate workload");
+    assert_eq!(
+        service
+            .cluster
+            .leases
+            .get(&LeaseId::from_u64(1))
+            .unwrap()
+            .state,
+        LeaseState::Active
+    );
+
+    let mut missing = description("inst-live", "/dev/null");
+    missing.devices.clear();
+    service
+        .register_agent(
+            missing,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("provider reports disappearance");
+
+    assert_eq!(
+        service.cluster.node_state(gpu),
+        Some(NodeState::Unavailable)
+    );
+    assert_eq!(
+        service
+            .cluster
+            .leases
+            .get(&LeaseId::from_u64(1))
+            .unwrap()
+            .state,
+        LeaseState::Failed,
+        "work using vanished hardware follows the workload-failure path"
+    );
+    service
+        .drive(std::time::Duration::from_secs(1))
+        .expect("fence old binding");
+    assert!(
+        !service.cluster.occupies(LeaseId::from_u64(1)),
+        "claim remains occupied until the binding fence is acknowledged"
+    );
+
+    service
+        .register_agent(
+            description("inst-live", "/dev/zero"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("same stable device returns after fencing");
+    assert_eq!(
+        service.cluster.node_state(gpu),
+        Some(NodeState::Schedulable)
+    );
+    assert_eq!(
+        service.cluster.graph.nodes_of_class(ResourceClass::Gpu),
+        vec![gpu]
+    );
+}
+
+#[test]
+fn replacement_at_the_same_path_gets_a_new_identity() {
+    let mut service = NodeService::new();
+    service
+        .register_agent(
+            description("inst-replace", "/dev/gpuA"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("first registration");
+    let original = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
+
+    let mut replacement = description("inst-replace", "/dev/gpuA");
+    replacement.devices[0].id = "gpu1".into();
+    service
+        .register_agent(
+            replacement,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("replacement registration");
+
+    let gpus = service.cluster.graph.nodes_of_class(ResourceClass::Gpu);
+    assert_eq!(gpus.len(), 2);
+    assert_eq!(
+        service.cluster.node_state(original),
+        Some(NodeState::Unavailable)
+    );
+    let fresh = *gpus
+        .iter()
+        .find(|node| **node != original)
+        .expect("new node");
+    assert_eq!(
+        service.cluster.node_state(fresh),
+        Some(NodeState::Schedulable)
+    );
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .node(original)
+            .unwrap()
+            .attrs
+            .get("id"),
+        Some(&"gpu0".to_string())
+    );
+    assert_eq!(
+        service.cluster.graph.node(fresh).unwrap().attrs.get("id"),
+        Some(&"gpu1".to_string())
+    );
+    assert_eq!(
+        service.cluster.graph.node(fresh).unwrap().attrs.get("dev"),
+        Some(&"/dev/gpuA".to_string()),
+        "host-path reuse does not reuse the old provider identity"
+    );
+}
+
+#[test]
+fn initial_registration_rejects_invalid_device_inventory() {
+    let mut service = NodeService::new();
+    let mut duplicate = description("inst-invalid", "/dev/gpuA");
+    duplicate.devices.push(duplicate.devices[0].clone());
+    assert!(
+        service
+            .register_agent(
+                duplicate,
+                Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            )
+            .is_err()
+    );
+    assert!(
+        service
+            .cluster
+            .graph
+            .nodes_of_class(ResourceClass::Machine)
+            .is_empty()
+    );
+
+    let mut invalid_kind = description("inst-invalid-kind", "/dev/gpuA");
+    invalid_kind.devices[0].kind = ResourceClass::Cpu;
+    assert!(
+        service
+            .register_agent(
+                invalid_kind,
+                Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            )
+            .is_err()
+    );
+    assert!(
+        service
+            .cluster
+            .graph
+            .nodes_of_class(ResourceClass::Machine)
+            .is_empty()
     );
 }
