@@ -111,7 +111,7 @@ old = '''        let mut next = start;
             bindings.push(binding);
         }
 '''
-new = '''        for (next, claim) in (start..).zip(claims.into_iter()) {
+new = '''        for (next, claim) in (start..).zip(claims) {
             let required = self
                 .cluster
                 .graph
