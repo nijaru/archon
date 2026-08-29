@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::ids::{LeaseId, NodeId, OwnerId};
+use crate::ids::{LeaseId, NodeId, OwnerId, RequestId};
 use crate::occupancy::{Occupancy, claims_by_node, lease_occupies, occupancy_from_leases};
 use crate::select::select;
 use crate::types::{
@@ -38,6 +38,11 @@ pub fn admit(
 /// Per-owner, per-kind consumption. Each resource class is accounted
 /// independently so callers can apply explicit ceilings to selected classes.
 pub type ClassUsage = BTreeMap<ResourceClass, Quantity>;
+
+/// Per-request hard node exclusions supplied by an execution/provider layer.
+/// These differ from quarantine: excluded nodes are not expected to become
+/// usable merely because time advances or another Lease releases capacity.
+pub type RequestExclusions = BTreeMap<RequestId, BTreeSet<NodeId>>;
 
 /// Admission with an explicit per-owner, per-kind resource ceiling.
 /// `owner_ceiling` is a hard budget, not a fairness policy or reservation:
@@ -153,6 +158,30 @@ pub fn admit_backfill(
     queue: &[Queued],
     ctx: &BackfillCtx<'_>,
 ) -> Option<Admission> {
+    admit_backfill_with_exclusions(
+        graph,
+        occupancy,
+        quarantine,
+        &RequestExclusions::new(),
+        owner_ceiling,
+        queue,
+        ctx,
+    )
+}
+
+/// EASY-style backfill with per-request hard placement exclusions. Hard
+/// exclusions represent an execution/provider incompatibility, not a
+/// temporarily unavailable resource: a head that could run only on excluded
+/// nodes does not reserve a shadow or block compatible work behind it.
+pub fn admit_backfill_with_exclusions(
+    graph: &Graph,
+    occupancy: &Occupancy,
+    quarantine: &std::collections::BTreeSet<NodeId>,
+    exclusions: &RequestExclusions,
+    owner_ceiling: &ClassUsage,
+    queue: &[Queued],
+    ctx: &BackfillCtx<'_>,
+) -> Option<Admission> {
     let BackfillCtx {
         now,
         leases,
@@ -169,7 +198,13 @@ pub fn admit_backfill(
         ) {
             continue;
         }
-        match select(graph, occupancy, &queued.request, quarantine) {
+        let mut effective = quarantine.clone();
+        let hard = exclusions
+            .get(&queued.request.id)
+            .cloned()
+            .unwrap_or_default();
+        effective.extend(hard.iter().copied());
+        match select(graph, occupancy, &queued.request, &effective) {
             Ok(allocation) => {
                 let claims: BTreeSet<NodeId> =
                     allocation.claims.iter().map(|claim| claim.node).collect();
@@ -189,18 +224,18 @@ pub fn admit_backfill(
                 }
             }
             Err(_) => {
-                // A request the cluster could satisfy but for quarantine is
-                // temporarily blocked: no proven release time exists, so
-                // only claim-disjoint jobs may backfill past it.
-                if let Ok(allocation) = select(graph, occupancy, &queued.request, &BTreeSet::new())
-                {
+                // If removing only the temporary quarantine makes this request
+                // fit, it is temporarily blocked and must retain the existing
+                // unbounded shadow semantics. Hard execution exclusions remain
+                // in force in that projection.
+                if let Ok(allocation) = select(graph, occupancy, &queued.request, &hard) {
                     blocked.push(BlockedHead {
                         shadow: None,
                         shadow_claims: claims_by_node(&allocation.claims).into_keys().collect(),
                     });
                 } else if let Some(head) = shadow_head(
                     graph,
-                    quarantine,
+                    &effective,
                     leases,
                     open_bindings,
                     &queued.request,

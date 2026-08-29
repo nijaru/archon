@@ -717,13 +717,58 @@ impl NodeService {
         });
     }
 
+    /// Hard placement exclusions imposed by the current execution adapters.
+    /// Normalized CPU and Memory Nodes carry provider-authored physical
+    /// locality (`archon.host-id`), while today's process/container adapters
+    /// enforce only aggregate CPU/memory limits. Until cpuset/NUMA translation
+    /// lands, executable work must not claim those physical placements.
+    fn execution_exclusions(&self) -> archon_kernel::RequestExclusions {
+        let mut exclusions = archon_kernel::RequestExclusions::new();
+        let machines = self.cluster.graph.nodes_of_class(ResourceClass::Machine);
+        for queued in &self.queue {
+            let request = &queued.request;
+            if request.command.is_empty() && request.image.is_none() {
+                continue;
+            }
+            let exact_kinds: BTreeSet<ResourceClass> = request
+                .needs
+                .iter()
+                .filter_map(|need| match need.kind {
+                    ResourceClass::Cpu | ResourceClass::Memory => Some(need.kind),
+                    _ => None,
+                })
+                .collect();
+            if exact_kinds.is_empty() {
+                continue;
+            }
+            for machine in machines {
+                let has_normalized_claim_kind = self
+                    .cluster
+                    .graph
+                    .descendants(*machine)
+                    .into_iter()
+                    .filter_map(|node| self.cluster.graph.node(node))
+                    .any(|node| {
+                        exact_kinds.contains(&node.kind)
+                            && node.attrs.contains_key(crate::discover::HOST_ID_ATTR)
+                    });
+                if has_normalized_claim_kind {
+                    exclusions.entry(request.id).or_default().insert(*machine);
+                }
+            }
+        }
+        exclusions
+    }
+
     /// Admit one request and drive its lease to Active. Returns the admitted
     /// request id, or None when nothing fits.
     pub fn admit_one(&mut self) -> Result<Option<RequestId>, Error> {
-        let Some(admission) = self
-            .cluster
-            .admit_backfill(&self.queue, &Default::default())
-        else {
+        let exclusions = self.execution_exclusions();
+        let Some(admission) = self.cluster.admit_backfill_with_exclusions(
+            &self.queue,
+            &Default::default(),
+            &exclusions,
+        ) else {
             return Ok(None);
         };
         let request_id = admission.request.id;
