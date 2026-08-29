@@ -27,6 +27,7 @@ jobs:
           python3 .github/scripts/explicit_claimability.py
           python3 .github/scripts/fix_kernel_claimability_fixtures.py
           python3 .github/scripts/refine_claimability_api.py
+          python3 .github/scripts/fix_claim_activation.py
           cargo fmt --all
       - name: Targeted claimability tests
         run: |
@@ -49,6 +50,7 @@ jobs:
           rm .github/scripts/explicit_claimability.py
           rm .github/scripts/fix_kernel_claimability_fixtures.py
           rm .github/scripts/refine_claimability_api.py
+          rm .github/scripts/fix_claim_activation.py
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
