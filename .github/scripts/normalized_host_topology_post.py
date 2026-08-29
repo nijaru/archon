@@ -71,3 +71,80 @@ for path in Path("crates").rglob("*.rs"):
         changed = True
     if changed:
         path.write_text(text)
+
+# Dial-in registration consumes exactly one discovered inventory. Keep that
+# inventory as MachineDescription across the control-plane boundary instead
+# of decomposing it into eight scalar parameters and rebuilding it immediately.
+path = Path("crates/control/src/server.rs")
+text = path.read_text()
+old = '''            crate::api::Greeting::Agent {
+                instance_id,
+                name,
+                cpus,
+                memory_bytes,
+                host_nodes,
+                devices,
+            } => {
+                if let Err(err) = this.lock().unwrap().register_dial_in(
+                    stream,
+                    instance_id,
+                    name,
+                    cpus,
+                    memory_bytes,
+                    host_nodes,
+                    devices,
+                ) {
+'''
+new = '''            crate::api::Greeting::Agent {
+                instance_id,
+                name,
+                cpus,
+                memory_bytes,
+                host_nodes,
+                devices,
+            } => {
+                let description = archon_node::discover::MachineDescription {
+                    instance_id,
+                    name,
+                    cpus,
+                    memory_bytes,
+                    host_nodes,
+                    devices,
+                };
+                if let Err(err) = this
+                    .lock()
+                    .unwrap()
+                    .register_dial_in(stream, description)
+                {
+'''
+if text.count(old) != 1:
+    raise RuntimeError("dial-in greeting registration shape changed")
+text = text.replace(old, new, 1)
+old = '''    fn register_dial_in(
+        &mut self,
+        stream: archon_node::transport::SecureStream,
+        instance_id: String,
+        name: String,
+        cpus: u64,
+        memory_bytes: u64,
+        host_nodes: Vec<archon_node::discover::HostNodeSpec>,
+        devices: Vec<archon_node::discover::DeviceSpec>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let description = archon_node::discover::MachineDescription {
+            instance_id,
+            name,
+            cpus,
+            memory_bytes,
+            host_nodes,
+            devices,
+        };
+'''
+new = '''    fn register_dial_in(
+        &mut self,
+        stream: archon_node::transport::SecureStream,
+        description: archon_node::discover::MachineDescription,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+'''
+if text.count(old) != 1:
+    raise RuntimeError("dial-in registration signature changed")
+path.write_text(text.replace(old, new, 1))
