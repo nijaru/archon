@@ -78,8 +78,6 @@ pub struct ProcessRuntime {
     /// Cgroup root for lease groups; empty means lifecycle-only enforcement.
     #[cfg(target_os = "linux")]
     cgroup_root: Option<String>,
-    /// Warned once that device claims ride unenforced on this runtime.
-    warned_unenforced_devices: bool,
 }
 
 impl ProcessRuntime {
@@ -116,7 +114,9 @@ impl ProcessRuntime {
     }
 
     /// Spawn the lease's command. On Linux with a cgroup root, the child
-    /// runs inside `lease-<id>` under the configured limits.
+    /// runs inside `lease-<id>` under the configured limits and device
+    /// grants. Device claims fail closed when this runtime cannot create an
+    /// enforceable cgroup.
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     pub fn activate(
         &mut self,
@@ -132,12 +132,16 @@ impl ProcessRuntime {
             return Err(format!("lease {lease} has no command to execute"));
         };
         #[cfg(target_os = "linux")]
-        let devices_unenforced = self.cgroup_root.is_none();
+        if !devices.is_empty() && self.cgroup_root.is_none() {
+            return Err(format!(
+                "lease {lease} has device claims but process device enforcement requires a cgroup v2 root"
+            ));
+        }
         #[cfg(not(target_os = "linux"))]
-        let devices_unenforced = true;
-        if !devices.is_empty() && devices_unenforced && !self.warned_unenforced_devices {
-            self.warned_unenforced_devices = true;
-            eprintln!("archon: device claims are tracked but not enforced by this runtime");
+        if !devices.is_empty() {
+            return Err(format!(
+                "lease {lease} has device claims but this process runtime cannot enforce device access"
+            ));
         }
         // Output goes to a per-lease file so results survive the process.
         let log_path = Self::log_dir().join(format!("lease-{}.log", lease.as_u64()));
@@ -153,7 +157,10 @@ impl ProcessRuntime {
             .map_err(|err| format!("open {}: {err}", log_path.display()))?;
 
         #[cfg(target_os = "linux")]
-        let mut group = match (&self.cgroup_root, limits.is_empty()) {
+        let mut group = match (
+            &self.cgroup_root,
+            limits.is_empty() && devices.is_empty(),
+        ) {
             (Some(root), false) => Some(CgroupGroup::create(root, lease, limits)?),
             _ => None,
         };
