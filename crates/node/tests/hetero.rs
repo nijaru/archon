@@ -32,6 +32,7 @@ fn spawn_shaped_agent(instance: &'static str, name: &'static str, cpus: u64) -> 
                 name: name.to_string(),
                 cpus,
                 memory_bytes: description.memory_bytes,
+                host_nodes: Vec::new(),
                 devices: Vec::new(),
             };
             if write_response(&mut stream, &welcome).is_err() {
@@ -177,6 +178,7 @@ fn device_claims_resolve_to_host_paths() {
             name: "gpu-box".into(),
             cpus: 2,
             memory_bytes: 0,
+            host_nodes: Vec::new(),
             devices: vec![gpu_spec("/dev/gpuA"), gpu_spec("/dev/gpuB")],
         },
         base,
@@ -213,6 +215,7 @@ fn device_claims_resolve_to_host_paths() {
                 name: "gpu-box".into(),
                 cpus: 2,
                 memory_bytes: 0,
+                host_nodes: Vec::new(),
                 devices: vec![gpu_spec("/dev/gpuA"), gpu_spec("/dev/gpuB")],
             },
             Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
@@ -265,6 +268,7 @@ fn gpu_spec(dev: &str) -> archon_node::discover::DeviceSpec {
         kind: archon_kernel::ResourceClass::Gpu,
         id: dev.to_string(),
         dev: dev.to_string(),
+        host_parent: None,
         access: Vec::new(),
         attrs: Default::default(),
     }

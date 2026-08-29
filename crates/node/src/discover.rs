@@ -1,11 +1,14 @@
 //! Local machine discovery: build the synthetic-graph representation of this
 //! machine for `ApplyGraph`.
 
+use std::collections::BTreeMap;
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use archon_kernel::{Attrs, CapacityDimension, Edge, EdgeKind, Node, Quantity, ResourceClass, qty};
+use archon_kernel::{
+    Attrs, CapacityDimension, Edge, EdgeKind, Node, Quantity, ResourceClass, qty, quantity_get,
+};
 
 pub struct LocalMachine {
     #[allow(dead_code)]
@@ -13,7 +16,7 @@ pub struct LocalMachine {
     #[allow(dead_code)]
     pub cpus: Vec<archon_kernel::NodeId>,
     #[allow(dead_code)]
-    pub memory: archon_kernel::NodeId,
+    pub memory: Vec<archon_kernel::NodeId>,
 }
 
 struct IdGen {
@@ -27,6 +30,9 @@ impl IdGen {
     }
 }
 
+pub(crate) const HOST_ID_ATTR: &str = "archon.host-id";
+pub(crate) const DEVICE_HOST_PARENT_ATTR: &str = "archon.host-parent";
+
 /// A machine as the agent reports it; the controller builds the graph.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MachineDescription {
@@ -35,11 +41,33 @@ pub struct MachineDescription {
     pub name: String,
     pub cpus: u64,
     pub memory_bytes: u64,
+    /// Provider-normalized host resources/topology. Empty keeps the legacy
+    /// flat Machine -> CPU/Memory shape. A non-empty fragment is authoritative
+    /// for host CPU/memory/topology facts and uses provider-local stable ids
+    /// for parent references.
+    #[serde(default)]
+    pub host_nodes: Vec<HostNodeSpec>,
     /// Devices this machine exposes. `ARCHON_DEVICES` can provide explicit
     /// declarations; supported providers may discover the same representation
     /// automatically.
     #[serde(default)]
     pub devices: Vec<DeviceSpec>,
+}
+
+/// One provider-normalized host resource or topology node. `id` is stable
+/// within this machine inventory and is used only to compose containment;
+/// Archon assigns the durable Graph NodeId when the machine first joins.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostNodeSpec {
+    pub id: String,
+    pub kind: ResourceClass,
+    /// Parent host-node id; None attaches directly to the Machine.
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub attrs: Attrs,
+    #[serde(default)]
+    pub capacity: Quantity,
 }
 
 /// One declared device: a stable `id` that survives re-registration and
@@ -49,6 +77,10 @@ pub struct DeviceSpec {
     pub kind: ResourceClass,
     pub id: String,
     pub dev: String,
+    /// Provider-normalized host node that contains this device. None means
+    /// the device provider makes no hard host-locality assertion.
+    #[serde(default)]
+    pub host_parent: Option<String>,
     /// Additional host device paths required to use this logical resource.
     /// The primary path remains in `dev`; this list is for provider/runtime
     /// support devices such as NVIDIA's control and UVM nodes.
@@ -67,6 +99,7 @@ fn description_with_devices(devices: Vec<DeviceSpec>) -> MachineDescription {
         name: hostname(),
         cpus: std::thread::available_parallelism().map_or(1, |n| n.get()) as u64,
         memory_bytes: total_memory_bytes(),
+        host_nodes: Vec::new(),
         devices,
     }
 }
@@ -237,6 +270,7 @@ fn parse_nvidia_devices(output: &str) -> Vec<DeviceSpec> {
                 dev: primary,
                 access,
                 attrs,
+                host_parent: None,
             })
         })
         .collect()
@@ -305,6 +339,7 @@ fn declared_devices() -> Vec<DeviceSpec> {
                 kind,
                 id: id.trim().to_string(),
                 dev: dev.to_string(),
+                host_parent: None,
                 access: Vec::new(),
                 attrs: Attrs::new(),
             })
@@ -356,35 +391,103 @@ fn hostname() -> String {
     })
 }
 
-/// Build the Archon graph for a machine description: one Machine node, one
-/// Cpu node per logical CPU, one Memory node with total bytes. Shared by
-/// the local and remote paths so both produce identical graph shapes.
+/// Build the Archon graph for a validated machine description. A normalized
+/// host inventory produces the provider-authored containment tree; an empty
+/// inventory retains the exclusive-v0 flat Machine -> CPU/Memory shape.
 pub fn build_graph(
     description: &MachineDescription,
     first_id: u64,
 ) -> (LocalMachine, Vec<Node>, Vec<Edge>) {
     let mut ids = IdGen { next: first_id };
     let machine = ids.node();
-    let cpus: Vec<_> = (0..description.cpus).map(|_| ids.node()).collect();
-    let memory = ids.node();
 
     let mut name = Attrs::new();
     name.insert("name".into(), description.name.clone());
     name.insert("agent_id".into(), description.instance_id.clone());
-    let mut nodes = vec![
-        Node {
-            id: machine,
-            kind: ResourceClass::Machine,
-            attrs: name,
-            capacity: Quantity::new(),
-        },
-        Node {
+    let mut nodes = vec![Node {
+        id: machine,
+        kind: ResourceClass::Machine,
+        attrs: name,
+        capacity: Quantity::new(),
+    }];
+    let mut edges = Vec::new();
+    let mut host_ids = BTreeMap::new();
+
+    let (cpus, memory) = if description.host_nodes.is_empty() {
+        // The current endpoint model is exclusive per (provider, Node), so
+        // each logical CPU remains an exclusive count=1 Node. Aggregating CPU
+        // pools is only correct after independent shared-capacity Bindings.
+        let cpus: Vec<_> = (0..description.cpus).map(|_| ids.node()).collect();
+        let memory = ids.node();
+        nodes.push(Node {
             id: memory,
             kind: ResourceClass::Memory,
             attrs: Attrs::new(),
             capacity: qty(CapacityDimension::Bytes, description.memory_bytes),
-        },
-    ];
+        });
+        edges.push(Edge {
+            from: machine,
+            to: memory,
+            kind: EdgeKind::Contains,
+            attrs: Attrs::new(),
+        });
+        for cpu in &cpus {
+            nodes.push(Node {
+                id: *cpu,
+                kind: ResourceClass::Cpu,
+                attrs: Attrs::new(),
+                capacity: qty(CapacityDimension::Count, 1),
+            });
+            edges.push(Edge {
+                from: machine,
+                to: *cpu,
+                kind: EdgeKind::Contains,
+                attrs: Attrs::new(),
+            });
+        }
+        (cpus, vec![memory])
+    } else {
+        let mut specs: Vec<_> = description.host_nodes.iter().collect();
+        specs.sort_by(|left, right| left.id.cmp(&right.id));
+        for spec in &specs {
+            let id = ids.node();
+            host_ids.insert(spec.id.clone(), id);
+            let mut attrs = spec.attrs.clone();
+            attrs.insert(HOST_ID_ATTR.into(), spec.id.clone());
+            nodes.push(Node {
+                id,
+                kind: spec.kind,
+                attrs,
+                capacity: spec.capacity.clone(),
+            });
+        }
+        for spec in &specs {
+            let child = host_ids[&spec.id];
+            let parent = spec
+                .parent
+                .as_ref()
+                .map(|parent| host_ids[parent])
+                .unwrap_or(machine);
+            edges.push(Edge {
+                from: parent,
+                to: child,
+                kind: EdgeKind::Contains,
+                attrs: Attrs::new(),
+            });
+        }
+        let cpus = specs
+            .iter()
+            .filter(|spec| spec.kind == ResourceClass::Cpu)
+            .map(|spec| host_ids[&spec.id])
+            .collect();
+        let memory = specs
+            .iter()
+            .filter(|spec| spec.kind == ResourceClass::Memory)
+            .map(|spec| host_ids[&spec.id])
+            .collect();
+        (cpus, memory)
+    };
+
     for device_spec in &description.devices {
         let device = ids.node();
         let mut attrs = device_spec.attrs.clone();
@@ -396,48 +499,28 @@ pub fn build_graph(
                 serde_json::to_string(&device_spec.access).expect("device access is serializable"),
             );
         }
+        if let Some(parent) = &device_spec.host_parent {
+            attrs.insert(DEVICE_HOST_PARENT_ATTR.into(), parent.clone());
+        }
         nodes.push(Node {
             id: device,
             kind: device_spec.kind,
             attrs,
             capacity: qty(CapacityDimension::Count, 1),
         });
-    }
-    for cpu in &cpus {
-        nodes.push(Node {
-            id: *cpu,
-            kind: ResourceClass::Cpu,
-            attrs: Attrs::new(),
-            capacity: qty(CapacityDimension::Count, 1),
-        });
-    }
-    let mut edges = vec![Edge {
-        from: machine,
-        to: memory,
-        kind: EdgeKind::Contains,
-        attrs: Attrs::new(),
-    }];
-    for cpu in &cpus {
+        let parent = device_spec
+            .host_parent
+            .as_ref()
+            .map(|parent| host_ids[parent])
+            .unwrap_or(machine);
         edges.push(Edge {
-            from: machine,
-            to: *cpu,
+            from: parent,
+            to: device,
             kind: EdgeKind::Contains,
             attrs: Attrs::new(),
         });
     }
-    for device in &description.devices {
-        let Some(device) = nodes.iter().find(|node| {
-            node.kind == device.kind && node.attrs.get("id").is_some_and(|id| id == &device.id)
-        }) else {
-            continue;
-        };
-        edges.push(Edge {
-            from: machine,
-            to: device.id,
-            kind: EdgeKind::Contains,
-            attrs: Attrs::new(),
-        });
-    }
+
     (
         LocalMachine {
             machine,
@@ -447,6 +530,258 @@ pub fn build_graph(
         nodes,
         edges,
     )
+}
+
+/// Validate the complete provider-normalized machine inventory before it can
+/// become authoritative Graph state. Host topology and device inventories have
+/// distinct writers, joined only by DeviceSpec.host_parent.
+pub(crate) fn validate_machine_description(description: &MachineDescription) -> Result<(), String> {
+    let mut host_by_id = BTreeMap::new();
+    let mut cpu_count = 0u64;
+    let mut memory_total = 0u64;
+    let mut memory_nodes = 0usize;
+
+    for spec in &description.host_nodes {
+        if spec.id.trim().is_empty() {
+            return Err("host node id must be non-empty".into());
+        }
+        if spec.attrs.contains_key(HOST_ID_ATTR) || spec.attrs.contains_key(DEVICE_HOST_PARENT_ATTR)
+        {
+            return Err(format!(
+                "host node {:?} uses a reserved Archon attribute",
+                spec.id
+            ));
+        }
+        if host_by_id.insert(spec.id.clone(), spec).is_some() {
+            return Err(format!("duplicate host node id {:?}", spec.id));
+        }
+        match spec.kind {
+            ResourceClass::Socket | ResourceClass::Numa | ResourceClass::PcieRoot => {
+                if !spec.capacity.is_empty() {
+                    return Err(format!(
+                        "structural host node {:?} must not advertise claimable capacity",
+                        spec.id
+                    ));
+                }
+            }
+            ResourceClass::Cpu => {
+                if spec.capacity != qty(CapacityDimension::Count, 1) {
+                    return Err(format!(
+                        "logical CPU {:?} must advertise exactly count=1 under the exclusive v0 binding model",
+                        spec.id
+                    ));
+                }
+                cpu_count += 1;
+            }
+            ResourceClass::Memory => {
+                if spec
+                    .capacity
+                    .keys()
+                    .any(|dimension| *dimension != CapacityDimension::Bytes)
+                {
+                    return Err(format!(
+                        "memory resource {:?} must advertise only byte capacity",
+                        spec.id
+                    ));
+                }
+                memory_total = memory_total
+                    .checked_add(quantity_get(&spec.capacity, CapacityDimension::Bytes))
+                    .ok_or_else(|| "host memory total overflows".to_string())?;
+                memory_nodes += 1;
+            }
+            other => {
+                return Err(format!(
+                    "resource class {other} is not valid in the host inventory"
+                ));
+            }
+        }
+    }
+
+    for spec in &description.host_nodes {
+        if let Some(parent) = &spec.parent {
+            let parent_spec = host_by_id.get(parent).ok_or_else(|| {
+                format!(
+                    "host node {:?} references unknown parent {parent:?}",
+                    spec.id
+                )
+            })?;
+            if matches!(parent_spec.kind, ResourceClass::Cpu | ResourceClass::Memory) {
+                return Err(format!(
+                    "host node {:?} cannot be contained by claimable leaf {parent:?}",
+                    spec.id
+                ));
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut current = Some(spec.id.as_str());
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                return Err(format!("host containment cycle through {id:?}"));
+            }
+            current = host_by_id.get(id).and_then(|node| node.parent.as_deref());
+        }
+    }
+
+    if !description.host_nodes.is_empty() {
+        if cpu_count != description.cpus {
+            return Err(format!(
+                "host inventory reports {cpu_count} logical CPUs but machine summary reports {}",
+                description.cpus
+            ));
+        }
+        if memory_nodes == 0 || memory_total != description.memory_bytes {
+            return Err(format!(
+                "host inventory reports {memory_total} memory bytes across {memory_nodes} nodes but machine summary reports {}",
+                description.memory_bytes
+            ));
+        }
+    }
+
+    let mut device_ids = std::collections::BTreeSet::new();
+    for device in &description.devices {
+        if device.id.trim().is_empty() || device.dev.trim().is_empty() {
+            return Err("device stable id and path must be non-empty".into());
+        }
+        if !matches!(
+            device.kind,
+            ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+        ) {
+            return Err(format!(
+                "resource class {:?} is not valid in a device inventory",
+                device.kind
+            ));
+        }
+        if !device_ids.insert(device.id.clone()) {
+            return Err(format!(
+                "provider reported duplicate stable device id {:?}",
+                device.id
+            ));
+        }
+        if device.attrs.contains_key(HOST_ID_ATTR)
+            || device.attrs.contains_key(DEVICE_HOST_PARENT_ATTR)
+        {
+            return Err(format!(
+                "device {:?} uses a reserved Archon attribute",
+                device.id
+            ));
+        }
+        if let Some(parent) = &device.host_parent {
+            let parent_spec = host_by_id.get(parent).ok_or_else(|| {
+                format!(
+                    "device {:?} references unknown host parent {parent:?}",
+                    device.id
+                )
+            })?;
+            if matches!(parent_spec.kind, ResourceClass::Cpu | ResourceClass::Memory) {
+                return Err(format!(
+                    "device {:?} cannot be contained by claimable host leaf {parent:?}",
+                    device.id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Verify that a returning Agent reports exactly the host facts already
+/// committed for its machine. Graph replacement/reparenting is not yet an
+/// atomic operation, so a hard host change fails closed instead of silently
+/// scheduling against stale CPU/memory/topology state.
+pub(crate) fn verify_registered_host(
+    graph: &archon_kernel::Graph,
+    machine: archon_kernel::NodeId,
+    description: &MachineDescription,
+) -> Result<(), String> {
+    let descendants = graph.descendants(machine);
+    let normalized = descendants.iter().any(|id| {
+        graph
+            .node(*id)
+            .is_some_and(|node| node.attrs.contains_key(HOST_ID_ATTR))
+    });
+
+    if description.host_nodes.is_empty() {
+        if normalized {
+            return Err(
+                "returning agent omitted previously authoritative normalized host topology".into(),
+            );
+        }
+        let cpu_nodes: Vec<_> = descendants
+            .iter()
+            .filter_map(|id| graph.node(*id))
+            .filter(|node| node.kind == ResourceClass::Cpu)
+            .collect();
+        let memory_nodes: Vec<_> = descendants
+            .iter()
+            .filter_map(|id| graph.node(*id))
+            .filter(|node| node.kind == ResourceClass::Memory)
+            .collect();
+        if cpu_nodes.len() as u64 != description.cpus
+            || cpu_nodes
+                .iter()
+                .any(|node| node.capacity != qty(CapacityDimension::Count, 1))
+            || memory_nodes.len() != 1
+            || quantity_get(&memory_nodes[0].capacity, CapacityDimension::Bytes)
+                != description.memory_bytes
+        {
+            return Err("returning agent changed host CPU or memory facts".into());
+        }
+        return Ok(());
+    }
+
+    let mut actual = Vec::new();
+    for id in descendants {
+        let Some(node) = graph.node(id) else { continue };
+        let Some(host_id) = node.attrs.get(HOST_ID_ATTR) else {
+            continue;
+        };
+        let parent = match graph.parent(id) {
+            Some(parent) if parent == machine => None,
+            Some(parent) => Some(
+                graph
+                    .node(parent)
+                    .and_then(|node| node.attrs.get(HOST_ID_ATTR))
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!("host node {host_id:?} has a non-host containment parent")
+                    })?,
+            ),
+            None => return Err(format!("host node {host_id:?} lost containment")),
+        };
+        let mut attrs = node.attrs.clone();
+        attrs.remove(HOST_ID_ATTR);
+        actual.push(HostNodeSpec {
+            id: host_id.clone(),
+            kind: node.kind,
+            parent,
+            attrs,
+            capacity: node.capacity.clone(),
+        });
+    }
+    let mut expected = description.host_nodes.clone();
+    actual.sort_by(|left, right| left.id.cmp(&right.id));
+    expected.sort_by(|left, right| left.id.cmp(&right.id));
+    if actual != expected {
+        return Err("returning agent changed authoritative host topology or capacity".into());
+    }
+    Ok(())
+}
+
+/// Resolve one explicit device -> host-provider containment reference.
+pub(crate) fn host_parent_node(
+    graph: &archon_kernel::Graph,
+    machine: archon_kernel::NodeId,
+    host_parent: &str,
+) -> Result<archon_kernel::NodeId, String> {
+    graph
+        .descendants(machine)
+        .into_iter()
+        .find(|id| {
+            graph
+                .node(*id)
+                .and_then(|node| node.attrs.get(HOST_ID_ATTR))
+                .is_some_and(|id| id == host_parent)
+        })
+        .ok_or_else(|| format!("unknown committed host parent {host_parent:?}"))
 }
 
 /// Discover this machine and build its graph.
@@ -517,5 +852,130 @@ mod tests {
         assert!(validate_declared_devices("gpu=g0:/dev/nvidia0,broken").is_err());
         assert!(validate_declared_devices("unknown=x:/dev/x").is_err());
         assert!(validate_declared_devices("gpu=:/dev/nvidia0").is_err());
+    }
+
+    #[test]
+    fn normalized_host_nodes_build_explicit_device_locality() {
+        let mut numa_attrs = Attrs::new();
+        numa_attrs.insert("os_index".into(), "0".into());
+        let description = MachineDescription {
+            instance_id: "topology-test".into(),
+            name: "topology-box".into(),
+            cpus: 1,
+            memory_bytes: 4096,
+            host_nodes: vec![
+                HostNodeSpec {
+                    id: "numa/0".into(),
+                    kind: ResourceClass::Numa,
+                    parent: None,
+                    attrs: numa_attrs,
+                    capacity: Quantity::new(),
+                },
+                HostNodeSpec {
+                    id: "cpu/0".into(),
+                    kind: ResourceClass::Cpu,
+                    parent: Some("numa/0".into()),
+                    attrs: Attrs::new(),
+                    capacity: qty(CapacityDimension::Count, 1),
+                },
+                HostNodeSpec {
+                    id: "memory/0".into(),
+                    kind: ResourceClass::Memory,
+                    parent: Some("numa/0".into()),
+                    attrs: Attrs::new(),
+                    capacity: qty(CapacityDimension::Bytes, 4096),
+                },
+                HostNodeSpec {
+                    id: "pcie/0000:00:01.0".into(),
+                    kind: ResourceClass::PcieRoot,
+                    parent: Some("numa/0".into()),
+                    attrs: Attrs::new(),
+                    capacity: Quantity::new(),
+                },
+            ],
+            devices: vec![DeviceSpec {
+                kind: ResourceClass::Gpu,
+                id: "gpu0".into(),
+                dev: "/dev/gpu0".into(),
+                host_parent: Some("pcie/0000:00:01.0".into()),
+                access: Vec::new(),
+                attrs: Attrs::new(),
+            }],
+        };
+        validate_machine_description(&description).expect("valid normalized inventory");
+        let (_local, nodes, edges) = build_graph(&description, 0);
+        let mut graph = archon_kernel::Graph::new();
+        graph.apply(nodes, edges).expect("apply normalized graph");
+        let cpu = graph.nodes_of_class(ResourceClass::Cpu)[0];
+        let memory = graph.nodes_of_class(ResourceClass::Memory)[0];
+        let gpu = graph.nodes_of_class(ResourceClass::Gpu)[0];
+        let numa = graph.nodes_of_class(ResourceClass::Numa)[0];
+        let pcie = graph.nodes_of_class(ResourceClass::PcieRoot)[0];
+        assert_eq!(graph.parent(gpu), Some(pcie));
+        assert_eq!(graph.parent(pcie), Some(numa));
+        for node in [cpu, memory, gpu] {
+            assert_eq!(
+                graph.ancestor_of_class(node, ResourceClass::Numa),
+                Some(numa)
+            );
+        }
+    }
+
+    #[test]
+    fn normalized_host_inventory_must_be_complete_acyclic_and_owned() {
+        let mut description = MachineDescription {
+            instance_id: "bad-topology".into(),
+            name: "bad".into(),
+            cpus: 1,
+            memory_bytes: 1024,
+            host_nodes: vec![HostNodeSpec {
+                id: "cpu/0".into(),
+                kind: ResourceClass::Cpu,
+                parent: Some("missing".into()),
+                attrs: Attrs::new(),
+                capacity: qty(CapacityDimension::Count, 1),
+            }],
+            devices: Vec::new(),
+        };
+        assert!(
+            validate_machine_description(&description)
+                .unwrap_err()
+                .contains("unknown parent")
+        );
+        description.host_nodes = vec![
+            HostNodeSpec {
+                id: "numa/0".into(),
+                kind: ResourceClass::Numa,
+                parent: Some("socket/0".into()),
+                attrs: Attrs::new(),
+                capacity: Quantity::new(),
+            },
+            HostNodeSpec {
+                id: "socket/0".into(),
+                kind: ResourceClass::Socket,
+                parent: Some("numa/0".into()),
+                attrs: Attrs::new(),
+                capacity: Quantity::new(),
+            },
+            HostNodeSpec {
+                id: "cpu/0".into(),
+                kind: ResourceClass::Cpu,
+                parent: Some("numa/0".into()),
+                attrs: Attrs::new(),
+                capacity: qty(CapacityDimension::Count, 1),
+            },
+            HostNodeSpec {
+                id: "memory/0".into(),
+                kind: ResourceClass::Memory,
+                parent: Some("numa/0".into()),
+                attrs: Attrs::new(),
+                capacity: qty(CapacityDimension::Bytes, 1024),
+            },
+        ];
+        assert!(
+            validate_machine_description(&description)
+                .unwrap_err()
+                .contains("cycle")
+        );
     }
 }

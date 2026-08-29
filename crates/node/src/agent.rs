@@ -255,6 +255,7 @@ impl LeaseAgent {
             name: description.name,
             cpus: description.cpus,
             memory_bytes: description.memory_bytes,
+            host_nodes: description.host_nodes,
             devices: description.devices,
         }
     }

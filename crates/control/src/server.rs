@@ -360,16 +360,18 @@ impl ControlPlane {
                 name,
                 cpus,
                 memory_bytes,
+                host_nodes,
                 devices,
             } => {
-                if let Err(err) = this.lock().unwrap().register_dial_in(
-                    stream,
+                let description = archon_node::discover::MachineDescription {
                     instance_id,
                     name,
                     cpus,
                     memory_bytes,
+                    host_nodes,
                     devices,
-                ) {
+                };
+                if let Err(err) = this.lock().unwrap().register_dial_in(stream, description) {
                     eprintln!("archon: agent {peer} registration failed: {err}");
                 } else {
                     eprintln!("archon: agent {peer} disconnected");
@@ -391,19 +393,8 @@ impl ControlPlane {
     fn register_dial_in(
         &mut self,
         stream: archon_node::transport::SecureStream,
-        instance_id: String,
-        name: String,
-        cpus: u64,
-        memory_bytes: u64,
-        devices: Vec<archon_node::discover::DeviceSpec>,
+        description: archon_node::discover::MachineDescription,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let description = archon_node::discover::MachineDescription {
-            instance_id,
-            name,
-            cpus,
-            memory_bytes,
-            devices,
-        };
         let executor = archon_node::service::RemoteExecutor::from_secure(stream);
         let machine = self
             .service
