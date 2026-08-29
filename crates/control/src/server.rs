@@ -371,7 +371,22 @@ impl ControlPlane {
                     host_nodes,
                     devices,
                 };
-                if let Err(err) = this.lock().unwrap().register_dial_in(stream, description) {
+                let mut executor = archon_node::service::RemoteExecutor::from_secure(stream);
+                let capabilities =
+                    match archon_node::service::NodeService::query_execution_capabilities(
+                        &mut executor,
+                    ) {
+                        Ok(capabilities) => capabilities,
+                        Err(err) => {
+                            eprintln!("archon: agent {peer} capability proof failed: {err}");
+                            return;
+                        }
+                    };
+                if let Err(err) =
+                    this.lock()
+                        .unwrap()
+                        .register_dial_in(executor, description, capabilities)
+                {
                     eprintln!("archon: agent {peer} registration failed: {err}");
                 } else {
                     eprintln!("archon: agent {peer} disconnected");
@@ -392,13 +407,15 @@ impl ControlPlane {
 
     fn register_dial_in(
         &mut self,
-        stream: archon_node::transport::SecureStream,
+        executor: archon_node::service::RemoteExecutor,
         description: archon_node::discover::MachineDescription,
+        capabilities: archon_node::protocol::ExecutionCapabilities,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let executor = archon_node::service::RemoteExecutor::from_secure(stream);
-        let machine = self
-            .service
-            .register_agent(description, Box::new(executor))?;
+        let machine = self.service.register_agent_with_capabilities(
+            description,
+            Box::new(executor),
+            capabilities,
+        )?;
         let name = self
             .service
             .cluster

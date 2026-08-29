@@ -75,6 +75,12 @@ impl LeaseAgent {
     pub fn handle(&mut self, request: AgentRequest) -> AgentResponse {
         match request {
             AgentRequest::Hello => self.hello(),
+            AgentRequest::Capabilities => AgentResponse::Capabilities {
+                capabilities: crate::protocol::ExecutionCapabilities {
+                    process: self.process.capabilities(),
+                    container: self.containers.capabilities(),
+                },
+            },
             // Registration is consumed by the control plane before effects
             // ever reach a LeaseAgent.
             AgentRequest::Register { .. } => {

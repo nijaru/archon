@@ -8,8 +8,42 @@ use archon_kernel::{
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::discover::{DeviceSpec, HostNodeSpec, MachineDescription};
+use archon_node::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities,
+};
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::{LocalExecutor, NodeService};
+use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
+
+struct DeviceClaimExecutor {
+    inner: LocalExecutor,
+}
+
+impl LeaseExecutor for DeviceClaimExecutor {
+    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+        if matches!(request, AgentRequest::Capabilities) {
+            return Ok(AgentResponse::Capabilities {
+                capabilities: ExecutionCapabilities {
+                    process: RuntimeCapabilities {
+                        available: true,
+                        cpu_limit: false,
+                        memory_limit: false,
+                        device_isolation: true,
+                        physical_cpu_placement: false,
+                        numa_memory_placement: false,
+                    },
+                    container: RuntimeCapabilities::default(),
+                },
+            });
+        }
+        self.inner.execute(request)
+    }
+}
+
+fn executor() -> Box<dyn LeaseExecutor> {
+    Box::new(DeviceClaimExecutor {
+        inner: LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new())),
+    })
+}
 
 fn description(instance: &str, gpu_dev: &str) -> MachineDescription {
     MachineDescription {
@@ -38,10 +72,7 @@ fn provider_support_paths_follow_one_device_claim() {
         .attrs
         .insert("cdi".into(), "nvidia.com/gpu=gpu0".into());
     service
-        .register_agent(
-            description,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description, executor())
         .expect("registration");
     service.submit(gpu_request(), OwnerId::from_u64(1));
     assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
@@ -80,10 +111,7 @@ fn gpu_request() -> Request {
 fn device_identity_survives_re_registration_with_new_path() {
     let mut service = NodeService::new();
     service
-        .register_agent(
-            description("inst-dev", "/dev/gpuA"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-dev", "/dev/gpuA"), executor())
         .expect("first registration");
     let gpu = *service
         .cluster
@@ -102,10 +130,7 @@ fn device_identity_survives_re_registration_with_new_path() {
 
     // The agent returns with the same device id behind a new host path.
     service
-        .register_agent(
-            description("inst-dev", "/dev/gpuB"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-dev", "/dev/gpuB"), executor())
         .expect("re-registration");
 
     // Same node, refreshed path: the live claim still points at gpu0.
@@ -131,19 +156,13 @@ fn device_identity_survives_re_registration_with_new_path() {
 fn re_registration_adds_and_refreshes_without_spurious_revisions() {
     let mut service = NodeService::new();
     service
-        .register_agent(
-            description("inst-add", "/dev/gpuA"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-add", "/dev/gpuA"), executor())
         .expect("first registration");
 
     // Identical declaration: nothing to reconcile.
     let revision = service.cluster.graph.revision;
     service
-        .register_agent(
-            description("inst-add", "/dev/gpuA"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-add", "/dev/gpuA"), executor())
         .expect("no-op re-registration");
     assert_eq!(
         service.cluster.graph.revision, revision,
@@ -161,10 +180,7 @@ fn re_registration_adds_and_refreshes_without_spurious_revisions() {
         attrs: Default::default(),
     });
     service
-        .register_agent(
-            updated,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(updated, executor())
         .expect("re-registration with changes");
     assert_eq!(
         service
@@ -194,20 +210,14 @@ fn re_registration_adds_and_refreshes_without_spurious_revisions() {
 fn provider_disappearance_blocks_placement_and_same_id_reappears() {
     let mut service = NodeService::new();
     service
-        .register_agent(
-            description("inst-disappear", "/dev/gpuA"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-disappear", "/dev/gpuA"), executor())
         .expect("first registration");
     let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
 
     let mut missing = description("inst-disappear", "/dev/gpuA");
     missing.devices.clear();
     service
-        .register_agent(
-            missing,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(missing, executor())
         .expect("provider reports disappearance");
 
     assert_eq!(
@@ -227,10 +237,7 @@ fn provider_disappearance_blocks_placement_and_same_id_reappears() {
     );
 
     service
-        .register_agent(
-            description("inst-disappear", "/dev/gpuB"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-disappear", "/dev/gpuB"), executor())
         .expect("same stable device returns");
 
     assert_eq!(
@@ -253,10 +260,7 @@ fn provider_disappearance_blocks_placement_and_same_id_reappears() {
 fn provider_disappearance_fails_and_fences_a_live_device_claim() {
     let mut service = NodeService::new();
     service
-        .register_agent(
-            description("inst-live", "/dev/null"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-live", "/dev/null"), executor())
         .expect("first registration");
     let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
     service.submit(gpu_request(), OwnerId::from_u64(1));
@@ -275,10 +279,7 @@ fn provider_disappearance_fails_and_fences_a_live_device_claim() {
     let mut missing = description("inst-live", "/dev/null");
     missing.devices.clear();
     service
-        .register_agent(
-            missing,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(missing, executor())
         .expect("provider reports disappearance");
 
     assert_eq!(
@@ -304,10 +305,7 @@ fn provider_disappearance_fails_and_fences_a_live_device_claim() {
     );
 
     service
-        .register_agent(
-            description("inst-live", "/dev/zero"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-live", "/dev/zero"), executor())
         .expect("same stable device returns after fencing");
     assert_eq!(
         service.cluster.node_state(gpu),
@@ -323,20 +321,14 @@ fn provider_disappearance_fails_and_fences_a_live_device_claim() {
 fn replacement_at_the_same_path_gets_a_new_identity() {
     let mut service = NodeService::new();
     service
-        .register_agent(
-            description("inst-replace", "/dev/gpuA"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-replace", "/dev/gpuA"), executor())
         .expect("first registration");
     let original = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
 
     let mut replacement = description("inst-replace", "/dev/gpuA");
     replacement.devices[0].id = "gpu1".into();
     service
-        .register_agent(
-            replacement,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(replacement, executor())
         .expect("replacement registration");
 
     let gpus = service.cluster.graph.nodes_of_class(ResourceClass::Gpu);
@@ -379,14 +371,7 @@ fn initial_registration_rejects_invalid_device_inventory() {
     let mut service = NodeService::new();
     let mut duplicate = description("inst-invalid", "/dev/gpuA");
     duplicate.devices.push(duplicate.devices[0].clone());
-    assert!(
-        service
-            .register_agent(
-                duplicate,
-                Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-            )
-            .is_err()
-    );
+    assert!(service.register_agent(duplicate, executor(),).is_err());
     assert!(
         service
             .cluster
@@ -397,14 +382,7 @@ fn initial_registration_rejects_invalid_device_inventory() {
 
     let mut invalid_kind = description("inst-invalid-kind", "/dev/gpuA");
     invalid_kind.devices[0].kind = ResourceClass::Cpu;
-    assert!(
-        service
-            .register_agent(
-                invalid_kind,
-                Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-            )
-            .is_err()
-    );
+    assert!(service.register_agent(invalid_kind, executor(),).is_err());
     assert!(
         service
             .cluster
@@ -508,10 +486,7 @@ fn nested_device_reconciliation_preserves_topology_parent() {
         .expect("seed nested device topology");
 
     service
-        .register_agent(
-            description("inst-nested", "/dev/gpuB"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-nested", "/dev/gpuB"), executor())
         .expect("reconcile nested device");
 
     assert_eq!(
@@ -532,10 +507,7 @@ fn nested_device_reconciliation_preserves_topology_parent() {
     let mut missing = description("inst-nested", "/dev/gpuB");
     missing.devices.clear();
     service
-        .register_agent(
-            missing,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(missing, executor())
         .expect("nested device disappearance");
     assert_eq!(
         service.cluster.node_state(gpu),
@@ -544,10 +516,7 @@ fn nested_device_reconciliation_preserves_topology_parent() {
     assert_eq!(service.cluster.graph.parent(gpu), Some(numa));
 
     service
-        .register_agent(
-            description("inst-nested", "/dev/gpuC"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-nested", "/dev/gpuC"), executor())
         .expect("nested device reappearance");
     assert_eq!(
         service.cluster.node_state(gpu),
@@ -564,19 +533,13 @@ fn nested_device_reconciliation_preserves_topology_parent() {
 fn returning_agent_with_changed_host_shape_fails_closed() {
     let mut service = NodeService::new();
     service
-        .register_agent(
-            description("inst-host-change", "/dev/gpuA"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(description("inst-host-change", "/dev/gpuA"), executor())
         .expect("first registration");
     let machine = service.cluster.graph.nodes_of_class(ResourceClass::Machine)[0];
     let mut changed = description("inst-host-change", "/dev/gpuA");
     changed.cpus = 3;
     let err = service
-        .register_agent(
-            changed,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(changed, executor())
         .expect_err("changed host facts must not be silently accepted");
     assert!(err.to_string().contains("host inventory changed"));
     assert_eq!(
@@ -652,16 +615,10 @@ fn explicit_device_host_parent_is_used_for_new_inventory() {
     let mut first = normalized_description("inst-parent", "numa/0");
     first.devices.clear();
     service
-        .register_agent(
-            first,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(first, executor())
         .expect("host registration");
     service
-        .register_agent(
-            normalized_description("inst-parent", "numa/0"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
-        )
+        .register_agent(normalized_description("inst-parent", "numa/0"), executor())
         .expect("new nested device");
     let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
     let parent = service.cluster.graph.parent(gpu).expect("GPU parent");
@@ -682,7 +639,7 @@ fn same_device_cannot_silently_move_between_host_domains() {
     service
         .register_agent(
             normalized_description("inst-reparent", "numa/0"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            executor(),
         )
         .expect("first registration");
     let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
@@ -690,7 +647,7 @@ fn same_device_cannot_silently_move_between_host_domains() {
     let err = service
         .register_agent(
             normalized_description("inst-reparent", "numa/1"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            executor(),
         )
         .expect_err("hard containment change requires explicit reconciliation");
     assert!(err.to_string().contains("containment"));

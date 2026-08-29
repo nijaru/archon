@@ -30,6 +30,26 @@ pub struct DeviceAccess {
     pub cdi: Option<String>,
 }
 
+/// What one execution adapter can make true for a workload. These are
+/// runtime facts, not schedulable resource facts: the controller uses them to
+/// reject placements that an agent cannot enforce, but never writes them into
+/// the resource Graph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCapabilities {
+    pub available: bool,
+    pub cpu_limit: bool,
+    pub memory_limit: bool,
+    pub device_isolation: bool,
+    pub physical_cpu_placement: bool,
+    pub numa_memory_placement: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionCapabilities {
+    pub process: RuntimeCapabilities,
+    pub container: RuntimeCapabilities,
+}
+
 impl DeviceAccess {
     /// Build from a device node's graph attributes.
     pub fn from_attrs(attrs: &archon_kernel::Attrs) -> Option<Self> {
@@ -87,6 +107,9 @@ pub enum AgentRequest {
     /// Ask the agent to describe its machine; the controller builds the
     /// graph from the answer.
     Hello,
+    /// Ask which execution guarantees this agent can actually enforce. This
+    /// is queried during registration before any Graph or Lease mutation.
+    Capabilities,
     /// Dial-in registration: the agent connects to the control plane and
     /// announces its machine up front. `instance_id` is the agent's stable
     /// identity across reconnects; `name` is display-only.
@@ -167,6 +190,9 @@ pub enum AgentRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AgentResponse {
+    Capabilities {
+        capabilities: ExecutionCapabilities,
+    },
     Welcome {
         /// Stable agent identity. Older agents decode as empty and are
         /// refused by controller-initiated registration rather than silently
