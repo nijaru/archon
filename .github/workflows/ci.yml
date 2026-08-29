@@ -36,6 +36,7 @@ jobs:
           python3 .github/scripts/fix_health_capability_fixture.py
           python3 .github/scripts/fix_hetero_capability_fixture.py
           python3 .github/scripts/fix_multi_capability_fixture.py
+          python3 .github/scripts/fix_recovery_capability_fixture.py
           cargo fmt --all
       - name: Targeted capability tests
         run: |
@@ -47,6 +48,7 @@ jobs:
           cargo test -p archon-node --test health_ops
           cargo test -p archon-node --test hetero
           cargo test -p archon-node --test multi
+          cargo test -p archon-node --test recovery
           cargo test -p archon-control --test persist
           cargo test -p archon-control --test server
       - name: Workspace gates
@@ -71,6 +73,7 @@ jobs:
           rm .github/scripts/fix_health_capability_fixture.py
           rm .github/scripts/fix_hetero_capability_fixture.py
           rm .github/scripts/fix_multi_capability_fixture.py
+          rm .github/scripts/fix_recovery_capability_fixture.py
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
