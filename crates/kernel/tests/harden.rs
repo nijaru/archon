@@ -72,6 +72,7 @@ fn bind(cluster: &mut Cluster, lease: u64, node: u64, binding: u64) {
             lease: LeaseId::from_u64(lease),
             node: NodeId::from_u64(node),
             provider: ProviderId::ENFORCE,
+            scope: archon_kernel::BindingScope::Exclusive,
         })
         .unwrap();
     cluster
@@ -338,6 +339,7 @@ fn duplicate_open_binding_after_active_is_a_noop() {
         lease: LeaseId::from_u64(1),
         node: NodeId::from_u64(2),
         provider: ProviderId::ENFORCE,
+        scope: archon_kernel::BindingScope::Exclusive,
     };
     cluster.apply(open_binding.clone()).unwrap();
     cluster
@@ -390,6 +392,7 @@ fn binding_acks_validate_the_fence() {
             lease: LeaseId::from_u64(1),
             node: NodeId::from_u64(2),
             provider: ProviderId::ENFORCE,
+            scope: archon_kernel::BindingScope::Exclusive,
         })
         .unwrap();
     let err = cluster
@@ -541,6 +544,7 @@ fn child_leases_cannot_open_bindings() {
             lease: LeaseId::from_u64(2),
             node: NodeId::from_u64(2),
             provider: ProviderId::ENFORCE,
+            scope: archon_kernel::BindingScope::Exclusive,
         })
         .unwrap_err();
     assert!(matches!(err, Error::ChildBindingRefused { .. }));
@@ -1022,4 +1026,94 @@ fn completion_records_success_and_failure() {
             exit_code: 0,
         })
         .unwrap_err();
+}
+
+#[test]
+fn independent_share_bindings_can_coexist_but_exclusive_scope_cannot_mix() {
+    let mut cluster = Cluster::new();
+    let machine = NodeId::from_u64(1);
+    let memory = NodeId::from_u64(2);
+    cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![
+                node(1, ResourceClass::Machine, Quantity::new()),
+                node(
+                    2,
+                    ResourceClass::Memory,
+                    qty(CapacityDimension::Bytes, 1024),
+                ),
+            ],
+            edges: vec![archon_kernel::Edge {
+                from: machine,
+                to: memory,
+                kind: archon_kernel::EdgeKind::Contains,
+                attrs: Default::default(),
+            }],
+        })
+        .unwrap();
+    cluster
+        .apply(Command::SetAgentSession {
+            machine,
+            session: 1,
+        })
+        .unwrap();
+    for (lease, binding) in [(1, 1), (2, 2)] {
+        let allocation = archon_kernel::Allocation {
+            claims: vec![archon_kernel::Claim {
+                node: memory,
+                quantity: qty(CapacityDimension::Bytes, 256),
+            }],
+            graph_revision: cluster.graph.revision,
+            explanation: "share".into(),
+        };
+        cluster
+            .apply(Command::OpenLease {
+                lease: LeaseId::from_u64(lease),
+                owner: OwnerId::from_u64(lease),
+                allocation,
+                parent: None,
+                expires_at: 1_000,
+                prepare_deadline: 1_000,
+                priority: 1,
+            })
+            .unwrap();
+        cluster
+            .apply(Command::OpenBinding {
+                binding: BindingId::from_u64(binding),
+                lease: LeaseId::from_u64(lease),
+                node: memory,
+                provider: ProviderId::ENFORCE,
+                scope: archon_kernel::BindingScope::IndependentShare,
+            })
+            .expect("independent shares may coexist");
+    }
+    let allocation = archon_kernel::Allocation {
+        claims: vec![archon_kernel::Claim {
+            node: memory,
+            quantity: qty(CapacityDimension::Bytes, 256),
+        }],
+        graph_revision: cluster.graph.revision,
+        explanation: "exclusive".into(),
+    };
+    cluster
+        .apply(Command::OpenLease {
+            lease: LeaseId::from_u64(3),
+            owner: OwnerId::from_u64(3),
+            allocation,
+            parent: None,
+            expires_at: 1_000,
+            prepare_deadline: 1_000,
+            priority: 1,
+        })
+        .unwrap();
+    let err = cluster
+        .apply(Command::OpenBinding {
+            binding: BindingId::from_u64(3),
+            lease: LeaseId::from_u64(3),
+            node: memory,
+            provider: ProviderId::ENFORCE,
+            scope: archon_kernel::BindingScope::Exclusive,
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::ResourceBusy { node } if node == memory));
 }

@@ -453,6 +453,7 @@ fn activate_requires_prepared_bindings() {
                 .claims[0]
                 .node,
             provider: ProviderId::ENFORCE,
+            scope: archon_kernel::BindingScope::Exclusive,
         })
         .unwrap();
     let err = world

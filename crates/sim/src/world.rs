@@ -365,6 +365,7 @@ impl World {
                 lease,
                 node: claim.node,
                 provider: ProviderId::ENFORCE,
+                scope: archon_kernel::BindingScope::Exclusive,
             })?;
             bindings.push(binding);
         }

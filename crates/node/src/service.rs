@@ -11,8 +11,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    BindingId, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, NodeId, OwnerId,
-    ProviderId, Queued, Request, RequestId, ResourceClass, quantity_get,
+    BindingId, BindingScope, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, NodeId,
+    OwnerId, ProviderId, Queued, Request, RequestId, ResourceClass, quantity_get,
 };
 
 type CommandSink = Box<dyn FnMut(&Command) + Send>;
@@ -1048,14 +1048,30 @@ impl NodeService {
             .claims
             .clone();
         for claim in claims {
-            let enforced = self
+            let node = self
                 .cluster
                 .graph
                 .node(claim.node)
-                .is_some_and(|node| node.kind.is_enforced());
-            if !enforced {
-                continue;
-            }
+                .ok_or(Error::UnknownNode(claim.node))?;
+            let scope = match node.kind {
+                ResourceClass::Cpu
+                | ResourceClass::Gpu
+                | ResourceClass::Nic
+                | ResourceClass::Nvme => BindingScope::Exclusive,
+                // Memory limits are independently enforced by each lease's
+                // cgroup/container object. They therefore use the explicit
+                // shared-capacity Binding scope rather than pretending the
+                // whole Memory accounting Node is one exclusive endpoint.
+                ResourceClass::Memory => BindingScope::IndependentShare,
+                kind if !kind.is_enforced() => continue,
+                kind => {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "no execution provider is registered for enforced resource class {kind}"
+                        ),
+                    });
+                }
+            };
             let binding = BindingId::from_u64(self.next_binding);
             self.next_binding += 1;
             self.commit(Command::OpenBinding {
@@ -1063,6 +1079,7 @@ impl NodeService {
                 lease,
                 node: claim.node,
                 provider: ProviderId::ENFORCE,
+                scope,
             })?;
         }
         Ok(())
@@ -1481,7 +1498,14 @@ impl NodeService {
             | Effect::Fence { binding, .. } => *binding,
             Effect::Reconcile { .. } => unreachable!(),
         };
-        let (lease, mut session, mut fence, record_node) = {
+        let epoch = match &effect {
+            Effect::Prepare { epoch, .. }
+            | Effect::Activate { epoch, .. }
+            | Effect::Release { epoch, .. }
+            | Effect::Fence { epoch, .. } => *epoch,
+            Effect::Reconcile { .. } => unreachable!(),
+        };
+        let (lease, mut session, mut fence, record_node, record_provider, record_scope) = {
             let record = self
                 .cluster
                 .bindings
@@ -1492,6 +1516,8 @@ impl NodeService {
                 record.agent_session,
                 record.fence,
                 record.node,
+                record.provider,
+                record.scope,
             )
         };
 
@@ -1528,14 +1554,22 @@ impl NodeService {
             Effect::Prepare { .. } => AgentRequest::Prepare {
                 binding: binding_id.as_u64(),
                 lease: lease.as_u64(),
+                node: record_node.as_u64(),
+                provider: record_provider.as_u64(),
+                scope: record_scope,
                 session,
                 fence,
+                epoch,
             },
             Effect::Activate { .. } => AgentRequest::Activate {
                 binding: binding_id.as_u64(),
                 lease: lease.as_u64(),
+                node: record_node.as_u64(),
+                provider: record_provider.as_u64(),
+                scope: record_scope,
                 session,
                 fence,
+                epoch,
                 command: self.lease_commands.get(&lease).cloned().unwrap_or_default(),
                 limits: self.lease_limits(lease)?,
                 image: self
@@ -1564,14 +1598,22 @@ impl NodeService {
             Effect::Release { .. } => AgentRequest::Release {
                 binding: binding_id.as_u64(),
                 lease: lease.as_u64(),
+                node: record_node.as_u64(),
+                provider: record_provider.as_u64(),
+                scope: record_scope,
                 session,
                 fence,
+                epoch,
             },
             Effect::Fence { .. } => AgentRequest::Fence {
                 binding: binding_id.as_u64(),
                 lease: lease.as_u64(),
+                node: record_node.as_u64(),
+                provider: record_provider.as_u64(),
+                scope: record_scope,
                 session,
                 fence,
+                epoch,
             },
             Effect::Reconcile { .. } => unreachable!(),
         };
