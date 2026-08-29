@@ -396,7 +396,7 @@ pub struct Request {
 }
 
 /// A queued request carries the owner that submitted it and the submit time,
-/// so fair-share admission can attribute consumption and break ties.
+/// so admission can enforce per-owner budgets and break deterministic ties.
 pub struct Queued {
     pub request: Request,
     pub owner: crate::ids::OwnerId,

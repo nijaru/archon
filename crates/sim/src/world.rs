@@ -186,8 +186,8 @@ impl World {
         });
     }
 
-    /// Admit the head of the queue under an optional per-owner fair-share
-    /// ceiling. An empty ceiling disables the budget.
+    /// Admit the head of the queue with ordinary deterministic ordering.
+    /// Resource ceilings are exposed separately by `admit_next_with_ceiling`.
     pub fn admit_next(
         &mut self,
         lease: LeaseId,
