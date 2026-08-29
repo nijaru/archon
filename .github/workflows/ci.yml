@@ -83,6 +83,29 @@ jobs:
                   pos = end + 1
               if changed:
                   path.write_text(text)
+
+          # Legacy direct-agent tests construct Prepare requests by hand.
+          # Give them the same complete authority tuple the service now sends.
+          path = Path("crates/node/tests/remote.rs")
+          text = path.read_text()
+          pattern = re.compile(
+              r"(?P<prefix>\s*binding:\s*\d+,\n\s*lease:\s*\d+,\n)(?P<indent>\s*)session:",
+          )
+          def expand(match):
+              indent = match.group("indent")
+              return (
+                  match.group("prefix")
+                  + indent + "node: 1,\n"
+                  + indent + "provider: 1,\n"
+                  + indent + "scope: archon_kernel::BindingScope::Exclusive,\n"
+                  + indent + "session:"
+              )
+          text, count = pattern.subn(expand, text)
+          if count != 2:
+              raise RuntimeError(f"expected two legacy Prepare fixtures, updated {count}")
+          # Epoch is an independent Cluster generation and belongs beside fence.
+          text = text.replace("        fence: 1,\n    });", "        fence: 1,\n        epoch: 1,\n    });")
+          path.write_text(text)
           PY
           cargo fmt --all
       - name: Targeted authority tests
