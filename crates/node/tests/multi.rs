@@ -30,6 +30,7 @@ fn spawn_named_agent(_instance_id: &'static str, name: &'static str) -> String {
             };
             let description = archon_node::discover::describe();
             let welcome = AgentResponse::Welcome {
+                instance_id: "test-agent".into(),
                 name: name.to_string(),
                 cpus: description.cpus,
                 memory_bytes: description.memory_bytes,

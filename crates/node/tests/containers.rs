@@ -56,6 +56,7 @@ fn spawn_agent() -> String {
             };
             let description = archon_node::discover::describe();
             let welcome = archon_node::protocol::AgentResponse::Welcome {
+                instance_id: "test-agent".into(),
                 name: "container-host".into(),
                 cpus: description.cpus,
                 memory_bytes: description.memory_bytes,

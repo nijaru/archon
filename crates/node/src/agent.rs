@@ -29,6 +29,10 @@ struct EndpointGeneration {
 pub struct LeaseAgent {
     process: ProcessRuntime,
     containers: crate::container::ContainerRuntime,
+    /// Stable identity advertised to controllers that connect to this agent.
+    instance_id: String,
+    /// Optional display-name override from the agent CLI.
+    name: Option<String>,
     /// Drain budget per lease, captured at activation for teardown.
     grace: BTreeMap<LeaseId, u32>,
     /// Highest Agent session accepted by this process.
@@ -49,12 +53,23 @@ impl LeaseAgent {
             containers: crate::container::ContainerRuntime::new(
                 std::env::var("ARCHON_CONTAINER_ENGINE").unwrap_or_else(|_| "docker".to_string()),
             ),
+            instance_id: String::new(),
+            name: None,
             grace: BTreeMap::new(),
             session: 0,
             epoch: 0,
             next_handle: 1,
             endpoints: BTreeMap::new(),
         }
+    }
+
+    /// Set the stable registration identity used by controller-initiated
+    /// connections. Local in-process agents may leave it empty because they
+    /// register directly from `MachineDescription`.
+    pub fn with_identity(mut self, instance_id: String, name: Option<String>) -> Self {
+        self.instance_id = instance_id;
+        self.name = name;
+        self
     }
 
     pub fn handle(&mut self, request: AgentRequest) -> AgentResponse {
@@ -252,7 +267,8 @@ impl LeaseAgent {
             }
         };
         AgentResponse::Welcome {
-            name: description.name,
+            instance_id: self.instance_id.clone(),
+            name: self.name.clone().unwrap_or(description.name),
             cpus: description.cpus,
             memory_bytes: description.memory_bytes,
             host_nodes: description.host_nodes,
