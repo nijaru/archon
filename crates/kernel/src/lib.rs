@@ -70,7 +70,11 @@ impl Cluster {
 
     /// EASY-style backfill over the priority queue with per-owner, per-kind
     /// resource ceilings. Ceiling enforcement does not alter queue ordering.
-    pub fn admit_backfill(&self, queue: &[Queued], owner_ceiling: &ClassUsage) -> Option<Admission> {
+    pub fn admit_backfill(
+        &self,
+        queue: &[Queued],
+        owner_ceiling: &ClassUsage,
+    ) -> Option<Admission> {
         let blocked = self.placement_blocked();
         admit_backfill(
             &self.graph,
