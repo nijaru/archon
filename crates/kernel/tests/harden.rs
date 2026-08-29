@@ -656,7 +656,7 @@ fn preparing_lease_expires_when_due() {
 }
 
 #[test]
-fn backfill_honors_the_fair_share_ceiling() {
+fn backfill_honors_the_owner_ceiling() {
     let mut cluster = graph();
     active_root(&mut cluster, 1, 2, 1);
     let queue = vec![archon_kernel::Queued {

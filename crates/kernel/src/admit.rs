@@ -25,7 +25,7 @@ pub fn admit(
     queue: &[Queued],
     quarantine: &std::collections::BTreeSet<crate::ids::NodeId>,
 ) -> Option<Admission> {
-    admit_fair(
+    admit_with_ceiling(
         graph,
         occupancy,
         quarantine,
@@ -35,37 +35,30 @@ pub fn admit(
     )
 }
 
-/// Per-owner, per-kind consumption: the fair-share analogue of Slurm's
-/// trackable resources (TRES). Each node kind budgets independently.
+/// Per-owner, per-kind consumption. Each resource class is accounted
+/// independently so callers can apply explicit ceilings to selected classes.
 pub type ClassUsage = BTreeMap<ResourceClass, Quantity>;
 
-/// Budget-aware admission. `fair_share` is a per-owner, per-kind ceiling,
-/// not a reservation: an owner under budget is never blocked by another
-/// owner's consumption. Kinds without a ceiling are unconstrained; an empty
-/// map disables the budget.
-pub fn admit_fair(
+/// Admission with an explicit per-owner, per-kind resource ceiling.
+/// `owner_ceiling` is a hard budget, not a fairness policy or reservation:
+/// an owner under its ceiling is never reordered based on another owner's
+/// consumption. Kinds without a ceiling are unconstrained; an empty map
+/// disables the budget.
+pub fn admit_with_ceiling(
     graph: &Graph,
     occupancy: &Occupancy,
     quarantine: &std::collections::BTreeSet<crate::ids::NodeId>,
-    fair_share: &ClassUsage,
+    owner_ceiling: &ClassUsage,
     queue: &[Queued],
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
 ) -> Option<Admission> {
-    let queue: Vec<Queued> = queue
-        .iter()
-        .map(|queued| Queued {
-            request: queued.request.clone(),
-            owner: queued.owner,
-            submitted_at: queued.submitted_at,
-        })
-        .collect();
     let usage = owner_usage(graph, leases);
-    for index in order_queue(&queue, &usage) {
+    for index in order_queue(queue) {
         let queued = &queue[index];
         if !within_budget(
             usage.get(&queued.owner).cloned().unwrap_or_default(),
             &queued.request,
-            fair_share,
+            owner_ceiling,
         ) {
             continue;
         }
@@ -111,15 +104,9 @@ pub fn owner_usage(
     usage
 }
 
-/// Deterministic tiebreak only: total charge across kinds.
-fn usage_total(usage: &ClassUsage) -> u64 {
-    usage
-        .values()
-        .map(|quantity| quantity.values().sum::<u64>())
-        .sum()
-}
-
-fn order_queue(queue: &[Queued], usage: &BTreeMap<OwnerId, ClassUsage>) -> Vec<usize> {
+/// Deterministic queue order. Resource usage does not affect ordering: this
+/// module enforces ceilings but deliberately does not implement fair sharing.
+fn order_queue(queue: &[Queued]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..queue.len()).collect();
     order.sort_by(|&left, &right| {
         let left_request = &queue[left].request;
@@ -129,11 +116,6 @@ fn order_queue(queue: &[Queued], usage: &BTreeMap<OwnerId, ClassUsage>) -> Vec<u
             .cmp(&left_request.priority)
             .then(queue[left].submitted_at.cmp(&queue[right].submitted_at))
             .then(left_request.id.cmp(&right_request.id))
-            .then(
-                usage_total(&usage.get(&queue[left].owner).cloned().unwrap_or_default()).cmp(
-                    &usage_total(&usage.get(&queue[right].owner).cloned().unwrap_or_default()),
-                ),
-            )
     });
     order
 }
@@ -167,7 +149,7 @@ pub fn admit_backfill(
     graph: &Graph,
     occupancy: &Occupancy,
     quarantine: &std::collections::BTreeSet<NodeId>,
-    fair_share: &ClassUsage,
+    owner_ceiling: &ClassUsage,
     queue: &[Queued],
     ctx: &BackfillCtx<'_>,
 ) -> Option<Admission> {
@@ -176,22 +158,14 @@ pub fn admit_backfill(
         leases,
         open_bindings,
     } = ctx;
-    let queue: Vec<Queued> = queue
-        .iter()
-        .map(|queued| Queued {
-            request: queued.request.clone(),
-            owner: queued.owner,
-            submitted_at: queued.submitted_at,
-        })
-        .collect();
     let usage = owner_usage(graph, leases);
     let mut blocked: Vec<BlockedHead> = Vec::new();
-    for index in order_queue(&queue, &usage) {
+    for index in order_queue(queue) {
         let queued = &queue[index];
         if !within_budget(
             usage.get(&queued.owner).cloned().unwrap_or_default(),
             &queued.request,
-            fair_share,
+            owner_ceiling,
         ) {
             continue;
         }
@@ -303,12 +277,12 @@ fn shadow_head(
         })
 }
 
-/// Whether `request` fits under `fair_share` given per-kind usage. Kinds
+/// Whether `request` fits under `owner_ceiling` given per-kind usage. Kinds
 /// without a ceiling are unconstrained; an empty map disables the budget.
 /// Charges match what select grants: count-based needs claim at least one
 /// unit of their kind, memory claims bytes.
-pub fn within_budget(usage: ClassUsage, request: &Request, fair_share: &ClassUsage) -> bool {
-    if fair_share.is_empty() {
+pub fn within_budget(usage: ClassUsage, request: &Request, owner_ceiling: &ClassUsage) -> bool {
+    if owner_ceiling.is_empty() {
         return true;
     }
     let mut projected = usage;
@@ -332,7 +306,7 @@ pub fn within_budget(usage: ClassUsage, request: &Request, fair_share: &ClassUsa
         };
         quantity_add_assign(projected.entry(need.kind).or_default(), &charge);
     }
-    fair_share.iter().all(|(kind, ceiling)| {
+    owner_ceiling.iter().all(|(kind, ceiling)| {
         quantity_le(projected.get(kind).unwrap_or(&Quantity::new()), ceiling)
     })
 }

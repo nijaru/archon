@@ -16,7 +16,7 @@ mod select;
 mod types;
 
 pub use admit::{
-    Admission, BackfillCtx, ClassUsage, admit, admit_backfill, admit_fair, owner_usage,
+    Admission, BackfillCtx, ClassUsage, admit, admit_backfill, admit_with_ceiling, owner_usage,
     refuse_reason,
 };
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
@@ -50,29 +50,37 @@ impl Cluster {
         admit(&self.graph, &self.occupancy(), queue, &blocked)
     }
 
-    /// Budget-aware admission with per-owner, per-kind fair-share ceilings.
+    /// Admission with an explicit per-owner, per-kind resource ceiling.
     /// Usage is always computed from this Cluster's own lease table.
-    pub fn admit_fair(&self, queue: &[Queued], fair_share: &ClassUsage) -> Option<Admission> {
+    pub fn admit_with_ceiling(
+        &self,
+        queue: &[Queued],
+        owner_ceiling: &ClassUsage,
+    ) -> Option<Admission> {
         let blocked = self.placement_blocked();
-        admit_fair(
+        admit_with_ceiling(
             &self.graph,
             &self.occupancy(),
             &blocked,
-            fair_share,
+            owner_ceiling,
             queue,
             &self.leases,
         )
     }
 
     /// EASY-style backfill over the priority queue with per-owner, per-kind
-    /// fair-share ceilings.
-    pub fn admit_backfill(&self, queue: &[Queued], fair_share: &ClassUsage) -> Option<Admission> {
+    /// resource ceilings. Ceiling enforcement does not alter queue ordering.
+    pub fn admit_backfill(
+        &self,
+        queue: &[Queued],
+        owner_ceiling: &ClassUsage,
+    ) -> Option<Admission> {
         let blocked = self.placement_blocked();
         admit_backfill(
             &self.graph,
             &self.occupancy(),
             &blocked,
-            fair_share,
+            owner_ceiling,
             queue,
             &crate::admit::BackfillCtx {
                 now: self.now,
