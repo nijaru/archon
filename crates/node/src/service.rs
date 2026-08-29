@@ -62,6 +62,7 @@ impl RemoteExecutor {
             name: String::new(),
             cpus: 0,
             memory_bytes: 0,
+            host_nodes: Vec::new(),
             devices: Vec::new(),
         };
         write_frame(&mut stream, &greeting).map_err(std::io::Error::other)?;
@@ -239,12 +240,14 @@ impl NodeService {
                 name,
                 cpus,
                 memory_bytes,
+                host_nodes,
                 devices,
             } => Ok(crate::discover::MachineDescription {
                 instance_id: String::new(),
                 name,
                 cpus,
                 memory_bytes,
+                host_nodes,
                 devices,
             }),
             other => Err(Error::Refused {
@@ -263,33 +266,8 @@ impl NodeService {
         description: crate::discover::MachineDescription,
         executor: Box<dyn LeaseExecutor>,
     ) -> Result<NodeId, Error> {
-        let mut device_ids = BTreeSet::new();
-        for device in &description.devices {
-            if device.id.trim().is_empty() || device.dev.trim().is_empty() {
-                return Err(Error::Refused {
-                    explanation: "device stable id and path must be non-empty".into(),
-                });
-            }
-            if !matches!(
-                device.kind,
-                ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
-            ) {
-                return Err(Error::Refused {
-                    explanation: format!(
-                        "resource class {:?} is not valid in a device inventory",
-                        device.kind
-                    ),
-                });
-            }
-            if !device_ids.insert(device.id.clone()) {
-                return Err(Error::Refused {
-                    explanation: format!(
-                        "provider reported duplicate stable device id {:?}",
-                        device.id
-                    ),
-                });
-            }
-        }
+        crate::discover::validate_machine_description(&description)
+            .map_err(|explanation| Error::Refused { explanation })?;
 
         // Identity is the agent's instance id, stored in the machine's
         // attrs so it survives control-plane restarts via replay.
@@ -309,7 +287,22 @@ impl NodeService {
         };
         let (machine, new_machine) = match named(&self.cluster, &description.instance_id) {
             Some(machine) => {
-                self.reconcile_device_subtree(machine, &description.devices)?;
+                if let Err(explanation) = crate::discover::verify_registered_host(
+                    &self.cluster.graph,
+                    machine,
+                    &description,
+                ) {
+                    self.mark_inventory_mismatch(machine)?;
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "returning agent host inventory changed; explicit topology reconciliation is required: {explanation}"
+                        ),
+                    });
+                }
+                if let Err(err) = self.reconcile_device_subtree(machine, &description.devices) {
+                    self.mark_inventory_mismatch(machine)?;
+                    return Err(err);
+                }
                 (machine, false)
             }
             None => {
@@ -372,6 +365,23 @@ impl NodeService {
         Ok(machine)
     }
 
+    /// A returning Agent whose authoritative inventory cannot be reconciled
+    /// is not accepted as an execution endpoint. Stop new placement without
+    /// weakening an existing drain/quarantine/retired state; outstanding
+    /// authority remains occupied until its ordinary reconciliation closes.
+    fn mark_inventory_mismatch(&mut self, machine: NodeId) -> Result<(), Error> {
+        if matches!(
+            self.cluster.node_state(machine),
+            Some(archon_kernel::NodeState::Joining | archon_kernel::NodeState::Schedulable)
+        ) {
+            self.commit(Command::SetNodeState {
+                node: machine,
+                state: archon_kernel::NodeState::Unavailable,
+            })?;
+        }
+        Ok(())
+    }
+
     /// Restore a reconciled machine's health marks, deferred during
     /// recovery because quarantine cannot lift while open bindings exist.
     /// A rejected un-quarantine leaves the machine unavailable — the safe
@@ -432,8 +442,49 @@ impl NodeService {
         let mut returning = BTreeSet::new();
 
         for spec in devices {
+            let requested_parent = spec
+                .host_parent
+                .as_deref()
+                .map(|parent| {
+                    crate::discover::host_parent_node(&self.cluster.graph, machine, parent)
+                        .map_err(|explanation| Error::Refused { explanation })
+                })
+                .transpose()?;
             let id = if let Some(id) = existing.remove(&spec.id) {
                 let node = self.cluster.graph.node(id).ok_or(Error::UnknownNode(id))?;
+                let recorded_parent = node
+                    .attrs
+                    .get(crate::discover::DEVICE_HOST_PARENT_ATTR)
+                    .map(String::as_str);
+                match (recorded_parent, spec.host_parent.as_deref()) {
+                    (Some(previous), Some(current)) if previous != current => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "device {:?} changed host containment from {previous:?} to {current:?}; explicit topology reconciliation is required",
+                                spec.id
+                            ),
+                        });
+                    }
+                    (Some(previous), None) => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "device {:?} withdrew authoritative host containment {previous:?}; explicit topology reconciliation is required",
+                                spec.id
+                            ),
+                        });
+                    }
+                    _ => {}
+                }
+                if let Some(parent) = requested_parent
+                    && self.cluster.graph.parent(id) != Some(parent)
+                {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "device {:?} changed physical containment; explicit topology reconciliation is required",
+                            spec.id
+                        ),
+                    });
+                }
                 if node.kind != spec.kind {
                     return Err(Error::Refused {
                         explanation: format!(
@@ -461,7 +512,7 @@ impl NodeService {
                 base += 1;
                 let fresh = NodeId::from_u64(base);
                 edges.push(Edge {
-                    from: machine,
+                    from: requested_parent.unwrap_or(machine),
                     to: fresh,
                     kind: EdgeKind::Contains,
                     attrs: Attrs::new(),
@@ -472,6 +523,12 @@ impl NodeService {
             let mut attrs = spec.attrs.clone();
             attrs.insert("id".into(), spec.id.clone());
             attrs.insert("dev".into(), spec.dev.clone());
+            if let Some(parent) = &spec.host_parent {
+                attrs.insert(
+                    crate::discover::DEVICE_HOST_PARENT_ATTR.into(),
+                    parent.clone(),
+                );
+            }
             if !spec.access.is_empty() {
                 attrs.insert(
                     "access".into(),

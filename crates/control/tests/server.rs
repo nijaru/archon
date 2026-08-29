@@ -185,6 +185,7 @@ fn a_silent_agent_does_not_block_other_clients() {
             name: "silent".into(),
             cpus: 4,
             memory_bytes: 8 << 30,
+            host_nodes: Vec::new(),
             devices: vec![],
         },
     )

@@ -345,6 +345,7 @@ fn dial_in(
                     name: name.clone().unwrap_or(description.name),
                     cpus: description.cpus,
                     memory_bytes: description.memory_bytes,
+                    host_nodes: description.host_nodes.clone(),
                     devices: description.devices.clone(),
                 };
                 if archon_node::protocol::write_frame(&mut stream, &greeting).is_err() {

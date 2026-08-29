@@ -7,7 +7,7 @@ use archon_kernel::{
     NodeState, OwnerId, Quantity, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
-use archon_node::discover::{DeviceSpec, MachineDescription};
+use archon_node::discover::{DeviceSpec, HostNodeSpec, MachineDescription};
 use archon_node::runtime::ProcessRuntime;
 use archon_node::service::{LocalExecutor, NodeService};
 
@@ -17,10 +17,12 @@ fn description(instance: &str, gpu_dev: &str) -> MachineDescription {
         name: "gpu-box".into(),
         cpus: 2,
         memory_bytes: 0,
+        host_nodes: Vec::new(),
         devices: vec![DeviceSpec {
             kind: ResourceClass::Gpu,
             id: "gpu0".into(),
             dev: gpu_dev.into(),
+            host_parent: None,
             access: Vec::new(),
             attrs: Default::default(),
         }],
@@ -154,6 +156,7 @@ fn re_registration_adds_and_refreshes_without_spurious_revisions() {
         kind: ResourceClass::Nvme,
         id: "nvme0".into(),
         dev: "/dev/nvme0n1".into(),
+        host_parent: None,
         access: Vec::new(),
         attrs: Default::default(),
     });
@@ -419,6 +422,9 @@ fn nested_device_reconciliation_preserves_topology_parent() {
     let machine = NodeId::from_u64(100);
     let numa = NodeId::from_u64(101);
     let gpu = NodeId::from_u64(102);
+    let cpu0 = NodeId::from_u64(103);
+    let cpu1 = NodeId::from_u64(104);
+    let memory = NodeId::from_u64(105);
 
     let mut machine_attrs = Attrs::new();
     machine_attrs.insert("agent_id".into(), "inst-nested".into());
@@ -449,6 +455,24 @@ fn nested_device_reconciliation_preserves_topology_parent() {
                     attrs: gpu_attrs,
                     capacity: qty(CapacityDimension::Count, 1),
                 },
+                Node {
+                    id: cpu0,
+                    kind: ResourceClass::Cpu,
+                    attrs: Attrs::new(),
+                    capacity: qty(CapacityDimension::Count, 1),
+                },
+                Node {
+                    id: cpu1,
+                    kind: ResourceClass::Cpu,
+                    attrs: Attrs::new(),
+                    capacity: qty(CapacityDimension::Count, 1),
+                },
+                Node {
+                    id: memory,
+                    kind: ResourceClass::Memory,
+                    attrs: Attrs::new(),
+                    capacity: qty(CapacityDimension::Bytes, 0),
+                },
             ],
             edges: vec![
                 Edge {
@@ -460,6 +484,24 @@ fn nested_device_reconciliation_preserves_topology_parent() {
                 Edge {
                     from: numa,
                     to: gpu,
+                    kind: EdgeKind::Contains,
+                    attrs: Attrs::new(),
+                },
+                Edge {
+                    from: machine,
+                    to: cpu0,
+                    kind: EdgeKind::Contains,
+                    attrs: Attrs::new(),
+                },
+                Edge {
+                    from: machine,
+                    to: cpu1,
+                    kind: EdgeKind::Contains,
+                    attrs: Attrs::new(),
+                },
+                Edge {
+                    from: machine,
+                    to: memory,
                     kind: EdgeKind::Contains,
                     attrs: Attrs::new(),
                 },
@@ -518,4 +560,141 @@ fn nested_device_reconciliation_preserves_topology_parent() {
         service.cluster.graph.node(gpu).unwrap().attrs.get("dev"),
         Some(&"/dev/gpuC".to_string())
     );
+}
+
+#[test]
+fn returning_agent_with_changed_host_shape_fails_closed() {
+    let mut service = NodeService::new();
+    service
+        .register_agent(
+            description("inst-host-change", "/dev/gpuA"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("first registration");
+    let machine = service.cluster.graph.nodes_of_class(ResourceClass::Machine)[0];
+    let mut changed = description("inst-host-change", "/dev/gpuA");
+    changed.cpus = 3;
+    let err = service
+        .register_agent(
+            changed,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect_err("changed host facts must not be silently accepted");
+    assert!(err.to_string().contains("host inventory changed"));
+    assert_eq!(
+        service.cluster.node_state(machine),
+        Some(NodeState::Unavailable)
+    );
+}
+
+fn normalized_description(instance: &str, parent: &str) -> MachineDescription {
+    MachineDescription {
+        instance_id: instance.into(),
+        name: "normalized-gpu-box".into(),
+        cpus: 2,
+        memory_bytes: 4096,
+        host_nodes: vec![
+            HostNodeSpec {
+                id: "numa/0".into(),
+                kind: ResourceClass::Numa,
+                parent: None,
+                attrs: Attrs::new(),
+                capacity: Quantity::new(),
+            },
+            HostNodeSpec {
+                id: "numa/1".into(),
+                kind: ResourceClass::Numa,
+                parent: None,
+                attrs: Attrs::new(),
+                capacity: Quantity::new(),
+            },
+            HostNodeSpec {
+                id: "cpu/0".into(),
+                kind: ResourceClass::Cpu,
+                parent: Some("numa/0".into()),
+                attrs: Attrs::new(),
+                capacity: qty(CapacityDimension::Count, 1),
+            },
+            HostNodeSpec {
+                id: "cpu/1".into(),
+                kind: ResourceClass::Cpu,
+                parent: Some("numa/1".into()),
+                attrs: Attrs::new(),
+                capacity: qty(CapacityDimension::Count, 1),
+            },
+            HostNodeSpec {
+                id: "memory/0".into(),
+                kind: ResourceClass::Memory,
+                parent: Some("numa/0".into()),
+                attrs: Attrs::new(),
+                capacity: qty(CapacityDimension::Bytes, 2048),
+            },
+            HostNodeSpec {
+                id: "memory/1".into(),
+                kind: ResourceClass::Memory,
+                parent: Some("numa/1".into()),
+                attrs: Attrs::new(),
+                capacity: qty(CapacityDimension::Bytes, 2048),
+            },
+        ],
+        devices: vec![DeviceSpec {
+            kind: ResourceClass::Gpu,
+            id: "gpu0".into(),
+            dev: "/dev/gpuA".into(),
+            host_parent: Some(parent.into()),
+            access: Vec::new(),
+            attrs: Attrs::new(),
+        }],
+    }
+}
+
+#[test]
+fn explicit_device_host_parent_is_used_for_new_inventory() {
+    let mut service = NodeService::new();
+    let mut first = normalized_description("inst-parent", "numa/0");
+    first.devices.clear();
+    service
+        .register_agent(
+            first,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("host registration");
+    service
+        .register_agent(
+            normalized_description("inst-parent", "numa/0"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("new nested device");
+    let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
+    let parent = service.cluster.graph.parent(gpu).expect("GPU parent");
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .node(parent)
+            .and_then(|node| node.attrs.get("archon.host-id"))
+            .map(String::as_str),
+        Some("numa/0")
+    );
+}
+
+#[test]
+fn same_device_cannot_silently_move_between_host_domains() {
+    let mut service = NodeService::new();
+    service
+        .register_agent(
+            normalized_description("inst-reparent", "numa/0"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("first registration");
+    let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
+    let original_parent = service.cluster.graph.parent(gpu);
+    let err = service
+        .register_agent(
+            normalized_description("inst-reparent", "numa/1"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect_err("hard containment change requires explicit reconciliation");
+    assert!(err.to_string().contains("containment"));
+    assert_eq!(service.cluster.graph.parent(gpu), original_parent);
 }

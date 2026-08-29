@@ -32,6 +32,7 @@ fn spawn_agent(instance: &'static str) -> (String, std::thread::JoinHandle<()>) 
                 name: instance.to_string(),
                 cpus: description.cpus,
                 memory_bytes: description.memory_bytes,
+                host_nodes: Vec::new(),
                 devices: Vec::new(),
             };
             if write_response(&mut stream, &welcome).is_err() {

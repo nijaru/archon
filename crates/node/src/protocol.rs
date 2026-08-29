@@ -58,6 +58,8 @@ pub enum Greeting {
         name: String,
         cpus: u64,
         memory_bytes: u64,
+        #[serde(default)]
+        host_nodes: Vec<crate::discover::HostNodeSpec>,
         /// Devices this machine exposes.
         #[serde(default)]
         devices: Vec<crate::discover::DeviceSpec>,
@@ -93,6 +95,8 @@ pub enum AgentRequest {
         name: String,
         cpus: u64,
         memory_bytes: u64,
+        #[serde(default)]
+        host_nodes: Vec<crate::discover::HostNodeSpec>,
         /// Devices this machine exposes.
         #[serde(default)]
         devices: Vec<crate::discover::DeviceSpec>,
@@ -167,6 +171,8 @@ pub enum AgentResponse {
         name: String,
         cpus: u64,
         memory_bytes: u64,
+        #[serde(default)]
+        host_nodes: Vec<crate::discover::HostNodeSpec>,
         #[serde(default)]
         devices: Vec<crate::discover::DeviceSpec>,
     },

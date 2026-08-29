@@ -58,6 +58,7 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                             name: "fake".into(),
                             cpus: 8,
                             memory_bytes: 16 << 30,
+                            host_nodes: Vec::new(),
                             devices: Vec::new(),
                         },
                         AgentRequest::Prepare { binding, .. } => {

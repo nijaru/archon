@@ -33,6 +33,7 @@ fn spawn_named_agent(_instance_id: &'static str, name: &'static str) -> String {
                 name: name.to_string(),
                 cpus: description.cpus,
                 memory_bytes: description.memory_bytes,
+                host_nodes: Vec::new(),
                 devices: Vec::new(),
             };
             if write_response(&mut stream, &welcome).is_err() {
