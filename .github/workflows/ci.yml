@@ -1,53 +1,29 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
-
-permissions:
-  contents: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: fix/remote-agent-identity
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p archon-sim
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - name: Apply fixture identity fix
-        run: |
-          python3 .github/scripts/fix_remote_fixture_ids.py
-          cargo fmt --all
-      - name: Targeted fixture tests
-        run: |
-          cargo test -p archon-node --test health_ops
-          cargo test -p archon-node --test hetero
-          cargo test -p archon-node --test multi
-          cargo test -p archon-node --test remote
-      - name: Workspace gates
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace
-          cargo run -p archon-sim
-          cargo deny check advisories bans licenses sources
-      - name: Commit verified source
-        run: |
-          git checkout origin/main -- .github/workflows/ci.yml
-          rm .github/scripts/fix_remote_fixture_ids.py
-          git add -A
-          if git diff --cached --quiet; then
-            echo "no source changes"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "test(node): preserve fixture agent identities"
-          git push origin HEAD:fix/remote-agent-identity
+      - run: cargo deny check advisories bans licenses sources

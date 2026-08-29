@@ -29,7 +29,7 @@ fn spawn_agent(instance: &'static str) -> (String, std::thread::JoinHandle<()>) 
             };
             let description = archon_node::discover::describe();
             let welcome = AgentResponse::Welcome {
-                instance_id: "test-agent".into(),
+                instance_id: instance.to_string(),
                 name: instance.to_string(),
                 cpus: description.cpus,
                 memory_bytes: description.memory_bytes,
