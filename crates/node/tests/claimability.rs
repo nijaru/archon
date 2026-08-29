@@ -3,7 +3,7 @@ use archon_kernel::{
     Need, Node, NodeId, OwnerId, ProviderId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
-use archon_node::discover::MachineDescription;
+use archon_node::discover::{DeviceSpec, MachineDescription};
 use archon_node::runtime::ProcessRuntime;
 use archon_node::service::{LocalExecutor, NodeService};
 
@@ -227,6 +227,144 @@ fn returning_agent_never_overwrites_a_conflicting_claim_provider() {
             .expect("conflicting ownership remains recorded")
             .provider,
         ProviderId::from_u64(99)
+    );
+    assert_eq!(
+        service.cluster.node_state(machine),
+        Some(archon_kernel::NodeState::Unavailable)
+    );
+}
+
+fn legacy_device(id: &str, dev: &str) -> DeviceSpec {
+    DeviceSpec {
+        kind: ResourceClass::Gpu,
+        id: id.into(),
+        dev: dev.into(),
+        host_parent: None,
+        access: Vec::new(),
+        attrs: Default::default(),
+    }
+}
+
+fn device_node(service: &NodeService, stable_id: &str) -> NodeId {
+    service
+        .cluster
+        .graph
+        .nodes_of_class(ResourceClass::Gpu)
+        .iter()
+        .copied()
+        .find(|id| {
+            service
+                .cluster
+                .graph
+                .node(*id)
+                .and_then(|node| node.attrs.get("id"))
+                .is_some_and(|id| id == stable_id)
+        })
+        .expect("device is present in legacy Graph")
+}
+
+#[test]
+fn returning_agent_backfills_only_devices_in_current_provider_inventory() {
+    let mut service = NodeService::new();
+    let mut legacy = legacy_description();
+    legacy.devices = vec![
+        legacy_device("gpu-keep", "/dev/gpu-keep"),
+        legacy_device("gpu-gone", "/dev/gpu-gone"),
+    ];
+    let (_local, nodes, edges) = archon_node::discover::build_graph(&legacy, 0);
+    service
+        .cluster
+        .apply(Command::ApplyGraph { nodes, edges })
+        .unwrap();
+    let kept = device_node(&service, "gpu-keep");
+    let gone = device_node(&service, "gpu-gone");
+
+    let mut returning = legacy;
+    returning.devices = vec![legacy_device("gpu-keep", "/dev/gpu-keep")];
+    service
+        .register_agent(
+            returning,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect("current provider inventory reconciles");
+
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .claim_binding(kept, CapacityDimension::Count),
+        Some(ClaimBinding {
+            provider: ProviderId::ENFORCE,
+            scope: BindingScope::Exclusive,
+        })
+    );
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .claim_binding(gone, CapacityDimension::Count),
+        None
+    );
+    assert_eq!(
+        service.cluster.node_state(gone),
+        Some(archon_kernel::NodeState::Unavailable)
+    );
+}
+
+#[test]
+fn returning_device_fact_change_never_overwrites_conflicting_provider_contract() {
+    let mut service = NodeService::new();
+    let mut legacy = legacy_description();
+    legacy.devices = vec![legacy_device("gpu-1", "/dev/gpu-old")];
+    let (_local, nodes, edges) = archon_node::discover::build_graph(&legacy, 0);
+    service
+        .cluster
+        .apply(Command::ApplyGraph { nodes, edges })
+        .unwrap();
+    let machine = service.cluster.graph.nodes_of_class(ResourceClass::Machine)[0];
+    let gpu = device_node(&service, "gpu-1");
+    service
+        .cluster
+        .apply(Command::ApplyResourceFacts {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            claim_bindings: vec![ClaimBindingUpdate {
+                node: gpu,
+                dimension: CapacityDimension::Count,
+                binding: Some(ClaimBinding {
+                    provider: ProviderId::from_u64(99),
+                    scope: BindingScope::Exclusive,
+                }),
+            }],
+        })
+        .unwrap();
+
+    let mut returning = legacy;
+    returning.devices = vec![legacy_device("gpu-1", "/dev/gpu-new")];
+    let error = service
+        .register_agent(
+            returning,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect_err("device fact refresh must not steal another provider contract");
+    assert!(error.to_string().contains("already belongs to provider"));
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .claim_binding(gpu, CapacityDimension::Count)
+            .expect("conflicting provider remains recorded")
+            .provider,
+        ProviderId::from_u64(99)
+    );
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .node(gpu)
+            .and_then(|node| node.attrs.get("dev"))
+            .map(String::as_str),
+        Some("/dev/gpu-old")
     );
     assert_eq!(
         service.cluster.node_state(machine),
