@@ -26,11 +26,13 @@ jobs:
         run: |
           python3 .github/scripts/explicit_claimability.py
           python3 .github/scripts/fix_kernel_claimability_fixtures.py
+          python3 .github/scripts/refine_claimability_api.py
           cargo fmt --all
       - name: Targeted claimability tests
         run: |
           cargo test -p archon-kernel --test claimability
           cargo test -p archon-kernel --test admit
+          cargo test -p archon-kernel --test extensible
           cargo test -p archon-node --test claimability
           cargo test -p archon-node --test execution_capabilities
           cargo test -p archon-node --test devices
@@ -46,6 +48,7 @@ jobs:
           git checkout d6e51964327c161e52c77486be9470390cc7312a -- .github/workflows/ci.yml
           rm .github/scripts/explicit_claimability.py
           rm .github/scripts/fix_kernel_claimability_fixtures.py
+          rm .github/scripts/refine_claimability_api.py
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
