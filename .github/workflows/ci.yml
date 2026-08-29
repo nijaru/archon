@@ -2,49 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [tmp/claimability-contract-preflight]
-
-permissions:
-  contents: write
+    branches: [main]
+  pull_request:
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: tmp/claimability-contract-preflight
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p archon-sim
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - name: Apply claim-contract preflight fix
-        run: |
-          python3 .github/scripts/preflight_claim_contracts.py
-          cargo fmt --all
-      - name: Targeted reconciliation tests
-        run: |
-          cargo test -p archon-node --test claimability
-          cargo test -p archon-node --test devices
-          cargo test -p archon-node --test recovery
-          cargo test -p archon-control --test persist
-      - name: Workspace gates
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace
-          cargo run -p archon-sim
-          cargo deny check advisories bans licenses sources
-      - name: Commit verified source
-        run: |
-          git checkout de22ca8dd6a167585a0ff7fbdf9e115472d5f12e -- .github/workflows/ci.yml
-          rm .github/scripts/preflight_claim_contracts.py
-          git add -A
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "fix(node): preflight upgrade claim contracts"
-          git push origin HEAD:tmp/claimability-contract-preflight
+      - run: cargo deny check advisories bans licenses sources

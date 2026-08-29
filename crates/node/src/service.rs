@@ -340,6 +340,10 @@ impl NodeService {
                         ),
                     });
                 }
+                if let Err(err) = self.preflight_claim_contracts(machine, &description.devices) {
+                    self.mark_inventory_mismatch(machine)?;
+                    return Err(err);
+                }
                 if let Err(err) = self.reconcile_device_subtree(machine, &description.devices) {
                     self.mark_inventory_mismatch(machine)?;
                     return Err(err);
@@ -450,21 +454,16 @@ impl NodeService {
         Ok(missing)
     }
 
-    /// Reconcile proof-stage provider contracts only for resources present in
-    /// the returning Agent's validated authoritative inventory. Older Graphs
-    /// may have no `ClaimBinding` metadata, but a provider-omitted tombstone
-    /// must never regain ownership merely because its stale Node still exists.
-    fn reconcile_claim_contracts(
-        &mut self,
+    fn current_claim_contract_nodes(
+        &self,
         machine: NodeId,
         devices: &[crate::discover::DeviceSpec],
-    ) -> Result<(), Error> {
+    ) -> Vec<archon_kernel::Node> {
         let current_devices: BTreeSet<String> =
             devices.iter().map(|device| device.id.clone()).collect();
         let mut ids = self.cluster.graph.descendants(machine);
         ids.push(machine);
-        let nodes: Vec<_> = ids
-            .into_iter()
+        ids.into_iter()
             .filter_map(|id| self.cluster.graph.node(id))
             .filter(|node| {
                 !matches!(
@@ -476,7 +475,30 @@ impl NodeService {
                     .is_some_and(|id| current_devices.contains(id))
             })
             .cloned()
-            .collect();
+            .collect()
+    }
+
+    /// Reject conflicting current provider contracts before returning-device
+    /// reconciliation can mutate facts, availability, or Lease state.
+    fn preflight_claim_contracts(
+        &self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Result<(), Error> {
+        let nodes = self.current_claim_contract_nodes(machine, devices);
+        self.missing_claim_contracts(&nodes).map(|_| ())
+    }
+
+    /// Reconcile proof-stage provider contracts only for resources present in
+    /// the returning Agent's validated authoritative inventory. Older Graphs
+    /// may have no `ClaimBinding` metadata, but a provider-omitted tombstone
+    /// must never regain ownership merely because its stale Node still exists.
+    fn reconcile_claim_contracts(
+        &mut self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Result<(), Error> {
+        let nodes = self.current_claim_contract_nodes(machine, devices);
         let missing = self.missing_claim_contracts(&nodes)?;
         if !missing.is_empty() {
             self.commit(Command::ApplyResourceFacts {

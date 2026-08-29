@@ -371,3 +371,65 @@ fn returning_device_fact_change_never_overwrites_conflicting_provider_contract()
         Some(archon_kernel::NodeState::Unavailable)
     );
 }
+
+#[test]
+fn returning_host_contract_conflict_prevents_device_reconciliation_mutation() {
+    let mut service = NodeService::new();
+    let mut legacy = legacy_description();
+    legacy.devices = vec![legacy_device("gpu-1", "/dev/gpu-old")];
+    let (_local, nodes, edges) = archon_node::discover::build_graph(&legacy, 0);
+    service
+        .cluster
+        .apply(Command::ApplyGraph { nodes, edges })
+        .unwrap();
+    let machine = service.cluster.graph.nodes_of_class(ResourceClass::Machine)[0];
+    let cpu = service.cluster.graph.nodes_of_class(ResourceClass::Cpu)[0];
+    let gpu = device_node(&service, "gpu-1");
+    service
+        .cluster
+        .apply(Command::ApplyResourceFacts {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            claim_bindings: vec![ClaimBindingUpdate {
+                node: cpu,
+                dimension: CapacityDimension::Count,
+                binding: Some(ClaimBinding {
+                    provider: ProviderId::from_u64(99),
+                    scope: BindingScope::Exclusive,
+                }),
+            }],
+        })
+        .unwrap();
+
+    let mut returning = legacy;
+    returning.devices = vec![legacy_device("gpu-1", "/dev/gpu-new")];
+    let error = service
+        .register_agent(
+            returning,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect_err("host provider conflict must fail before device reconciliation");
+    assert!(error.to_string().contains("already belongs to provider"));
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .claim_binding(cpu, CapacityDimension::Count)
+            .expect("conflicting host provider remains recorded")
+            .provider,
+        ProviderId::from_u64(99)
+    );
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .node(gpu)
+            .and_then(|node| node.attrs.get("dev"))
+            .map(String::as_str),
+        Some("/dev/gpu-old")
+    );
+    assert_eq!(
+        service.cluster.node_state(machine),
+        Some(archon_kernel::NodeState::Unavailable)
+    );
+}
