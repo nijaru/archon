@@ -344,6 +344,10 @@ impl NodeService {
                     self.mark_inventory_mismatch(machine)?;
                     return Err(err);
                 }
+                if let Err(err) = self.reconcile_claim_contracts(machine) {
+                    self.mark_inventory_mismatch(machine)?;
+                    return Err(err);
+                }
                 (machine, false)
             }
             None => {
@@ -410,6 +414,55 @@ impl NodeService {
             self.finish_machine_recovery(machine);
         }
         Ok(machine)
+    }
+
+    /// Reconcile the proof-stage provider contracts for a returning machine.
+    /// Older snapshots/logs predate `ClaimBinding`, so their Graph deserializes
+    /// with an empty map. A validated returning Agent may backfill those
+    /// missing contracts, but it must never overwrite a different provider or
+    /// scope already recorded for the same capacity dimension.
+    fn reconcile_claim_contracts(&mut self, machine: NodeId) -> Result<(), Error> {
+        let mut ids = self.cluster.graph.descendants(machine);
+        ids.push(machine);
+        let nodes: Vec<_> = ids
+            .into_iter()
+            .filter_map(|id| self.cluster.graph.node(id).cloned())
+            .collect();
+        let mut missing = Vec::new();
+        for update in crate::discover::claim_bindings(&nodes) {
+            let expected = update
+                .binding
+                .expect("provider normalization emits additions");
+            match self
+                .cluster
+                .graph
+                .claim_binding(update.node, update.dimension)
+            {
+                None => missing.push(update),
+                Some(actual) if actual == expected => {}
+                Some(actual) => {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "resource {} dimension {} already belongs to provider {} with {:?} scope; returning agent reports provider {} with {:?} scope",
+                            update.node,
+                            update.dimension,
+                            actual.provider,
+                            actual.scope,
+                            expected.provider,
+                            expected.scope,
+                        ),
+                    });
+                }
+            }
+        }
+        if !missing.is_empty() {
+            self.commit(Command::ApplyResourceFacts {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                claim_bindings: missing,
+            })?;
+        }
+        Ok(())
     }
 
     /// A returning Agent whose authoritative inventory cannot be reconciled
