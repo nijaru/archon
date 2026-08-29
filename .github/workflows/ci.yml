@@ -30,6 +30,7 @@ jobs:
           python3 .github/scripts/fix_claim_activation.py
           python3 .github/scripts/fix_sim_claimability.py
           python3 .github/scripts/fix_harden_claimability_fixtures.py
+          python3 .github/scripts/fix_lifecycle_claimability_fixture.py
           cargo fmt --all
       - name: Targeted claimability tests
         run: |
@@ -37,6 +38,7 @@ jobs:
           cargo test -p archon-kernel --test admit
           cargo test -p archon-kernel --test extensible
           cargo test -p archon-kernel --test harden
+          cargo test -p archon-kernel --test lifecycle
           cargo test -p archon-node --test claimability
           cargo test -p archon-node --test execution_capabilities
           cargo test -p archon-node --test devices
@@ -57,6 +59,7 @@ jobs:
           rm .github/scripts/fix_claim_activation.py
           rm .github/scripts/fix_sim_claimability.py
           rm .github/scripts/fix_harden_claimability_fixtures.py
+          rm .github/scripts/fix_lifecycle_claimability_fixture.py
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
