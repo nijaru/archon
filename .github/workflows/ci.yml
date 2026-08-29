@@ -37,6 +37,7 @@ jobs:
           python3 .github/scripts/provider_endpoint_fencing.py
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           # Existing OpenBinding call sites predate BindingScope. The source
           # patch intentionally makes the new field explicit; default legacy
@@ -65,7 +66,8 @@ jobs:
                   if end is None:
                       raise RuntimeError(f"unterminated OpenBinding in {path}")
                   block = text[start:end + 1]
-                  if "scope:" not in block and "provider:" in block:
+                  has_scope = re.search(r"(?m)^\s*scope(?:\s*:|\s*,)", block)
+                  if not has_scope and "provider:" in block:
                       line_start = text.rfind("\n", 0, end) + 1
                       close_indent = text[line_start:end]
                       field_indent = close_indent + "    "
