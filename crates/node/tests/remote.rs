@@ -110,16 +110,24 @@ fn stale_sessions_are_rejected_by_the_agent() {
     let response = agent.handle(AgentRequest::Prepare {
         binding: 1,
         lease: 1,
+        node: 1,
+        provider: 1,
+        scope: archon_kernel::BindingScope::Exclusive,
         session: 2,
         fence: 1,
+        epoch: 1,
     });
     assert!(matches!(response, AgentResponse::Prepared { .. }));
     // An older generation is refused.
     let response = agent.handle(AgentRequest::Prepare {
         binding: 2,
         lease: 1,
+        node: 1,
+        provider: 1,
+        scope: archon_kernel::BindingScope::Exclusive,
         session: 1,
         fence: 1,
+        epoch: 1,
     });
     match response {
         AgentResponse::Failed { reason, .. } => assert!(reason.contains("stale")),

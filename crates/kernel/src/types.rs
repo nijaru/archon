@@ -462,6 +462,18 @@ pub struct Lease {
     pub exit_code: Option<i32>,
 }
 
+/// Enforcement namespace for one Binding. Exclusive bindings serialize
+/// ownership at one (provider, Node) endpoint. Independent shares keep a
+/// binding-local endpoint generation so one cgroup-backed share can close
+/// without invalidating another share of the same accounting Node.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum BindingScope {
+    #[default]
+    Exclusive,
+    IndependentShare,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BindingState {
@@ -485,6 +497,8 @@ pub struct Binding {
     pub lease: LeaseId,
     pub node: NodeId,
     pub provider: ProviderId,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scope: BindingScope,
     pub fence: u64,
     pub agent_session: u64,
     pub state: BindingState,

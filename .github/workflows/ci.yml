@@ -2,62 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [fix/provider-endpoint-fencing-v2]
+    branches: [main]
   pull_request:
-
-permissions:
-  contents: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: fix/provider-endpoint-fencing-v2
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p archon-sim
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - name: Apply endpoint authority patch
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('.github/scripts/provider_endpoint_fencing.py')
-          text = path.read_text()
-          fragile = 'if text.count(old) != 1:\n    raise RuntimeError("open_enforced_bindings changed")\ntext = text.replace(old, new, 1)\n'
-          structural = 'func_start = text.index("    fn open_enforced_bindings")\nbody_start = text.index("        for claim in claims {", func_start)\nbody_end = text.index("        Ok(())", body_start)\ntext = text[:body_start] + new + text[body_end:]\n'
-          if text.count(fragile) != 1:
-              raise RuntimeError('endpoint staging anchor changed')
-          path.write_text(text.replace(fragile, structural, 1))
-          PY
-          python3 .github/scripts/provider_endpoint_fencing.py
-          python3 .github/scripts/provider_endpoint_post.py
-          cargo fmt --all
-      - name: Targeted authority tests
-        run: |
-          cargo test -p archon-kernel --test harden independent_share_bindings_can_coexist_but_exclusive_scope_cannot_mix
-          cargo test -p archon-node endpoint_tests
-          cargo test -p archon-node --test multi agent_re_registration_reconciles_live_work
-      - name: Workspace gates
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace
-          cargo run -p archon-sim
-          cargo deny check advisories bans licenses sources
-      - name: Commit verified source
-        run: |
-          git checkout origin/main -- .github/workflows/ci.yml
-          rm .github/scripts/provider_endpoint_fencing.py
-          rm .github/scripts/provider_endpoint_post.py
-          rm -f .github/provider-endpoint-validation
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "fix(node): enforce provider endpoint generations"
-          git push origin HEAD:fix/provider-endpoint-fencing-v2
+      - run: cargo deny check advisories bans licenses sources

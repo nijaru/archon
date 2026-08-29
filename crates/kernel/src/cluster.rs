@@ -5,7 +5,7 @@ use crate::error::Error;
 use crate::graph::Graph;
 use crate::ids::{BindingId, LeaseId, NodeId};
 use crate::occupancy::{claim_fits, covers, occupancy_from_leases, resolve_claim, subtree_used};
-use crate::types::{Binding, BindingState, Lease, LeaseState, NodeState, Quantity};
+use crate::types::{Binding, BindingScope, BindingState, Lease, LeaseState, NodeState, Quantity};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaseDigest {
@@ -26,6 +26,7 @@ pub struct BindingDigest {
     pub lease: LeaseId,
     pub node: NodeId,
     pub provider: crate::ids::ProviderId,
+    pub scope: BindingScope,
     pub fence: u64,
     pub session: u64,
 }
@@ -235,6 +236,7 @@ impl Cluster {
                             lease: binding.lease,
                             node: binding.node,
                             provider: binding.provider,
+                            scope: binding.scope,
                             fence: binding.fence,
                             session: binding.agent_session,
                         },
@@ -399,7 +401,8 @@ impl Cluster {
                 lease,
                 node,
                 provider,
-            } => self.open_binding(*binding, *lease, *node, *provider),
+                scope,
+            } => self.open_binding(*binding, *lease, *node, *provider, *scope),
             Command::ActivateBinding { binding } => self.activate_binding(*binding),
             Command::FenceBinding { binding } => self.fence_binding(*binding),
             Command::FailBinding { binding, reason } => self.fail_binding(*binding, reason),
@@ -991,9 +994,13 @@ impl Cluster {
         lease_id: LeaseId,
         node: NodeId,
         provider: crate::ids::ProviderId,
+        scope: BindingScope,
     ) -> Result<Vec<Effect>, Error> {
         if let Some(existing) = self.bindings.get(&id) {
-            if existing.lease == lease_id && existing.node == node && existing.provider == provider
+            if existing.lease == lease_id
+                && existing.node == node
+                && existing.provider == provider
+                && existing.scope == scope
             {
                 // Retry of a committed OpenBinding: re-emit Prepare only while
                 // still preparing; never disturb Active or closed Bindings.
@@ -1050,13 +1057,33 @@ impl Cluster {
             .get(&machine)
             .copied()
             .ok_or(Error::NoAgent { machine })?;
-        let fence = self.last_fence.get(&(provider, node)).copied().unwrap_or(0) + 1;
-        self.last_fence.insert((provider, node), fence);
+        // An exclusive endpoint has one monotonic fence namespace per
+        // (provider, Node). Independent shares have disjoint provider-side
+        // enforcement objects keyed by Binding, so their stale-operation
+        // generation is binding-local and does not supersede sibling shares.
+        let conflicting_endpoint = self.bindings.values().any(|existing| {
+            existing.provider == provider
+                && existing.node == node
+                && !existing.state.is_closed()
+                && (scope == BindingScope::Exclusive || existing.scope == BindingScope::Exclusive)
+        });
+        if conflicting_endpoint {
+            return Err(Error::ResourceBusy { node });
+        }
+        let fence = match scope {
+            BindingScope::Exclusive => {
+                let fence = self.last_fence.get(&(provider, node)).copied().unwrap_or(0) + 1;
+                self.last_fence.insert((provider, node), fence);
+                fence
+            }
+            BindingScope::IndependentShare => id.as_u64().max(1),
+        };
         let binding = Binding {
             id,
             lease: lease_id,
             node,
             provider,
+            scope,
             fence,
             agent_session: session,
             state: BindingState::Preparing,

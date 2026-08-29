@@ -177,6 +177,7 @@ fn child_cannot_escape_parent() {
             lease: LeaseId::from_u64(1),
             node: NodeId::from_u64(3),
             provider: archon_kernel::ProviderId::ENFORCE,
+            scope: archon_kernel::BindingScope::Exclusive,
         })
         .unwrap();
     cluster

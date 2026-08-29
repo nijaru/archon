@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 
-use archon_kernel::{PortPublish, StorageMount};
+use archon_kernel::{BindingScope, PortPublish, StorageMount};
 use serde::{Deserialize, Serialize};
 
 /// Connection greeting: role declaration, sent as the first framed
@@ -100,14 +100,22 @@ pub enum AgentRequest {
     Prepare {
         binding: u64,
         lease: u64,
+        node: u64,
+        provider: u64,
+        scope: BindingScope,
         session: u64,
         fence: u64,
+        epoch: u64,
     },
     Activate {
         binding: u64,
         lease: u64,
+        node: u64,
+        provider: u64,
+        scope: BindingScope,
         session: u64,
         fence: u64,
+        epoch: u64,
         command: Vec<String>,
         limits: LeaseLimits,
         /// OCI image reference; empty runs the command as a plain process.
@@ -129,14 +137,22 @@ pub enum AgentRequest {
     Release {
         binding: u64,
         lease: u64,
+        node: u64,
+        provider: u64,
+        scope: BindingScope,
         session: u64,
         fence: u64,
+        epoch: u64,
     },
     Fence {
         binding: u64,
         lease: u64,
+        node: u64,
+        provider: u64,
+        scope: BindingScope,
         session: u64,
         fence: u64,
+        epoch: u64,
     },
     /// Liveness probe for a lease's process. Read-only: carries no
     /// session, so probing never touches fencing generations.

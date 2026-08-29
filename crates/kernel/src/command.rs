@@ -1,5 +1,5 @@
 use crate::ids::{BindingId, LeaseId, NodeId, OwnerId, ProviderId};
-use crate::types::{Allocation, Edge, Node, NodeState};
+use crate::types::{Allocation, BindingScope, Edge, Node, NodeState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -59,6 +59,8 @@ pub enum Command {
         lease: LeaseId,
         node: NodeId,
         provider: ProviderId,
+        #[cfg_attr(feature = "serde", serde(default))]
+        scope: BindingScope,
     },
     ActivateBinding {
         binding: BindingId,
