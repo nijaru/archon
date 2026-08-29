@@ -48,7 +48,7 @@ fn cpu_request_local(
 }
 
 #[test]
-fn fair_share_serves_small_owners_first() {
+fn owner_ceiling_serves_small_owners_first() {
     let mut world = boot();
     world.enqueue(cpu_request(1, 3, 10), OwnerId::from_u64(1));
     world.enqueue(cpu_request(2, 1, 10), OwnerId::from_u64(2));
@@ -77,10 +77,10 @@ fn fair_share_serves_small_owners_first() {
 }
 
 #[test]
-fn fair_share_ceiling_lets_small_owners_through() {
+fn owner_ceiling_ceiling_lets_small_owners_through() {
     let mut world = boot();
     // Owner 1 already holds 1 CPU, so its 2-CPU request is over a 2-CPU
-    // fair-share ceiling and is skipped.
+    // resource ceiling and is skipped.
     world
         .place(
             &cpu_request(1, 1, 1),
@@ -105,13 +105,13 @@ fn fair_share_ceiling_lets_small_owners_through() {
     world.enqueue(cpu_request(4, 1, 10), OwnerId::from_u64(3));
     // Fair-share ceiling of 2 CPUs per owner: owner 1 is over budget and is
     // skipped, so both small owners are served.
-    let fair_share = ClassUsage::from([(ResourceClass::Cpu, qty(CapacityDimension::Count, 2))]);
+    let owner_ceiling = ClassUsage::from([(ResourceClass::Cpu, qty(CapacityDimension::Count, 2))]);
     assert_eq!(
         world
-            .admit_next_fair(
+            .admit_next_with_ceiling(
                 archon_kernel::LeaseId::from_u64(2),
                 OwnerId::from_u64(2),
-                &fair_share,
+                &owner_ceiling,
             )
             .unwrap()
             .unwrap(),
@@ -119,10 +119,10 @@ fn fair_share_ceiling_lets_small_owners_through() {
     );
     assert_eq!(
         world
-            .admit_next_fair(
+            .admit_next_with_ceiling(
                 archon_kernel::LeaseId::from_u64(3),
                 OwnerId::from_u64(3),
-                &fair_share,
+                &owner_ceiling,
             )
             .unwrap()
             .unwrap(),
@@ -151,10 +151,10 @@ fn fair_share_ceiling_lets_small_owners_through() {
     world.deliver_all().unwrap();
     assert_eq!(
         world
-            .admit_next_fair(
+            .admit_next_with_ceiling(
                 archon_kernel::LeaseId::from_u64(4),
                 OwnerId::from_u64(1),
-                &fair_share,
+                &owner_ceiling,
             )
             .unwrap()
             .unwrap(),
@@ -170,7 +170,7 @@ fn empty_ceiling_matches_plain_admission() {
     let empty = ClassUsage::new();
     assert_eq!(
         world
-            .admit_next_fair(
+            .admit_next_with_ceiling(
                 archon_kernel::LeaseId::from_u64(1),
                 OwnerId::from_u64(1),
                 &empty,
@@ -181,7 +181,7 @@ fn empty_ceiling_matches_plain_admission() {
     );
     assert_eq!(
         world
-            .admit_next_fair(
+            .admit_next_with_ceiling(
                 archon_kernel::LeaseId::from_u64(2),
                 OwnerId::from_u64(2),
                 &empty,

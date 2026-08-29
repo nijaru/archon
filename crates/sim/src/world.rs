@@ -245,14 +245,14 @@ impl World {
         Ok(Some(admission.request.id))
     }
 
-    /// Admit with per-owner, per-kind fair-share ceilings.
-    pub fn admit_next_fair(
+    /// Admit with per-owner, per-kind resource ceilings.
+    pub fn admit_next_with_ceiling(
         &mut self,
         lease: LeaseId,
         owner: OwnerId,
-        fair_share: &archon_kernel::ClassUsage,
+        owner_ceiling: &archon_kernel::ClassUsage,
     ) -> Result<Option<RequestId>, Error> {
-        let Some(admission) = self.cluster.admit_fair(&self.queue, fair_share) else {
+        let Some(admission) = self.cluster.admit_with_ceiling(&self.queue, owner_ceiling) else {
             return Ok(None);
         };
         self.queue

@@ -102,7 +102,7 @@ fn large_graph_admits_places_and_replays() {
 }
 
 #[test]
-fn fair_share_and_backfill_terminate_at_scale() {
+fn owner_ceiling_and_backfill_terminate_at_scale() {
     let (mut world, _machines) = boot();
     let ceiling = ClassUsage::from([(ResourceClass::Gpu, qty(CapacityDimension::Count, 3))]);
     // One owner floods the queue; the per-kind ceiling caps its concurrency.
@@ -116,7 +116,7 @@ fn fair_share_and_backfill_terminate_at_scale() {
         }
         let lease = LeaseId::from_u64(lease_id);
         if world
-            .admit_next_fair(lease, OwnerId::from_u64(1), &ceiling)
+            .admit_next_with_ceiling(lease, OwnerId::from_u64(1), &ceiling)
             .unwrap()
             .is_some()
         {

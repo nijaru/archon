@@ -247,7 +247,7 @@ fn reservation_consumes_its_own_kind_budget() {
     world.enqueue(cpu_request(2, 1), OwnerId::from_u64(1));
     assert!(
         world
-            .admit_next_fair(LeaseId::from_u64(2), OwnerId::from_u64(1), &cpu_ceiling)
+            .admit_next_with_ceiling(LeaseId::from_u64(2), OwnerId::from_u64(1), &cpu_ceiling)
             .unwrap()
             .is_none(),
         "reservation must consume its kind's budget"
@@ -255,7 +255,7 @@ fn reservation_consumes_its_own_kind_budget() {
     world.enqueue(cpu_request(3, 1), OwnerId::from_u64(2));
     assert_eq!(
         world
-            .admit_next_fair(LeaseId::from_u64(3), OwnerId::from_u64(2), &cpu_ceiling)
+            .admit_next_with_ceiling(LeaseId::from_u64(3), OwnerId::from_u64(2), &cpu_ceiling)
             .unwrap(),
         Some(RequestId::from_u64(3))
     );
@@ -281,7 +281,7 @@ fn reservation_leaves_other_kind_budgets_untouched() {
     world.enqueue(gpu_request(2, 1, 1), OwnerId::from_u64(1));
     assert_eq!(
         world
-            .admit_next_fair(LeaseId::from_u64(2), OwnerId::from_u64(1), &gpu_ceiling)
+            .admit_next_with_ceiling(LeaseId::from_u64(2), OwnerId::from_u64(1), &gpu_ceiling)
             .unwrap(),
         Some(RequestId::from_u64(2)),
         "other kinds' budgets are unaffected"
