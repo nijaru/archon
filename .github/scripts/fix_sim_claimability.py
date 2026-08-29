@@ -88,7 +88,8 @@ if old not in text:
     raise SystemExit("register_agent endpoint block not found")
 text = text.replace(old, new, 1)
 
-old = '''        for claim in claims {
+old = '''        let mut next = start;
+        for claim in claims {
             let kind = self
                 .cluster
                 .graph
@@ -110,13 +111,12 @@ old = '''        for claim in claims {
             bindings.push(binding);
         }
 '''
-new = '''        for claim in claims {
+new = '''        for (next, claim) in (start..).zip(claims.into_iter()) {
             let required = self
                 .cluster
                 .graph
                 .claim_binding_for_quantity(claim.node, &claim.quantity)?;
             let binding = BindingId::from_u64(next);
-            next += 1;
             self.apply(Command::OpenBinding {
                 binding,
                 lease,
