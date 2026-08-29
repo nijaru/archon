@@ -25,6 +25,7 @@ jobs:
       - name: Apply runtime placement patch
         run: |
           python3 .github/scripts/runtime_placement_exclusions.py
+          python3 .github/scripts/fix_runtime_placement_loop.py
           cargo fmt --all
       - name: Targeted placement tests
         run: |
@@ -41,6 +42,7 @@ jobs:
         run: |
           git checkout origin/main -- .github/workflows/ci.yml
           rm .github/scripts/runtime_placement_exclusions.py
+          rm .github/scripts/fix_runtime_placement_loop.py
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
