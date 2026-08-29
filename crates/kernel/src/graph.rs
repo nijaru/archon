@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Error;
 use crate::ids::NodeId;
-use crate::types::{Edge, EdgeKind, Node, ResourceClass, TopologyRelation};
+use crate::types::{
+    CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node, Quantity,
+    ResourceClass, TopologyRelation,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -13,6 +16,14 @@ pub struct Graph {
     parent: BTreeMap<NodeId, NodeId>,
     children: BTreeMap<NodeId, Vec<NodeId>>,
     by_class: BTreeMap<ResourceClass, Vec<NodeId>>,
+    /// Revisioned provider contract for claimable capacity. Capacity without
+    /// an entry here remains a placement fact and cannot become Lease
+    /// authority merely because it has a positive quantity.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    claim_bindings: BTreeMap<NodeId, BTreeMap<CapacityDimension, ClaimBinding>>,
 }
 
 impl Graph {
@@ -55,10 +66,110 @@ impl Graph {
             }
         }
         validate_contains(&staged_edges)?;
+        validate_claim_bindings(&staged_nodes, &self.claim_bindings)?;
         self.nodes = staged_nodes;
         self.edges = staged_edges;
         self.rebuild();
         self.revision = self.revision.saturating_add(1);
+        Ok(())
+    }
+
+    /// Atomically apply topology/resource facts together with the provider
+    /// contracts that make selected capacity claimable. Removals are staged
+    /// before capacity changes, additions after, so a dimension can be
+    /// withdrawn or introduced in one Graph revision.
+    pub fn apply_resource_facts(
+        &mut self,
+        nodes: Vec<Node>,
+        edges: Vec<Edge>,
+        updates: Vec<ClaimBindingUpdate>,
+    ) -> Result<(), Error> {
+        validate_update_keys(&updates)?;
+        let target_revision = self.revision.saturating_add(1);
+        let mut staged = self.clone();
+        for update in updates.iter().filter(|update| update.binding.is_none()) {
+            staged.set_claim_binding(*update)?;
+        }
+        staged.apply(nodes, edges)?;
+        for update in updates.iter().filter(|update| update.binding.is_some()) {
+            staged.set_claim_binding(*update)?;
+        }
+        validate_claim_bindings(&staged.nodes, &staged.claim_bindings)?;
+        staged.revision = target_revision;
+        *self = staged;
+        Ok(())
+    }
+
+    pub fn claim_binding(
+        &self,
+        node: NodeId,
+        dimension: CapacityDimension,
+    ) -> Option<ClaimBinding> {
+        self.claim_bindings
+            .get(&node)
+            .and_then(|dimensions| dimensions.get(&dimension))
+            .copied()
+    }
+
+    /// Resolve the single provider contract required by a Claim. The current
+    /// Binding model has one provider/scope per claimed Node, so a quantity
+    /// spanning dimensions with different contracts is rejected rather than
+    /// silently choosing one.
+    pub fn claim_binding_for_quantity(
+        &self,
+        node: NodeId,
+        quantity: &Quantity,
+    ) -> Result<ClaimBinding, Error> {
+        if self.node(node).is_none() {
+            return Err(Error::UnknownNode(node));
+        }
+        let mut selected = None;
+        for (dimension, amount) in quantity {
+            if *amount == 0 {
+                continue;
+            }
+            let binding = self
+                .claim_binding(node, *dimension)
+                .ok_or(Error::UnclaimableNode { node })?;
+            match selected {
+                Some(existing) if existing != binding => {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "claim on {node} spans capacity dimensions with different provider bindings"
+                        ),
+                    });
+                }
+                None => selected = Some(binding),
+                _ => {}
+            }
+        }
+        selected.ok_or(Error::UnclaimableNode { node })
+    }
+
+    pub fn claim_bindings(&self) -> &BTreeMap<NodeId, BTreeMap<CapacityDimension, ClaimBinding>> {
+        &self.claim_bindings
+    }
+
+    fn set_claim_binding(&mut self, update: ClaimBindingUpdate) -> Result<(), Error> {
+        if self.node(update.node).is_none() {
+            return Err(Error::UnknownNode(update.node));
+        }
+        match update.binding {
+            Some(binding) => {
+                self.claim_bindings
+                    .entry(update.node)
+                    .or_default()
+                    .insert(update.dimension, binding);
+            }
+            None => {
+                if let Some(dimensions) = self.claim_bindings.get_mut(&update.node) {
+                    dimensions.remove(&update.dimension);
+                    if dimensions.is_empty() {
+                        self.claim_bindings.remove(&update.node);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -219,6 +330,40 @@ impl Graph {
             children.sort();
         }
     }
+}
+
+fn validate_update_keys(updates: &[ClaimBindingUpdate]) -> Result<(), Error> {
+    let mut seen = BTreeSet::new();
+    for update in updates {
+        if !seen.insert((update.node, update.dimension)) {
+            return Err(Error::Refused {
+                explanation: format!(
+                    "duplicate claim-binding update for {} dimension {}",
+                    update.node, update.dimension
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_claim_bindings(
+    nodes: &BTreeMap<NodeId, Node>,
+    bindings: &BTreeMap<NodeId, BTreeMap<CapacityDimension, ClaimBinding>>,
+) -> Result<(), Error> {
+    for (id, dimensions) in bindings {
+        let node = nodes.get(id).ok_or(Error::UnknownNode(*id))?;
+        for dimension in dimensions.keys() {
+            if node.capacity.get(dimension).copied().unwrap_or(0) == 0 {
+                return Err(Error::Refused {
+                    explanation: format!(
+                        "claim binding for {id} dimension {dimension} has no positive capacity"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_contains(edges: &[Edge]) -> Result<(), Error> {

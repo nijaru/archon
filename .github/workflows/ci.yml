@@ -2,72 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [tmp/explicit-resource-claimability]
-
-permissions:
-  contents: write
+    branches: [main]
+  pull_request:
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: tmp/explicit-resource-claimability
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p archon-sim
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - name: Apply claimability patch
-        run: |
-          python3 .github/scripts/explicit_claimability.py
-          python3 .github/scripts/fix_kernel_claimability_fixtures.py
-          python3 .github/scripts/refine_claimability_api.py
-          python3 .github/scripts/fix_claim_activation.py
-          python3 .github/scripts/fix_sim_claimability.py
-          python3 .github/scripts/fix_harden_claimability_fixtures.py
-          python3 .github/scripts/fix_lifecycle_claimability_fixture.py
-          python3 .github/scripts/fix_select_claimability_fixtures.py
-          python3 .github/scripts/fix_hetero_claimability_fixture.py
-          cargo fmt --all
-      - name: Targeted claimability tests
-        run: |
-          cargo test -p archon-kernel --test claimability
-          cargo test -p archon-kernel --test admit
-          cargo test -p archon-kernel --test extensible
-          cargo test -p archon-kernel --test harden
-          cargo test -p archon-kernel --test lifecycle
-          cargo test -p archon-kernel --test select
-          cargo test -p archon-node --test claimability
-          cargo test -p archon-node --test execution_capabilities
-          cargo test -p archon-node --test devices
-          cargo test -p archon-node --test hetero
-          cargo test -p archon-sim
-      - name: Workspace gates
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace
-          cargo run -p archon-sim
-          cargo deny check advisories bans licenses sources
-      - name: Commit verified source
-        run: |
-          git checkout d6e51964327c161e52c77486be9470390cc7312a -- .github/workflows/ci.yml
-          rm .github/scripts/explicit_claimability.py
-          rm .github/scripts/fix_kernel_claimability_fixtures.py
-          rm .github/scripts/refine_claimability_api.py
-          rm .github/scripts/fix_claim_activation.py
-          rm .github/scripts/fix_sim_claimability.py
-          rm .github/scripts/fix_harden_claimability_fixtures.py
-          rm .github/scripts/fix_lifecycle_claimability_fixture.py
-          rm .github/scripts/fix_select_claimability_fixtures.py
-          rm .github/scripts/fix_hetero_claimability_fixture.py
-          git add -A
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "fix(kernel): make resource claimability explicit"
-          git push origin HEAD:tmp/explicit-resource-claimability
+      - run: cargo deny check advisories bans licenses sources

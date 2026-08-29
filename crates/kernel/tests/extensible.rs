@@ -1,6 +1,7 @@
 use archon_kernel::{
-    CapacityDimension, Cluster, Command, Edge, EdgeKind, Graph, IdentifierError, Need, NodeId,
-    Request, RequestClass, ResourceClass, TopologyRelation, qty,
+    BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Cluster, Command, Edge,
+    EdgeKind, Graph, IdentifierError, Need, NodeId, ProviderId, Request, RequestClass,
+    ResourceClass, TopologyRelation, qty,
 };
 
 fn request(kind: ResourceClass, dimension: CapacityDimension, amount: u64) -> Request {
@@ -33,7 +34,6 @@ fn identifiers_are_validated_and_preserve_well_known_values() {
     let dimension = CapacityDimension::new("vendor.example/vram-bytes").unwrap();
 
     assert_eq!(class.as_str(), "vendor.example/accelerator");
-    assert!(class.is_enforced());
     assert_eq!(class.default_dimension(), None);
     assert_eq!(dimension.as_str(), "vendor.example/vram-bytes");
     assert_eq!(ResourceClass::Gpu.as_str(), "gpu");
@@ -138,7 +138,7 @@ fn dynamic_resource_class_and_capacity_dimension_are_schedulable() {
 
     let mut cluster = Cluster::new();
     cluster
-        .apply(Command::ApplyGraph {
+        .apply(Command::ApplyResourceFacts {
             nodes: vec![
                 archon_kernel::Node {
                     id: machine,
@@ -158,6 +158,14 @@ fn dynamic_resource_class_and_capacity_dimension_are_schedulable() {
                 to: device,
                 kind: archon_kernel::EdgeKind::Contains,
                 attrs: Default::default(),
+            }],
+            claim_bindings: vec![ClaimBindingUpdate {
+                node: device,
+                dimension,
+                binding: Some(ClaimBinding {
+                    provider: ProviderId::from_u64(42),
+                    scope: BindingScope::Exclusive,
+                }),
             }],
         })
         .unwrap();

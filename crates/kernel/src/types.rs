@@ -193,21 +193,6 @@ impl ResourceClass {
             _ => None,
         }
     }
-
-    pub const fn is_enforced(self) -> bool {
-        !matches!(
-            self,
-            Self::Machine
-                | Self::Rack
-                | Self::PowerDomain
-                | Self::Socket
-                | Self::Numa
-                | Self::PcieRoot
-                | Self::Region
-                | Self::Datacenter
-                | Self::DataObject
-        )
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -472,6 +457,27 @@ pub enum BindingScope {
     #[default]
     Exclusive,
     IndependentShare,
+}
+
+/// The provider contract required to turn one capacity dimension into Lease
+/// authority. Absence means the dimension is placement-only and cannot be
+/// claimed. The scope is part of the provider contract rather than inferred
+/// from the resource class.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ClaimBinding {
+    pub provider: ProviderId,
+    pub scope: BindingScope,
+}
+
+/// One atomic resource-fact update to a node/dimension claim contract. `None`
+/// removes claimability without deleting the underlying placement fact.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ClaimBindingUpdate {
+    pub node: NodeId,
+    pub dimension: CapacityDimension,
+    pub binding: Option<ClaimBinding>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
