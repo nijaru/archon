@@ -29,6 +29,7 @@ fn spawn_shaped_agent(instance: &'static str, name: &'static str, cpus: u64) -> 
             };
             let description = archon_node::discover::describe();
             let welcome = AgentResponse::Welcome {
+                instance_id: instance.to_string(),
                 name: name.to_string(),
                 cpus,
                 memory_bytes: description.memory_bytes,
@@ -47,7 +48,6 @@ fn spawn_shaped_agent(instance: &'static str, name: &'static str, cpus: u64) -> 
             }
         }
     });
-    let _ = instance;
     addr
 }
 

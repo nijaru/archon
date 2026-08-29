@@ -15,7 +15,7 @@ use archon_node::service::NodeService;
 
 /// Serve one controller connection with a fresh agent, like `archon
 /// agent` does.
-fn spawn_agent() -> String {
+fn spawn_agent(instance_id: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
@@ -24,7 +24,8 @@ fn spawn_agent() -> String {
             let Ok(mut stream) = archon_node::transport::establish_responder(stream, None) else {
                 return;
             };
-            let mut agent = LeaseAgent::new(ProcessRuntime::new());
+            let mut agent =
+                LeaseAgent::new(ProcessRuntime::new()).with_identity(instance_id.to_string(), None);
             // The controller greets before driving requests.
             let _ = archon_node::protocol::read_greeting(&mut stream);
             while let Ok(request) = read_request(&mut stream) {
@@ -75,7 +76,7 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 
 #[test]
 fn controller_runs_and_kills_a_process_on_a_remote_agent() {
-    let addr = spawn_agent();
+    let addr = spawn_agent("remote-a");
     let mut service = NodeService::new();
     service
         .register_remote(&addr)
@@ -98,6 +99,48 @@ fn controller_runs_and_kills_a_process_on_a_remote_agent() {
         wait_until(Duration::from_secs(5), || !service.is_running(lease)),
         "revoke must kill the remote process"
     );
+}
+
+#[test]
+fn controller_preserves_distinct_listening_agent_identities() {
+    let first = spawn_agent("remote-a");
+    let second = spawn_agent("remote-b");
+    let mut service = NodeService::new();
+    let first_machine = service
+        .register_remote(&first)
+        .expect("register first agent");
+    let second_machine = service
+        .register_remote(&second)
+        .expect("register second agent");
+    assert_ne!(first_machine, second_machine);
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .node(first_machine)
+            .and_then(|node| node.attrs.get("agent_id"))
+            .map(String::as_str),
+        Some("remote-a")
+    );
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .node(second_machine)
+            .and_then(|node| node.attrs.get("agent_id"))
+            .map(String::as_str),
+        Some("remote-b")
+    );
+}
+
+#[test]
+fn controller_refuses_a_listening_agent_without_stable_identity() {
+    let addr = spawn_agent("");
+    let mut service = NodeService::new();
+    let err = service
+        .register_remote(&addr)
+        .expect_err("empty identity must fail closed");
+    assert!(err.to_string().contains("empty stable instance id"));
 }
 
 #[test]

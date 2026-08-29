@@ -195,6 +195,7 @@ fn agent(args: &[String]) {
     let Some(listen) = listen else {
         usage();
     };
+    let instance_id = load_instance_id(id);
     let token = load_token(&token_file);
     if token.is_none() {
         eprintln!(
@@ -238,7 +239,8 @@ fn agent(args: &[String]) {
         }
         eprintln!("archon: controller connected from {peer}");
         let runtime = build_runtime(&cgroup_root);
-        let mut agent = archon_node::agent::LeaseAgent::new(runtime);
+        let mut agent = archon_node::agent::LeaseAgent::new(runtime)
+            .with_identity(instance_id.clone(), name.clone());
         while let Ok(request) = read_request(&mut stream) {
             let response = agent.handle(request);
             if write_response(&mut stream, &response).is_err() {
@@ -354,7 +356,8 @@ fn dial_in(
                 }
                 eprintln!("archon: registered with control plane at {addr}");
                 let runtime = build_runtime(&cgroup_root);
-                let mut lease_agent = archon_node::agent::LeaseAgent::new(runtime);
+                let mut lease_agent = archon_node::agent::LeaseAgent::new(runtime)
+                    .with_identity(instance_id.clone(), name.clone());
                 while let Ok(request) = read_request(&mut stream) {
                     let response = lease_agent.handle(request);
                     if write_response(&mut stream, &response).is_err() {

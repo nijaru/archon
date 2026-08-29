@@ -55,6 +55,7 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                 while let Ok(request) = read_request(&mut stream) {
                     let response = match request {
                         AgentRequest::Hello => AgentResponse::Welcome {
+                            instance_id: "recovery-agent".into(),
                             name: "fake".into(),
                             cpus: 8,
                             memory_bytes: 16 << 30,

@@ -14,7 +14,7 @@ use archon_node::service::NodeService;
 
 /// A named in-process agent with a stable instance id: serves one
 /// controller connection, then dies with its socket.
-fn spawn_named_agent(_instance_id: &'static str, name: &'static str) -> String {
+fn spawn_named_agent(instance_id: &'static str, name: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
@@ -30,6 +30,7 @@ fn spawn_named_agent(_instance_id: &'static str, name: &'static str) -> String {
             };
             let description = archon_node::discover::describe();
             let welcome = AgentResponse::Welcome {
+                instance_id: instance_id.to_string(),
                 name: name.to_string(),
                 cpus: description.cpus,
                 memory_bytes: description.memory_bytes,

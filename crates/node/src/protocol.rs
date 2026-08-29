@@ -168,6 +168,11 @@ pub enum AgentRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AgentResponse {
     Welcome {
+        /// Stable agent identity. Older agents decode as empty and are
+        /// refused by controller-initiated registration rather than silently
+        /// aliasing every legacy endpoint to the same machine.
+        #[serde(default)]
+        instance_id: String,
         name: String,
         cpus: u64,
         memory_bytes: u64,

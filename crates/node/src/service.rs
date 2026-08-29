@@ -225,6 +225,11 @@ impl NodeService {
             explanation: format!("connect {addr}: {err}"),
         })?;
         let description = Self::hello(&mut executor)?;
+        if description.instance_id.is_empty() {
+            return Err(Error::Refused {
+                explanation: "remote agent returned an empty stable instance id".into(),
+            });
+        }
         self.register_agent(description, Box::new(executor))
     }
 
@@ -237,13 +242,14 @@ impl NodeService {
                 explanation: reason,
             })? {
             AgentResponse::Welcome {
+                instance_id,
                 name,
                 cpus,
                 memory_bytes,
                 host_nodes,
                 devices,
             } => Ok(crate::discover::MachineDescription {
-                instance_id: String::new(),
+                instance_id,
                 name,
                 cpus,
                 memory_bytes,
