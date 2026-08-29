@@ -157,10 +157,7 @@ impl ProcessRuntime {
             .map_err(|err| format!("open {}: {err}", log_path.display()))?;
 
         #[cfg(target_os = "linux")]
-        let mut group = match (
-            &self.cgroup_root,
-            limits.is_empty() && devices.is_empty(),
-        ) {
+        let mut group = match (&self.cgroup_root, limits.is_empty() && devices.is_empty()) {
             (Some(root), false) => Some(CgroupGroup::create(root, lease, limits)?),
             _ => None,
         };
