@@ -22,14 +22,16 @@ pub struct CgroupGroup {
 }
 
 impl CgroupGroup {
-    /// Create `archon/lease-<id>` under the cgroup v2 root and enable the cpu
-    /// and memory controllers on the Archon subtree.
+    /// Create `archon/lease-<id>` under the cgroup v2 root and enable only
+    /// the controllers required by this lease's CPU/memory limits. A
+    /// device-only group needs no resource controller; it is still a valid
+    /// cgroup-device BPF attach point.
     pub fn create(root: &str, lease: LeaseId, limits: &LeaseLimits) -> Result<Self, String> {
         let root = PathBuf::from(root);
         fs::create_dir_all(&root).map_err(|err| format!("create {}: {err}", root.display()))?;
         // Controllers must be enabled in the parent's subtree_control before
-        // children can use them.
-        enable_controllers(&root)?;
+        // children can use their limit files.
+        enable_controllers(&root, limits)?;
         let path = root.join(format!("lease-{}", lease.as_u64()));
         if let Err(err) = fs::create_dir(&path) {
             if err.kind() != std::io::ErrorKind::AlreadyExists {
@@ -105,11 +107,22 @@ impl CgroupGroup {
     }
 }
 
-fn enable_controllers(root: &Path) -> Result<(), String> {
+fn enable_controllers(root: &Path, limits: &LeaseLimits) -> Result<(), String> {
+    let mut required = Vec::new();
+    if limits.cpu_count > 0 {
+        required.push("+cpu");
+    }
+    if limits.memory_bytes > 0 {
+        required.push("+memory");
+    }
+    if required.is_empty() {
+        return Ok(());
+    }
+
     let control = root.join("cgroup.subtree_control");
     let current =
         fs::read_to_string(&control).map_err(|err| format!("read {}: {err}", control.display()))?;
-    let missing: Vec<&str> = ["+cpu", "+memory"]
+    let missing: Vec<&str> = required
         .into_iter()
         .filter(|token| !current.split_whitespace().any(|word| word == &token[1..]))
         .collect();
