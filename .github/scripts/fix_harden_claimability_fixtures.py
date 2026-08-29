@@ -173,4 +173,27 @@ if old not in text:
     raise SystemExit("exclusive-share mismatch assertion not found")
 text = text.replace(old, new, 1)
 
+old = '''    let err = cluster
+        .apply(Command::ApplyGraph {
+            nodes: vec![node(2, ResourceClass::Cpu, Quantity::new())],
+            edges: vec![],
+        })
+        .unwrap_err();
+'''
+new = '''    let err = cluster
+        .apply(Command::ApplyResourceFacts {
+            nodes: vec![node(2, ResourceClass::Cpu, Quantity::new())],
+            edges: vec![],
+            claim_bindings: vec![ClaimBindingUpdate {
+                node: NodeId::from_u64(2),
+                dimension: CapacityDimension::Count,
+                binding: None,
+            }],
+        })
+        .unwrap_err();
+'''
+if old not in text:
+    raise SystemExit("occupied capacity shrink block not found")
+text = text.replace(old, new, 1)
+
 path.write_text(text)
