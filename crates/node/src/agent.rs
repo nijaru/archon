@@ -15,6 +15,17 @@ enum EndpointKey {
     IndependentShare { binding: u64 },
 }
 
+#[derive(Clone, Copy, Debug)]
+struct EndpointGeneration {
+    binding: u64,
+    node: u64,
+    provider: u64,
+    scope: BindingScope,
+    session: u64,
+    fence: u64,
+    epoch: u64,
+}
+
 pub struct LeaseAgent {
     process: ProcessRuntime,
     containers: crate::container::ContainerRuntime,
@@ -89,8 +100,7 @@ impl LeaseAgent {
                 epoch,
                 ..
             } => {
-                if let Err(reason) = self.apply_endpoint(
-                    EndpointOp::Prepare,
+                let generation = EndpointGeneration {
                     binding,
                     node,
                     provider,
@@ -98,7 +108,8 @@ impl LeaseAgent {
                     session,
                     fence,
                     epoch,
-                ) {
+                };
+                if let Err(reason) = self.apply_endpoint(EndpointOp::Prepare, generation) {
                     return self.failed(binding, &reason);
                 }
                 let handle = self.next_handle;
@@ -122,8 +133,7 @@ impl LeaseAgent {
                 grace_secs,
                 devices,
             } => {
-                if let Err(reason) = self.apply_endpoint(
-                    EndpointOp::Activate,
+                let generation = EndpointGeneration {
                     binding,
                     node,
                     provider,
@@ -131,7 +141,8 @@ impl LeaseAgent {
                     session,
                     fence,
                     epoch,
-                ) {
+                };
+                if let Err(reason) = self.apply_endpoint(EndpointOp::Activate, generation) {
                     return self.failed(binding, &reason);
                 }
                 self.grace.insert(LeaseId::from_u64(lease), grace_secs);
@@ -172,8 +183,7 @@ impl LeaseAgent {
                 fence,
                 epoch,
             } => {
-                if let Err(reason) = self.apply_endpoint(
-                    EndpointOp::Release,
+                let generation = EndpointGeneration {
                     binding,
                     node,
                     provider,
@@ -181,7 +191,8 @@ impl LeaseAgent {
                     session,
                     fence,
                     epoch,
-                ) {
+                };
+                if let Err(reason) = self.apply_endpoint(EndpointOp::Release, generation) {
                     return self.failed(binding, &reason);
                 }
                 let lease_id = LeaseId::from_u64(lease);
@@ -201,8 +212,7 @@ impl LeaseAgent {
                 fence,
                 epoch,
             } => {
-                if let Err(reason) = self.apply_endpoint(
-                    EndpointOp::Fence,
+                let generation = EndpointGeneration {
                     binding,
                     node,
                     provider,
@@ -210,7 +220,8 @@ impl LeaseAgent {
                     session,
                     fence,
                     epoch,
-                ) {
+                };
+                if let Err(reason) = self.apply_endpoint(EndpointOp::Fence, generation) {
                     return self.failed(binding, &reason);
                 }
                 let lease_id = LeaseId::from_u64(lease);
@@ -248,10 +259,15 @@ impl LeaseAgent {
         }
     }
 
-    fn endpoint_key(scope: BindingScope, binding: u64, provider: u64, node: u64) -> EndpointKey {
-        match scope {
-            BindingScope::Exclusive => EndpointKey::Exclusive { provider, node },
-            BindingScope::IndependentShare => EndpointKey::IndependentShare { binding },
+    fn endpoint_key(generation: EndpointGeneration) -> EndpointKey {
+        match generation.scope {
+            BindingScope::Exclusive => EndpointKey::Exclusive {
+                provider: generation.provider,
+                node: generation.node,
+            },
+            BindingScope::IndependentShare => EndpointKey::IndependentShare {
+                binding: generation.binding,
+            },
         }
     }
 
@@ -280,20 +296,13 @@ impl LeaseAgent {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn apply_endpoint(
         &mut self,
         op: EndpointOp,
-        binding: u64,
-        node: u64,
-        provider: u64,
-        scope: BindingScope,
-        session: u64,
-        fence: u64,
-        epoch: u64,
+        generation: EndpointGeneration,
     ) -> Result<(), String> {
-        self.check_control_generation(session, epoch)?;
-        let key = Self::endpoint_key(scope, binding, provider, node);
+        self.check_control_generation(generation.session, generation.epoch)?;
+        let key = Self::endpoint_key(generation);
         let adopt_on_activate =
             matches!(op, EndpointOp::Activate) && !self.endpoints.contains_key(&key);
         let create = adopt_on_activate
@@ -304,9 +313,9 @@ impl LeaseAgent {
         if create {
             self.endpoints.entry(key).or_insert_with(|| {
                 Endpoint::new(
-                    ProviderId::from_u64(provider),
-                    NodeId::from_u64(node),
-                    session,
+                    ProviderId::from_u64(generation.provider),
+                    NodeId::from_u64(generation.node),
+                    generation.session,
                 )
             });
         }
@@ -314,19 +323,24 @@ impl LeaseAgent {
             .endpoints
             .get_mut(&key)
             .ok_or_else(|| "binding endpoint has not been prepared".to_string())?;
-        endpoint.handshake(session);
+        endpoint.handshake(generation.session);
         if adopt_on_activate {
             endpoint
                 .apply(
                     EndpointOp::Prepare,
-                    BindingId::from_u64(binding),
-                    fence,
-                    session,
+                    BindingId::from_u64(generation.binding),
+                    generation.fence,
+                    generation.session,
                 )
                 .map_err(|err| format!("provider endpoint rejected adoption: {err:?}"))?;
         }
         endpoint
-            .apply(op, BindingId::from_u64(binding), fence, session)
+            .apply(
+                op,
+                BindingId::from_u64(generation.binding),
+                generation.fence,
+                generation.session,
+            )
             .map_err(|err| format!("provider endpoint rejected generation: {err:?}"))
     }
 
@@ -357,7 +371,18 @@ mod endpoint_tests {
         fence: u64,
         epoch: u64,
     ) -> Result<(), String> {
-        agent.apply_endpoint(op, binding, 7, 1, scope, 3, fence, epoch)
+        agent.apply_endpoint(
+            op,
+            EndpointGeneration {
+                binding,
+                node: 7,
+                provider: 1,
+                scope,
+                session: 3,
+                fence,
+                epoch,
+            },
+        )
     }
 
     #[test]
