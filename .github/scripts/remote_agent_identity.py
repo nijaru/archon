@@ -92,9 +92,9 @@ if marker not in text:
 new_test = '''\n#[test]\nfn controller_preserves_distinct_listening_agent_identities() {\n    let first = spawn_agent("remote-a");\n    let second = spawn_agent("remote-b");\n    let mut service = NodeService::new();\n    let first_machine = service.register_remote(&first).expect("register first agent");\n    let second_machine = service\n        .register_remote(&second)\n        .expect("register second agent");\n    assert_ne!(first_machine, second_machine);\n    assert_eq!(\n        service\n            .cluster\n            .graph\n            .node(first_machine)\n            .and_then(|node| node.attrs.get("agent_id"))\n            .map(String::as_str),\n        Some("remote-a")\n    );\n    assert_eq!(\n        service\n            .cluster\n            .graph\n            .node(second_machine)\n            .and_then(|node| node.attrs.get("agent_id"))\n            .map(String::as_str),\n        Some("remote-b")\n    );\n}\n\n#[test]\nfn controller_refuses_a_listening_agent_without_stable_identity() {\n    let addr = spawn_agent("");\n    let mut service = NodeService::new();\n    let err = service\n        .register_remote(&addr)\n        .expect_err("empty identity must fail closed");\n    assert!(err.to_string().contains("empty stable instance id"));\n}\n'''
 p.write_text(text.replace(marker, new_test + marker, 1))
 
-# Synthetic listening-agent fixtures predate the Welcome identity field. They
-# intentionally model anonymous local test peers, so make that explicit in
-# Rust literals without changing their runtime behavior.
+# Synthetic listening-agent fixtures predate the Welcome identity field. If a
+# fixture participates in controller registration it must model a stable peer,
+# so give it one deterministic test identity.
 welcome = re.compile(
     r"(?m)^(?P<indent>\s*)let welcome = (?P<ty>(?:archon_node::protocol::)?AgentResponse)::Welcome \{\n"
 )
@@ -103,7 +103,7 @@ for path in Path("crates").rglob("*.rs"):
     updated = welcome.sub(
         lambda match: match.group(0)
         + match.group("indent")
-        + "    instance_id: String::new(),\n",
+        + "    instance_id: \"test-agent\".into(),\n",
         text,
     )
     if updated != text:
@@ -112,5 +112,5 @@ for path in Path("crates").rglob("*.rs"):
 replace(
     "crates/node/tests/recovery.rs",
     "                        AgentRequest::Hello => AgentResponse::Welcome {\n                            name: \"fake\".into(),\n",
-    "                        AgentRequest::Hello => AgentResponse::Welcome {\n                            instance_id: String::new(),\n                            name: \"fake\".into(),\n",
+    "                        AgentRequest::Hello => AgentResponse::Welcome {\n                            instance_id: \"recovery-agent\".into(),\n                            name: \"fake\".into(),\n",
 )
