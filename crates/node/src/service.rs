@@ -344,7 +344,7 @@ impl NodeService {
                     self.mark_inventory_mismatch(machine)?;
                     return Err(err);
                 }
-                if let Err(err) = self.reconcile_claim_contracts(machine) {
+                if let Err(err) = self.reconcile_claim_contracts(machine, &description.devices) {
                     self.mark_inventory_mismatch(machine)?;
                     return Err(err);
                 }
@@ -416,20 +416,12 @@ impl NodeService {
         Ok(machine)
     }
 
-    /// Reconcile the proof-stage provider contracts for a returning machine.
-    /// Older snapshots/logs predate `ClaimBinding`, so their Graph deserializes
-    /// with an empty map. A validated returning Agent may backfill those
-    /// missing contracts, but it must never overwrite a different provider or
-    /// scope already recorded for the same capacity dimension.
-    fn reconcile_claim_contracts(&mut self, machine: NodeId) -> Result<(), Error> {
-        let mut ids = self.cluster.graph.descendants(machine);
-        ids.push(machine);
-        let nodes: Vec<_> = ids
-            .into_iter()
-            .filter_map(|id| self.cluster.graph.node(id).cloned())
-            .collect();
+    fn missing_claim_contracts(
+        &self,
+        nodes: &[archon_kernel::Node],
+    ) -> Result<Vec<archon_kernel::ClaimBindingUpdate>, Error> {
         let mut missing = Vec::new();
-        for update in crate::discover::claim_bindings(&nodes) {
+        for update in crate::discover::claim_bindings(nodes) {
             let expected = update
                 .binding
                 .expect("provider normalization emits additions");
@@ -455,6 +447,37 @@ impl NodeService {
                 }
             }
         }
+        Ok(missing)
+    }
+
+    /// Reconcile proof-stage provider contracts only for resources present in
+    /// the returning Agent's validated authoritative inventory. Older Graphs
+    /// may have no `ClaimBinding` metadata, but a provider-omitted tombstone
+    /// must never regain ownership merely because its stale Node still exists.
+    fn reconcile_claim_contracts(
+        &mut self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Result<(), Error> {
+        let current_devices: BTreeSet<String> =
+            devices.iter().map(|device| device.id.clone()).collect();
+        let mut ids = self.cluster.graph.descendants(machine);
+        ids.push(machine);
+        let nodes: Vec<_> = ids
+            .into_iter()
+            .filter_map(|id| self.cluster.graph.node(id))
+            .filter(|node| {
+                !matches!(
+                    node.kind,
+                    ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+                ) || node
+                    .attrs
+                    .get("id")
+                    .is_some_and(|id| current_devices.contains(id))
+            })
+            .cloned()
+            .collect();
+        let missing = self.missing_claim_contracts(&nodes)?;
         if !missing.is_empty() {
             self.commit(Command::ApplyResourceFacts {
                 nodes: Vec::new(),
@@ -540,6 +563,7 @@ impl NodeService {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         let mut returning = BTreeSet::new();
+        let mut reported_existing = BTreeSet::new();
 
         for spec in devices {
             let requested_parent = spec
@@ -593,6 +617,7 @@ impl NodeService {
                         ),
                     });
                 }
+                reported_existing.insert(id);
                 match self.cluster.node_state(id) {
                     Some(NodeState::Retired) => {
                         return Err(Error::Refused {
@@ -649,8 +674,18 @@ impl NodeService {
             });
         }
 
-        if !nodes.is_empty() || !edges.is_empty() {
-            let claim_bindings = crate::discover::claim_bindings(&nodes);
+        let existing_nodes: Vec<_> = reported_existing
+            .iter()
+            .filter_map(|id| self.cluster.graph.node(*id).cloned())
+            .collect();
+        let mut claim_bindings = self.missing_claim_contracts(&existing_nodes)?;
+        let fresh_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|node| !reported_existing.contains(&node.id))
+            .cloned()
+            .collect();
+        claim_bindings.extend(crate::discover::claim_bindings(&fresh_nodes));
+        if !nodes.is_empty() || !edges.is_empty() || !claim_bindings.is_empty() {
             self.commit(Command::ApplyResourceFacts {
                 nodes,
                 edges,
