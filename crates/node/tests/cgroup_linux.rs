@@ -88,6 +88,31 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 }
 
 #[test]
+fn device_claims_without_cgroup_fail_closed() {
+    let mut runtime = ProcessRuntime::new();
+    let lease = LeaseId::from_u64(99);
+    let devices = vec![archon_node::protocol::DeviceAccess {
+        id: "gpu0".into(),
+        dev: "/dev/null".into(),
+        paths: Vec::new(),
+        cdi: None,
+    }];
+    let error = runtime
+        .activate(
+            lease,
+            &["true".into()],
+            &LeaseLimits::default(),
+            &devices,
+        )
+        .expect_err("device claims must not run without kernel enforcement");
+    assert!(
+        error.contains("device enforcement requires a cgroup v2 root"),
+        "unexpected refusal: {error}"
+    );
+    assert_eq!(runtime.status(lease), WorkStatus::Gone);
+}
+
+#[test]
 fn first_instruction_runs_inside_the_lease_cgroup() {
     let root = root("first-instruction");
     if !require_cgroup_writable("first-instruction") {
@@ -288,13 +313,10 @@ fn claimed_devices_are_enforced_by_cgroup_device_filter() {
                 "-c".into(),
                 "cat /dev/zero > /dev/null && cat /dev/urandom > /dev/null; test -r /dev/tty0 && echo tty-ok || echo tty-denied".to_string(),
             ],
-            &LeaseLimits {
-                cpu_count: 1,
-                memory_bytes: 64 * (1 << 20),
-            },
+            &LeaseLimits::default(),
             &devices,
         )
-        .expect("activation with device filter");
+        .expect("device-only activation with device filter");
 
     // /dev/null is claimed, so reads/writes through it succeed; the log
     // captures the outcome of probing an unclaimed device node.
