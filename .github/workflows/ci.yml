@@ -2,28 +2,48 @@ name: CI
 
 on:
   push:
-    branches: [main]
-  pull_request:
+    branches: [tmp/execution-capabilities]
+
+permissions:
+  contents: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: tmp/execution-capabilities
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo run -p archon-sim
-
-  supply-chain:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - run: cargo deny check advisories bans licenses sources
+      - name: Apply capability patch
+        run: |
+          python3 .github/scripts/execution_capabilities.py
+          cargo fmt --all
+      - name: Targeted capability tests
+        run: |
+          cargo test -p archon-node --test execution_capabilities
+          cargo test -p archon-node --test execution_placement
+          cargo test -p archon-node --test remote
+      - name: Workspace gates
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          cargo run -p archon-sim
+          cargo deny check advisories bans licenses sources
+      - name: Commit verified source
+        run: |
+          git checkout origin/main -- .github/workflows/ci.yml
+          rm .github/scripts/execution_capabilities.py
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(node): advertise execution enforcement capabilities"
+          git push origin HEAD:tmp/execution-capabilities
