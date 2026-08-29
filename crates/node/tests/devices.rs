@@ -261,9 +261,6 @@ fn provider_disappearance_fails_and_fences_a_live_device_claim() {
     let gpu = service.cluster.graph.nodes_of_class(ResourceClass::Gpu)[0];
     service.submit(gpu_request(), OwnerId::from_u64(1));
     assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
-    service
-        .drive(std::time::Duration::from_secs(1))
-        .expect("activate workload");
     assert_eq!(
         service
             .cluster
@@ -271,7 +268,8 @@ fn provider_disappearance_fails_and_fences_a_live_device_claim() {
             .get(&LeaseId::from_u64(1))
             .unwrap()
             .state,
-        LeaseState::Active
+        LeaseState::Preparing,
+        "the durable claim is live before process activation settles"
     );
 
     let mut missing = description("inst-live", "/dev/null");
