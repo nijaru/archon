@@ -108,3 +108,9 @@ for path in Path("crates").rglob("*.rs"):
     )
     if updated != text:
         path.write_text(updated)
+
+replace(
+    "crates/node/tests/recovery.rs",
+    "                        AgentRequest::Hello => AgentResponse::Welcome {\n                            name: \"fake\".into(),\n",
+    "                        AgentRequest::Hello => AgentResponse::Welcome {\n                            instance_id: String::new(),\n                            name: \"fake\".into(),\n",
+)
