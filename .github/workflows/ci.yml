@@ -8,12 +8,12 @@ permissions:
 
 jobs:
   verify:
-    if: github.head_ref == 'fix/provider-endpoint-fencing'
+    if: github.head_ref == 'fix/provider-endpoint-fencing-v2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/provider-endpoint-fencing
+          ref: fix/provider-endpoint-fencing-v2
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,10 +39,6 @@ jobs:
           from pathlib import Path
           import re
 
-          # Existing OpenBinding call sites predate BindingScope. The source
-          # patch intentionally makes the new field explicit; default legacy
-          # call sites to the existing exclusive endpoint contract while the
-          # focused shared-memory path opts into IndependentShare itself.
           needle = "Command::OpenBinding {"
           for path in Path("crates").rglob("*.rs"):
               text = path.read_text()
@@ -71,47 +67,26 @@ jobs:
                       line_start = text.rfind("\n", 0, end) + 1
                       close_indent = text[line_start:end]
                       field_indent = close_indent + "    "
-                      text = (
-                          text[:line_start]
-                          + field_indent
-                          + "scope: archon_kernel::BindingScope::Exclusive,\n"
-                          + text[line_start:]
-                      )
-                      inserted = len(field_indent) + len("scope: archon_kernel::BindingScope::Exclusive,\n")
-                      end += inserted
+                      insertion = field_indent + "scope: archon_kernel::BindingScope::Exclusive,\n"
+                      text = text[:line_start] + insertion + text[line_start:]
+                      end += len(insertion)
                       changed = True
                   pos = end + 1
               if changed:
                   path.write_text(text)
 
-          # Legacy direct-agent tests construct Prepare requests by hand.
-          # Give them the same complete authority tuple the service now sends.
           path = Path("crates/node/tests/remote.rs")
           text = path.read_text()
-          pattern = re.compile(
-              r"(?P<prefix>\s*binding:\s*\d+,\n\s*lease:\s*\d+,\n)(?P<indent>\s*)session:",
-          )
+          pattern = re.compile(r"(?P<prefix>\s*binding:\s*\d+,\n\s*lease:\s*\d+,\n)(?P<indent>\s*)session:")
           def expand(match):
               indent = match.group("indent")
-              return (
-                  match.group("prefix")
-                  + indent + "node: 1,\n"
-                  + indent + "provider: 1,\n"
-                  + indent + "scope: archon_kernel::BindingScope::Exclusive,\n"
-                  + indent + "session:"
-              )
+              return (match.group("prefix") + indent + "node: 1,\n" + indent + "provider: 1,\n" + indent + "scope: archon_kernel::BindingScope::Exclusive,\n" + indent + "session:")
           text, count = pattern.subn(expand, text)
           if count != 2:
               raise RuntimeError(f"expected two legacy Prepare fixtures, updated {count}")
           text = text.replace("        fence: 1,\n    });", "        fence: 1,\n        epoch: 1,\n    });")
           path.write_text(text)
 
-          # A new Agent process has no provider endpoint memory. Its fresh
-          # session invalidates every command from the previous process, so
-          # reconciliation may adopt the current Binding generation directly
-          # on Activate. Once an endpoint has existed in this process, its
-          # closed/superseded state remains authoritative and cannot be
-          # recreated by Activate.
           path = Path("crates/node/src/agent.rs")
           text = path.read_text()
           old = '''        let key = Self::endpoint_key(scope, binding, provider, node);
@@ -232,8 +207,9 @@ jobs:
         run: |
           git checkout origin/main -- .github/workflows/ci.yml
           rm .github/scripts/provider_endpoint_fencing.py
+          rm -f .github/provider-endpoint-validation
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "fix(node): enforce provider endpoint generations"
-          git push origin HEAD:fix/provider-endpoint-fencing
+          git push origin HEAD:fix/provider-endpoint-fencing-v2
