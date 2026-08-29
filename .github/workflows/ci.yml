@@ -103,15 +103,124 @@ jobs:
           text, count = pattern.subn(expand, text)
           if count != 2:
               raise RuntimeError(f"expected two legacy Prepare fixtures, updated {count}")
-          # Epoch is an independent Cluster generation and belongs beside fence.
           text = text.replace("        fence: 1,\n    });", "        fence: 1,\n        epoch: 1,\n    });")
           path.write_text(text)
+
+          # A new Agent process has no provider endpoint memory. Its fresh
+          # session invalidates every command from the previous process, so
+          # reconciliation may adopt the current Binding generation directly
+          # on Activate. Once an endpoint has existed in this process, its
+          # closed/superseded state remains authoritative and cannot be
+          # recreated by Activate.
+          path = Path("crates/node/src/agent.rs")
+          text = path.read_text()
+          old = '''        let key = Self::endpoint_key(scope, binding, provider, node);
+        let create = matches!(op, EndpointOp::Prepare | EndpointOp::Release | EndpointOp::Fence);
+        if create {
+            self.endpoints.entry(key).or_insert_with(|| {
+                Endpoint::new(
+                    ProviderId::from_u64(provider),
+                    NodeId::from_u64(node),
+                    session,
+                )
+            });
+        }
+        let endpoint = self
+            .endpoints
+            .get_mut(&key)
+            .ok_or_else(|| "binding endpoint has not been prepared".to_string())?;
+        endpoint.handshake(session);
+        endpoint
+            .apply(op, BindingId::from_u64(binding), fence, session)
+            .map_err(|err| format!("provider endpoint rejected generation: {err:?}"))
+'''
+          new = '''        let key = Self::endpoint_key(scope, binding, provider, node);
+        let adopt_on_activate = matches!(op, EndpointOp::Activate) && !self.endpoints.contains_key(&key);
+        let create = adopt_on_activate
+            || matches!(op, EndpointOp::Prepare | EndpointOp::Release | EndpointOp::Fence);
+        if create {
+            self.endpoints.entry(key).or_insert_with(|| {
+                Endpoint::new(
+                    ProviderId::from_u64(provider),
+                    NodeId::from_u64(node),
+                    session,
+                )
+            });
+        }
+        let endpoint = self
+            .endpoints
+            .get_mut(&key)
+            .ok_or_else(|| "binding endpoint has not been prepared".to_string())?;
+        endpoint.handshake(session);
+        if adopt_on_activate {
+            endpoint
+                .apply(
+                    EndpointOp::Prepare,
+                    BindingId::from_u64(binding),
+                    fence,
+                    session,
+                )
+                .map_err(|err| format!("provider endpoint rejected adoption: {err:?}"))?;
+        }
+        endpoint
+            .apply(op, BindingId::from_u64(binding), fence, session)
+            .map_err(|err| format!("provider endpoint rejected generation: {err:?}"))
+'''
+          if text.count(old) != 1:
+              raise RuntimeError("endpoint adoption anchor changed")
+          text = text.replace(old, new, 1)
+          anchor = '''    #[test]
+    fn stale_cluster_epoch_is_rejected_by_the_real_agent_path() {
+'''
+          test = '''    #[test]
+    fn fresh_agent_session_can_adopt_current_active_generation() {
+        let mut agent = LeaseAgent::new(ProcessRuntime::new());
+        assert!(
+            apply(
+                &mut agent,
+                EndpointOp::Activate,
+                10,
+                BindingScope::Exclusive,
+                4,
+                7,
+            )
+            .is_ok(),
+            "a fresh agent process must adopt the current generation during reconcile"
+        );
+        apply(
+            &mut agent,
+            EndpointOp::Fence,
+            10,
+            BindingScope::Exclusive,
+            4,
+            7,
+        )
+        .unwrap();
+        assert!(
+            apply(
+                &mut agent,
+                EndpointOp::Activate,
+                10,
+                BindingScope::Exclusive,
+                4,
+                7,
+            )
+            .is_err(),
+            "adoption must not reopen a generation already closed in this process"
+        );
+    }
+
+'''
+          if text.count(anchor) != 1:
+              raise RuntimeError("endpoint test anchor changed")
+          path.write_text(text.replace(anchor, test + anchor, 1))
           PY
           cargo fmt --all
       - name: Targeted authority tests
         run: |
           cargo test -p archon-kernel --test harden independent_share_bindings_can_coexist_but_exclusive_scope_cannot_mix
           cargo test -p archon-node endpoint_tests
+          cargo test -p archon-node --test multi agent_re_registration_reconciles_live_work
       - name: Workspace gates
         run: |
           cargo fmt --all -- --check
