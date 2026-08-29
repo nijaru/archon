@@ -25,6 +25,7 @@ jobs:
       - name: Apply capability patch
         run: |
           python3 .github/scripts/execution_capabilities.py
+          python3 .github/scripts/fix_execution_placement_fixture.py
           cargo fmt --all
       - name: Targeted capability tests
         run: |
@@ -42,6 +43,7 @@ jobs:
         run: |
           git checkout origin/main -- .github/workflows/ci.yml
           rm .github/scripts/execution_capabilities.py
+          rm .github/scripts/fix_execution_placement_fixture.py
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
