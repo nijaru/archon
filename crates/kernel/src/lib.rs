@@ -29,10 +29,11 @@ pub use occupancy::{Occupancy, occupancy_from_leases};
 pub use preempt::preempt_victims;
 pub use select::select;
 pub use types::{
-    Allocation, Attrs, Binding, BindingScope, BindingState, CapacityDimension, Claim, Edge,
-    EdgeKind, Endpoint, EndpointPhase, Filter, IdentifierError, Lease, LeaseState, Need, Node,
-    NodeState, PortPublish, Preference, Quantity, Queued, Request, RequestClass, ResourceClass,
-    StorageMount, TopologyConstraint, TopologyRelation, qty, quantity_get,
+    Allocation, Attrs, Binding, BindingScope, BindingState, CapacityDimension, Claim, ClaimBinding,
+    ClaimBindingUpdate, Edge, EdgeKind, Endpoint, EndpointPhase, Filter, IdentifierError, Lease,
+    LeaseState, Need, Node, NodeState, PortPublish, Preference, Quantity, Queued, Request,
+    RequestClass, ResourceClass, StorageMount, TopologyConstraint, TopologyRelation, qty,
+    quantity_get,
 };
 
 impl Cluster {

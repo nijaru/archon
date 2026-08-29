@@ -60,14 +60,12 @@ pub fn resolve_claim(graph: &Graph, claim: &Claim) -> Result<Claim, Error> {
     let node = graph
         .node(claim.node)
         .ok_or(Error::UnknownNode(claim.node))?;
-    if node.kind == crate::types::ResourceClass::DataObject {
-        return Err(Error::UnclaimableNode { node: claim.node });
-    }
     let quantity = if claim.quantity.is_empty() {
         node.capacity.clone()
     } else {
         claim.quantity.clone()
     };
+    graph.claim_binding_for_quantity(claim.node, &quantity)?;
     Ok(Claim {
         node: claim.node,
         quantity,

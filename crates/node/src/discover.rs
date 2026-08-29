@@ -7,7 +7,8 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use archon_kernel::{
-    Attrs, CapacityDimension, Edge, EdgeKind, Node, Quantity, ResourceClass, qty, quantity_get,
+    Attrs, BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node,
+    ProviderId, Quantity, ResourceClass, qty, quantity_get,
 };
 
 pub struct LocalMachine {
@@ -782,6 +783,35 @@ pub(crate) fn host_parent_node(
                 .is_some_and(|id| id == host_parent)
         })
         .ok_or_else(|| format!("unknown committed host parent {host_parent:?}"))
+}
+
+/// Current proof-stage providers explicitly declare which normalized
+/// capacity they can bind/fence. Unknown/custom capacity remains
+/// placement-only until a provider supplies its own claim contract.
+pub fn claim_bindings(nodes: &[Node]) -> Vec<ClaimBindingUpdate> {
+    nodes
+        .iter()
+        .filter_map(|node| {
+            let (dimension, scope) = match node.kind {
+                ResourceClass::Cpu => (CapacityDimension::Count, BindingScope::Exclusive),
+                ResourceClass::Memory => (CapacityDimension::Bytes, BindingScope::IndependentShare),
+                ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme => {
+                    (CapacityDimension::Count, BindingScope::Exclusive)
+                }
+                _ => return None,
+            };
+            (node.capacity.get(&dimension).copied().unwrap_or(0) > 0).then_some(
+                ClaimBindingUpdate {
+                    node: node.id,
+                    dimension,
+                    binding: Some(ClaimBinding {
+                        provider: ProviderId::ENFORCE,
+                        scope,
+                    }),
+                },
+            )
+        })
+        .collect()
 }
 
 /// Discover this machine and build its graph.

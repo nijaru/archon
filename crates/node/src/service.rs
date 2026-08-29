@@ -11,7 +11,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    BindingId, BindingScope, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, NodeId,
+    Allocation, BindingId, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, NodeId,
     OwnerId, ProviderId, Queued, Request, RequestId, ResourceClass, quantity_get,
 };
 
@@ -355,7 +355,12 @@ impl NodeService {
                     .max()
                     .unwrap_or(0);
                 let (_local, nodes, edges) = crate::discover::build_graph(&description, base);
-                self.commit(Command::ApplyGraph { nodes, edges })?;
+                let claim_bindings = crate::discover::claim_bindings(&nodes);
+                self.commit(Command::ApplyResourceFacts {
+                    nodes,
+                    edges,
+                    claim_bindings,
+                })?;
                 let machine =
                     named(&self.cluster, &description.instance_id).ok_or(Error::Refused {
                         explanation: "applied graph fragment but machine node is missing".into(),
@@ -592,7 +597,12 @@ impl NodeService {
         }
 
         if !nodes.is_empty() || !edges.is_empty() {
-            self.commit(Command::ApplyGraph { nodes, edges })?;
+            let claim_bindings = crate::discover::claim_bindings(&nodes);
+            self.commit(Command::ApplyResourceFacts {
+                nodes,
+                edges,
+                claim_bindings,
+            })?;
         }
 
         let disappeared: BTreeSet<NodeId> = existing.into_values().collect();
@@ -837,6 +847,7 @@ impl NodeService {
         ) else {
             return Ok(None);
         };
+        self.validate_allocation_bindings(&admission.allocation)?;
         let request_id = admission.request.id;
         let lease = LeaseId::from_u64(self.next_lease);
         self.next_lease += 1;
@@ -1212,6 +1223,38 @@ impl NodeService {
         self.queue.retain(|queued| queued.request.id != *request_id);
     }
 
+    fn validate_allocation_bindings(&self, allocation: &Allocation) -> Result<(), Error> {
+        for claim in &allocation.claims {
+            let node = self
+                .cluster
+                .graph
+                .node(claim.node)
+                .ok_or(Error::UnknownNode(claim.node))?;
+            let binding = self
+                .cluster
+                .graph
+                .claim_binding_for_quantity(claim.node, &claim.quantity)?;
+            if binding.provider != ProviderId::ENFORCE
+                || !matches!(
+                    node.kind,
+                    ResourceClass::Cpu
+                        | ResourceClass::Memory
+                        | ResourceClass::Gpu
+                        | ResourceClass::Nic
+                        | ResourceClass::Nvme
+                )
+            {
+                return Err(Error::Refused {
+                    explanation: format!(
+                        "no registered resource provider can enforce claims on {} ({})",
+                        claim.node, node.kind
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn open_enforced_bindings(&mut self, lease: LeaseId) -> Result<(), Error> {
         let claims = self
             .cluster
@@ -1222,38 +1265,18 @@ impl NodeService {
             .claims
             .clone();
         for claim in claims {
-            let node = self
+            let binding_spec = self
                 .cluster
                 .graph
-                .node(claim.node)
-                .ok_or(Error::UnknownNode(claim.node))?;
-            let scope = match node.kind {
-                ResourceClass::Cpu
-                | ResourceClass::Gpu
-                | ResourceClass::Nic
-                | ResourceClass::Nvme => BindingScope::Exclusive,
-                // Memory limits are independently enforced by each lease's
-                // cgroup/container object. They therefore use the explicit
-                // shared-capacity Binding scope rather than pretending the
-                // whole Memory accounting Node is one exclusive endpoint.
-                ResourceClass::Memory => BindingScope::IndependentShare,
-                kind if !kind.is_enforced() => continue,
-                kind => {
-                    return Err(Error::Refused {
-                        explanation: format!(
-                            "no execution provider is registered for enforced resource class {kind}"
-                        ),
-                    });
-                }
-            };
+                .claim_binding_for_quantity(claim.node, &claim.quantity)?;
             let binding = BindingId::from_u64(self.next_binding);
             self.next_binding += 1;
             self.commit(Command::OpenBinding {
                 binding,
                 lease,
                 node: claim.node,
-                provider: ProviderId::ENFORCE,
-                scope,
+                provider: binding_spec.provider,
+                scope: binding_spec.scope,
             })?;
         }
         Ok(())

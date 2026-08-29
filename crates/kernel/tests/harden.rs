@@ -1,6 +1,7 @@
 use archon_kernel::{
-    BindingId, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, LeaseState, Need,
-    NodeId, OwnerId, ProviderId, Quantity, Request, RequestClass, RequestId, ResourceClass, qty,
+    BindingId, BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Cluster, Command,
+    Effect, Error, LeaseId, LeaseState, Need, NodeId, OwnerId, ProviderId, Quantity, Request,
+    RequestClass, RequestId, ResourceClass, qty,
 };
 
 fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> archon_kernel::Node {
@@ -15,7 +16,7 @@ fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> archon_kernel::Node
 fn graph() -> Cluster {
     let mut cluster = Cluster::new();
     cluster
-        .apply(Command::ApplyGraph {
+        .apply(Command::ApplyResourceFacts {
             nodes: vec![
                 node(1, ResourceClass::Machine, Quantity::new()),
                 node(2, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
@@ -35,6 +36,17 @@ fn graph() -> Cluster {
                     attrs: Default::default(),
                 },
             ],
+            claim_bindings: [2, 3]
+                .into_iter()
+                .map(|node| ClaimBindingUpdate {
+                    node: NodeId::from_u64(node),
+                    dimension: CapacityDimension::Count,
+                    binding: Some(ClaimBinding {
+                        provider: ProviderId::ENFORCE,
+                        scope: BindingScope::Exclusive,
+                    }),
+                })
+                .collect(),
         })
         .unwrap();
     cluster
@@ -610,9 +622,14 @@ fn capacity_cannot_shrink_below_occupied_units() {
     let before = cluster.digest();
     // Node 2 holds one occupied CPU; shrinking it to zero must be refused.
     let err = cluster
-        .apply(Command::ApplyGraph {
+        .apply(Command::ApplyResourceFacts {
             nodes: vec![node(2, ResourceClass::Cpu, Quantity::new())],
             edges: vec![],
+            claim_bindings: vec![ClaimBindingUpdate {
+                node: NodeId::from_u64(2),
+                dimension: CapacityDimension::Count,
+                binding: None,
+            }],
         })
         .unwrap_err();
     assert!(matches!(err, Error::CapacityBelowOccupancy { .. }));
@@ -762,7 +779,7 @@ fn rejected_expiry_leaves_descendants_and_log_untouched() {
 fn partial_memory_roots_sum_instead_of_taking_the_max() {
     let mut cluster = Cluster::new();
     cluster
-        .apply(Command::ApplyGraph {
+        .apply(Command::ApplyResourceFacts {
             nodes: vec![
                 node(1, ResourceClass::Machine, Quantity::new()),
                 node(2, ResourceClass::Memory, qty(CapacityDimension::Bytes, 100)),
@@ -772,6 +789,14 @@ fn partial_memory_roots_sum_instead_of_taking_the_max() {
                 to: NodeId::from_u64(2),
                 kind: archon_kernel::EdgeKind::Contains,
                 attrs: Default::default(),
+            }],
+            claim_bindings: vec![ClaimBindingUpdate {
+                node: NodeId::from_u64(2),
+                dimension: CapacityDimension::Bytes,
+                binding: Some(ClaimBinding {
+                    provider: ProviderId::ENFORCE,
+                    scope: BindingScope::IndependentShare,
+                }),
             }],
         })
         .unwrap();
@@ -1034,7 +1059,7 @@ fn independent_share_bindings_can_coexist_but_exclusive_scope_cannot_mix() {
     let machine = NodeId::from_u64(1);
     let memory = NodeId::from_u64(2);
     cluster
-        .apply(Command::ApplyGraph {
+        .apply(Command::ApplyResourceFacts {
             nodes: vec![
                 node(1, ResourceClass::Machine, Quantity::new()),
                 node(
@@ -1048,6 +1073,14 @@ fn independent_share_bindings_can_coexist_but_exclusive_scope_cannot_mix() {
                 to: memory,
                 kind: archon_kernel::EdgeKind::Contains,
                 attrs: Default::default(),
+            }],
+            claim_bindings: vec![ClaimBindingUpdate {
+                node: memory,
+                dimension: CapacityDimension::Bytes,
+                binding: Some(ClaimBinding {
+                    provider: ProviderId::ENFORCE,
+                    scope: BindingScope::IndependentShare,
+                }),
             }],
         })
         .unwrap();
@@ -1115,5 +1148,7 @@ fn independent_share_bindings_can_coexist_but_exclusive_scope_cannot_mix() {
             scope: archon_kernel::BindingScope::Exclusive,
         })
         .unwrap_err();
-    assert!(matches!(err, Error::ResourceBusy { node } if node == memory));
+    assert!(
+        matches!(err, Error::Refused { explanation } if explanation.contains("IndependentShare"))
+    );
 }

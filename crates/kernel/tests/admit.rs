@@ -1,6 +1,7 @@
 use archon_kernel::{
-    CapacityDimension, Cluster, Command, Need, Node, NodeId, OwnerId, Quantity, Queued, Request,
-    RequestClass, RequestId, ResourceClass, admit, qty,
+    BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Cluster, Command, Need,
+    Node, NodeId, OwnerId, ProviderId, Quantity, Queued, Request, RequestClass, RequestId,
+    ResourceClass, admit, qty,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -11,6 +12,26 @@ fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> Node {
         attrs: Default::default(),
         capacity,
     }
+}
+
+fn make_cpu_claimable(cluster: &mut Cluster, nodes: &[u64]) {
+    cluster
+        .apply(Command::ApplyResourceFacts {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            claim_bindings: nodes
+                .iter()
+                .map(|id| ClaimBindingUpdate {
+                    node: NodeId::from_u64(*id),
+                    dimension: CapacityDimension::Count,
+                    binding: Some(ClaimBinding {
+                        provider: ProviderId::ENFORCE,
+                        scope: BindingScope::Exclusive,
+                    }),
+                })
+                .collect(),
+        })
+        .unwrap();
 }
 
 fn cluster() -> Cluster {
@@ -41,6 +62,7 @@ fn cluster() -> Cluster {
             }],
         })
         .unwrap();
+    make_cpu_claimable(&mut cluster, &[2, 3]);
     cluster
 }
 
@@ -173,6 +195,7 @@ fn two_machine_cluster() -> Cluster {
             ],
         })
         .unwrap();
+    make_cpu_claimable(&mut cluster, &[11, 12, 21]);
     cluster
 }
 
