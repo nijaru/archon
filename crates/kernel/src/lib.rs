@@ -16,8 +16,8 @@ mod select;
 mod types;
 
 pub use admit::{
-    Admission, BackfillCtx, ClassUsage, admit, admit_backfill, admit_with_ceiling, owner_usage,
-    refuse_reason,
+    Admission, BackfillCtx, ClassUsage, RequestExclusions, admit, admit_backfill,
+    admit_backfill_with_exclusions, admit_with_ceiling, owner_usage, refuse_reason,
 };
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
 pub use command::{Command, Effect};
@@ -75,11 +75,24 @@ impl Cluster {
         queue: &[Queued],
         owner_ceiling: &ClassUsage,
     ) -> Option<Admission> {
+        self.admit_backfill_with_exclusions(queue, owner_ceiling, &RequestExclusions::new())
+    }
+
+    /// EASY-style backfill with request-specific hard node exclusions. The
+    /// execution/provider layer can use this without mutating resource facts
+    /// or schedulability state in the Graph.
+    pub fn admit_backfill_with_exclusions(
+        &self,
+        queue: &[Queued],
+        owner_ceiling: &ClassUsage,
+        exclusions: &RequestExclusions,
+    ) -> Option<Admission> {
         let blocked = self.placement_blocked();
-        admit_backfill(
+        admit_backfill_with_exclusions(
             &self.graph,
             &self.occupancy(),
             &blocked,
+            exclusions,
             owner_ceiling,
             queue,
             &crate::admit::BackfillCtx {
