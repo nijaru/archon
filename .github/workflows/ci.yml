@@ -27,6 +27,7 @@ jobs:
           python3 .github/scripts/execution_capabilities.py
           python3 .github/scripts/fix_execution_placement_fixture.py
           python3 .github/scripts/fix_remote_capability_test.py
+          python3 .github/scripts/fix_capability_clippy.py
           cargo fmt --all
       - name: Targeted capability tests
         run: |
@@ -46,6 +47,7 @@ jobs:
           rm .github/scripts/execution_capabilities.py
           rm .github/scripts/fix_execution_placement_fixture.py
           rm .github/scripts/fix_remote_capability_test.py
+          rm .github/scripts/fix_capability_clippy.py
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
