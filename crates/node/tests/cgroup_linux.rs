@@ -98,12 +98,7 @@ fn device_claims_without_cgroup_fail_closed() {
         cdi: None,
     }];
     let error = runtime
-        .activate(
-            lease,
-            &["true".into()],
-            &LeaseLimits::default(),
-            &devices,
-        )
+        .activate(lease, &["true".into()], &LeaseLimits::default(), &devices)
         .expect_err("device claims must not run without kernel enforcement");
     assert!(
         error.contains("device enforcement requires a cgroup v2 root"),
