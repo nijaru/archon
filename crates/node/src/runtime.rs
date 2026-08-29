@@ -113,6 +113,28 @@ impl ProcessRuntime {
         self
     }
 
+    pub fn capabilities(&self) -> crate::protocol::RuntimeCapabilities {
+        #[cfg(target_os = "linux")]
+        {
+            let cgroup = self.cgroup_root.is_some();
+            crate::protocol::RuntimeCapabilities {
+                available: true,
+                cpu_limit: cgroup,
+                memory_limit: cgroup,
+                device_isolation: cgroup,
+                physical_cpu_placement: false,
+                numa_memory_placement: false,
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            crate::protocol::RuntimeCapabilities {
+                available: true,
+                ..Default::default()
+            }
+        }
+    }
+
     /// Spawn the lease's command. On Linux with a cgroup root, the child
     /// runs inside `lease-<id>` under the configured limits and device
     /// grants. Device claims fail closed when this runtime cannot create an

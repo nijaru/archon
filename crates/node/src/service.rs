@@ -21,7 +21,9 @@ use crate::agent::LeaseAgent;
 use crate::dispatch::{
     AgentHandle, AgentReply, Delivery, EffectPhase, Inbox, Job, Tag, direct_job, spawn_worker,
 };
-use crate::protocol::{AgentRequest, AgentResponse, LeaseLimits, read_frame, write_frame};
+use crate::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, LeaseLimits, read_frame, write_frame,
+};
 use crate::runtime::ProcessRuntime;
 
 /// The controller side of the enforcement seam.
@@ -90,6 +92,10 @@ pub struct NodeService {
     /// NodeId. Workers own the executors and do all network I/O off the
     /// controller's critical section.
     agents: BTreeMap<NodeId, AgentHandle>,
+    /// Live execution guarantees reported by each registered agent. These are
+    /// deliberately not durable Graph facts; a fresh controller/agent session
+    /// must prove them again before constrained work can place there.
+    execution_capabilities: BTreeMap<NodeId, ExecutionCapabilities>,
     /// Completed agent answers awaiting absorption.
     inbox: Arc<Inbox>,
     /// Outstanding asynchronous calls, keyed by their completion tag.
@@ -267,10 +273,39 @@ impl NodeService {
     /// and let the kernel's Reconcile re-drive live work onto the agent.
     /// The executor moves onto a dedicated worker thread; registration and
     /// all later effects enqueue without blocking on the agent.
+    pub fn query_execution_capabilities(
+        executor: &mut dyn LeaseExecutor,
+    ) -> Result<ExecutionCapabilities, Error> {
+        match executor
+            .execute(AgentRequest::Capabilities)
+            .map_err(|reason| Error::Refused {
+                explanation: format!("agent capability query failed: {reason}"),
+            })? {
+            AgentResponse::Capabilities { capabilities } => Ok(capabilities),
+            other => Err(Error::Refused {
+                explanation: format!("agent did not report execution capabilities: {other:?}"),
+            }),
+        }
+    }
+
     pub fn register_agent(
         &mut self,
         description: crate::discover::MachineDescription,
+        mut executor: Box<dyn LeaseExecutor>,
+    ) -> Result<NodeId, Error> {
+        let capabilities = Self::query_execution_capabilities(executor.as_mut())?;
+        self.register_agent_with_capabilities(description, executor, capabilities)
+    }
+
+    /// Register an agent whose execution guarantees were already proven on
+    /// its connection thread. Capability proof still precedes all Graph
+    /// mutation, but a silent network peer never holds a shared controller
+    /// lock while the proof waits or times out.
+    pub fn register_agent_with_capabilities(
+        &mut self,
+        description: crate::discover::MachineDescription,
         executor: Box<dyn LeaseExecutor>,
+        capabilities: ExecutionCapabilities,
     ) -> Result<NodeId, Error> {
         crate::discover::validate_machine_description(&description)
             .map_err(|explanation| Error::Refused { explanation })?;
@@ -328,6 +363,7 @@ impl NodeService {
                 (machine, true)
             }
         };
+        self.execution_capabilities.insert(machine, capabilities);
         self.agents
             .insert(machine, spawn_worker(executor, self.inbox.clone()));
         // A recorded session older than this controller process means the
@@ -623,6 +659,7 @@ impl NodeService {
             cluster: Cluster::new(),
             link_token: None,
             agents,
+            execution_capabilities: BTreeMap::new(),
             inbox: Arc::new(Inbox::default()),
             inflight: BTreeSet::new(),
             running: BTreeMap::new(),
@@ -717,11 +754,10 @@ impl NodeService {
         });
     }
 
-    /// Hard placement exclusions imposed by the current execution adapters.
-    /// Normalized CPU and Memory Nodes carry provider-authored physical
-    /// locality (`archon.host-id`), while today's process/container adapters
-    /// enforce only aggregate CPU/memory limits. Until cpuset/NUMA translation
-    /// lands, executable work must not claim those physical placements.
+    /// Hard placement exclusions imposed by each live execution adapter.
+    /// Runtime guarantees are session-local controller state, not Graph facts:
+    /// placement may use them to refuse a machine, but they never grant
+    /// resource authority or rewrite provider topology/capacity.
     fn execution_exclusions(&self) -> archon_kernel::RequestExclusions {
         let mut exclusions = archon_kernel::RequestExclusions::new();
         let machines = self.cluster.graph.nodes_of_class(ResourceClass::Machine);
@@ -730,29 +766,59 @@ impl NodeService {
             if request.command.is_empty() && request.image.is_none() {
                 continue;
             }
-            let exact_kinds: BTreeSet<ResourceClass> = request
+            let needs_cpu = request
                 .needs
                 .iter()
-                .filter_map(|need| match need.kind {
-                    ResourceClass::Cpu | ResourceClass::Memory => Some(need.kind),
-                    _ => None,
-                })
-                .collect();
-            if exact_kinds.is_empty() {
-                continue;
-            }
+                .any(|need| need.kind == ResourceClass::Cpu);
+            let needs_memory = request
+                .needs
+                .iter()
+                .any(|need| need.kind == ResourceClass::Memory);
+            let needs_devices = request.needs.iter().any(|need| {
+                matches!(
+                    need.kind,
+                    ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+                )
+            });
+            let container = request
+                .image
+                .as_deref()
+                .is_some_and(|image| !image.is_empty());
+
             for machine in machines {
-                let has_normalized_claim_kind = self
-                    .cluster
-                    .graph
-                    .descendants(*machine)
-                    .into_iter()
-                    .filter_map(|node| self.cluster.graph.node(node))
-                    .any(|node| {
-                        exact_kinds.contains(&node.kind)
-                            && node.attrs.contains_key(crate::discover::HOST_ID_ATTR)
+                let mode = self
+                    .execution_capabilities
+                    .get(machine)
+                    .map(|caps| {
+                        if container {
+                            caps.container
+                        } else {
+                            caps.process
+                        }
+                    })
+                    .unwrap_or_default();
+                let descendants = self.cluster.graph.descendants(*machine);
+                let normalized_cpu = needs_cpu
+                    && descendants.iter().any(|node| {
+                        self.cluster.graph.node(*node).is_some_and(|node| {
+                            node.kind == ResourceClass::Cpu
+                                && node.attrs.contains_key(crate::discover::HOST_ID_ATTR)
+                        })
                     });
-                if has_normalized_claim_kind {
+                let normalized_memory = needs_memory
+                    && descendants.iter().any(|node| {
+                        self.cluster.graph.node(*node).is_some_and(|node| {
+                            node.kind == ResourceClass::Memory
+                                && node.attrs.contains_key(crate::discover::HOST_ID_ATTR)
+                        })
+                    });
+                let incompatible = !mode.available
+                    || (needs_cpu && !mode.cpu_limit)
+                    || (needs_memory && !mode.memory_limit)
+                    || (needs_devices && !mode.device_isolation)
+                    || (normalized_cpu && !mode.physical_cpu_placement)
+                    || (normalized_memory && !mode.numa_memory_placement);
+                if incompatible {
                     exclusions.entry(request.id).or_default().insert(*machine);
                 }
             }

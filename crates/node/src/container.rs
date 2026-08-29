@@ -26,6 +26,8 @@ pub struct ContainerRuntime {
     engine: String,
     /// Per-runtime prefix so concurrent agents never fight over names.
     namespace: String,
+    /// A recognized Docker/Podman CLI answered --version successfully.
+    available: bool,
     containers: BTreeMap<LeaseId, String>,
     /// Engine is podman: volume mounts need the SELinux relabel suffix.
     relabels: bool,
@@ -45,15 +47,21 @@ impl ContainerRuntime {
         // Podman under SELinux mounts host paths read-only for the
         // container user unless they are relabeled; `:Z` is a no-op where
         // SELinux is off.
-        let relabels = Command::new(&engine)
-            .arg("--version")
-            .output()
+        let version = Command::new(&engine).arg("--version").output().ok();
+        let version_text = version
+            .as_ref()
             .map(|output| {
-                String::from_utf8_lossy(&output.stdout)
-                    .to_lowercase()
-                    .contains("podman")
+                let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+                text.push_str(&String::from_utf8_lossy(&output.stderr));
+                text.to_ascii_lowercase()
             })
-            .unwrap_or(false);
+            .unwrap_or_default();
+        let recognized = version_text.contains("docker") || version_text.contains("podman");
+        let available = version
+            .as_ref()
+            .is_some_and(|output| output.status.success())
+            && recognized;
+        let relabels = available && version_text.contains("podman");
         let use_cdi = std::env::var("ARCHON_CONTAINER_USE_CDI")
             .map(|value| {
                 matches!(
@@ -68,10 +76,22 @@ impl ContainerRuntime {
         Self {
             engine,
             namespace: format!("{}-{}-{seq}", std::process::id(), lease_namespace_salt()),
+            available,
             containers: BTreeMap::new(),
             relabels,
             use_cdi,
             cdi_spec_dir,
+        }
+    }
+
+    pub fn capabilities(&self) -> crate::protocol::RuntimeCapabilities {
+        crate::protocol::RuntimeCapabilities {
+            available: self.available,
+            cpu_limit: self.available,
+            memory_limit: self.available,
+            device_isolation: self.available,
+            physical_cpu_placement: false,
+            numa_memory_placement: false,
         }
     }
 

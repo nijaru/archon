@@ -8,9 +8,42 @@ use std::time::{Duration, Instant};
 use archon_kernel::{
     CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
-use archon_node::protocol::LeaseLimits;
+use archon_node::agent::LeaseAgent;
+use archon_node::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, LeaseLimits, RuntimeCapabilities,
+};
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::NodeService;
+use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
+
+/// Hosted CI has no delegated cgroup subtree, but this suite is about the
+/// higher-level process lifecycle rather than proving kernel CPU isolation.
+/// Advertise that guarantee through an explicit test double while forwarding
+/// every lifecycle operation to the real ProcessRuntime. `cgroup_linux.rs`
+/// remains the proof that production CPU limits are actually enforced.
+struct LifecycleProcessExecutor {
+    inner: LocalExecutor,
+}
+
+impl LeaseExecutor for LifecycleProcessExecutor {
+    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+        if matches!(request, AgentRequest::Capabilities) {
+            return Ok(AgentResponse::Capabilities {
+                capabilities: ExecutionCapabilities {
+                    process: RuntimeCapabilities {
+                        available: true,
+                        cpu_limit: true,
+                        memory_limit: false,
+                        device_isolation: false,
+                        physical_cpu_placement: false,
+                        numa_memory_placement: false,
+                    },
+                    container: RuntimeCapabilities::default(),
+                },
+            });
+        }
+        self.inner.execute(request)
+    }
+}
 
 fn boot() -> NodeService {
     // Isolate per-run output files from other binaries and prior runs.
@@ -22,10 +55,16 @@ fn boot() -> NodeService {
             std::env::temp_dir().join(format!("archon-exec-logs-{}", std::process::id())),
         );
     }
+    let description = archon_node::discover::try_describe().expect("local discovery");
     let mut service = NodeService::new();
     service
-        .register_local(None)
-        .expect("register local machine");
+        .register_agent(
+            description,
+            Box::new(LifecycleProcessExecutor {
+                inner: LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new())),
+            }),
+        )
+        .expect("register lifecycle test machine");
     service
 }
 

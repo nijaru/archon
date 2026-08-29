@@ -8,9 +8,26 @@ use archon_kernel::{
     CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
-use archon_node::protocol::{read_request, write_response};
+use archon_node::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities, read_request,
+    write_response,
+};
 use archon_node::runtime::ProcessRuntime;
 use archon_node::service::NodeService;
+
+fn multi_capabilities() -> ExecutionCapabilities {
+    ExecutionCapabilities {
+        process: RuntimeCapabilities {
+            available: true,
+            cpu_limit: true,
+            memory_limit: false,
+            device_isolation: false,
+            physical_cpu_placement: false,
+            numa_memory_placement: false,
+        },
+        container: RuntimeCapabilities::default(),
+    }
+}
 
 /// A named in-process agent with a stable instance id: serves one
 /// controller connection, then dies with its socket.
@@ -23,7 +40,6 @@ fn spawn_named_agent(instance_id: &'static str, name: &'static str) -> String {
             let Ok(mut stream) = archon_node::transport::establish_responder(stream, None) else {
                 return;
             };
-            use archon_node::protocol::{AgentRequest, AgentResponse};
             let _ = archon_node::protocol::read_greeting(&mut stream);
             let Ok(AgentRequest::Hello) = read_request(&mut stream) else {
                 return;
@@ -42,7 +58,13 @@ fn spawn_named_agent(instance_id: &'static str, name: &'static str) -> String {
             }
             let mut lease_agent = LeaseAgent::new(ProcessRuntime::new());
             while let Ok(request) = read_request(&mut stream) {
-                let response = lease_agent.handle(request);
+                let response = if matches!(request, AgentRequest::Capabilities) {
+                    AgentResponse::Capabilities {
+                        capabilities: multi_capabilities(),
+                    }
+                } else {
+                    lease_agent.handle(request)
+                };
                 if write_response(&mut stream, &response).is_err() {
                     break;
                 }
