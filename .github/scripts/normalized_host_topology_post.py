@@ -26,7 +26,8 @@ for path in Path("crates").rglob("*.rs"):
         if end is None:
             raise RuntimeError(f"unterminated DeviceSpec in {path}")
         block = text[start : end + 1]
-        if not re.search(r"(?m)^\s*host_parent\s*:", block):
+        has_host_parent = re.search(r"(?m)^\s*(?:pub\s+)?host_parent\s*:", block)
+        if not has_host_parent:
             line_start = text.rfind("\n", 0, end) + 1
             close_indent = text[line_start:end]
             field_indent = close_indent + "    "
