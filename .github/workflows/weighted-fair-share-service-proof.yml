@@ -1,0 +1,41 @@
+name: Weighted fair-share service proof
+
+on:
+  push:
+    branches: [tmp/weighted-fair-share-service]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Apply refinement
+        run: python .github/scripts/refine_weighted_fair_share.py
+      - run: cargo fmt --all
+      - run: cargo fmt --all -- --check
+      - run: cargo test -p archon-kernel --test fair_share
+      - run: cargo test -p archon-node --test fair_share_service
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p archon-sim
+      - run: cargo deny check advisories bans licenses sources
+      - name: Publish validated source tree
+        run: |
+          rm .github/scripts/refine_weighted_fair_share.py
+          rm .github/workflows/weighted-fair-share-service-proof.yml
+          git config user.name "Nick"
+          git config user.email "nijaru7@gmail.com"
+          git add -A
+          git commit -m "feat(scheduler): prove weighted fair-share admission"
+          git push origin HEAD:tmp/weighted-fair-share-service
