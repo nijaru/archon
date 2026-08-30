@@ -7,8 +7,9 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use archon_kernel::{
-    Attrs, BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node,
-    ProviderId, Quantity, ResourceClass, qty, quantity_get,
+    Attrs, BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind,
+    FactEdge, FactWriterAssignment, FactWriterId, Node, ProviderFactBatch, ProviderId, Quantity,
+    ResourceClass, qty, quantity_get,
 };
 
 pub struct LocalMachine {
@@ -33,6 +34,8 @@ impl IdGen {
 
 pub(crate) const HOST_ID_ATTR: &str = "archon.host-id";
 pub(crate) const DEVICE_HOST_PARENT_ATTR: &str = "archon.host-parent";
+pub(crate) const HOST_FACT_WRITER: FactWriterId = FactWriterId::from_u64(1);
+pub(crate) const DEVICE_FACT_WRITER: FactWriterId = FactWriterId::from_u64(2);
 
 /// A machine as the agent reports it; the controller builds the graph.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -531,6 +534,127 @@ pub fn build_graph(
         nodes,
         edges,
     )
+}
+
+/// Split one validated machine graph into independently-owned provider fact
+/// fragments while retaining one atomic Cluster update. The current Agent
+/// aggregates host discovery and device discovery as two writers; the kernel
+/// contract supports additional writers without changing ownership semantics.
+pub(crate) fn provider_fact_batches(nodes: Vec<Node>, edges: Vec<Edge>) -> Vec<ProviderFactBatch> {
+    let mut by_node = BTreeMap::new();
+    for node in &nodes {
+        let writer = if matches!(
+            node.kind,
+            ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+        ) {
+            DEVICE_FACT_WRITER
+        } else {
+            HOST_FACT_WRITER
+        };
+        by_node.insert(node.id, writer);
+    }
+    let mut host = ProviderFactBatch {
+        writer: HOST_FACT_WRITER,
+        nodes: Vec::new(),
+        edges: Vec::new(),
+    };
+    let mut device = ProviderFactBatch {
+        writer: DEVICE_FACT_WRITER,
+        nodes: Vec::new(),
+        edges: Vec::new(),
+    };
+    for node in nodes {
+        if by_node[&node.id] == DEVICE_FACT_WRITER {
+            device.nodes.push(node);
+        } else {
+            host.nodes.push(node);
+        }
+    }
+    for edge in edges {
+        let writer = by_node.get(&edge.to).copied().unwrap_or(HOST_FACT_WRITER);
+        if writer == DEVICE_FACT_WRITER {
+            device.edges.push(edge);
+        } else {
+            host.edges.push(edge);
+        }
+    }
+    [host, device]
+        .into_iter()
+        .filter(|batch| !batch.nodes.is_empty() || !batch.edges.is_empty())
+        .collect()
+}
+
+/// Expected ownership for the currently-reported portion of one machine's
+/// legacy Graph. Omitted device tombstones are deliberately excluded: a
+/// current provider must not acquire authority over a resource it did not
+/// report merely because a stale Node remains persisted.
+pub(crate) fn current_fact_writer_assignments(
+    graph: &archon_kernel::Graph,
+    machine: archon_kernel::NodeId,
+    devices: &[DeviceSpec],
+) -> Vec<FactWriterAssignment> {
+    let current_devices: std::collections::BTreeSet<_> =
+        devices.iter().map(|device| device.id.as_str()).collect();
+    let mut host_nodes = Vec::new();
+    let mut device_nodes = Vec::new();
+    let mut included = BTreeMap::new();
+    let mut ids = graph.descendants(machine);
+    ids.push(machine);
+    for id in ids {
+        let Some(node) = graph.node(id) else { continue };
+        let writer = if matches!(
+            node.kind,
+            ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+        ) {
+            if !node
+                .attrs
+                .get("id")
+                .is_some_and(|stable| current_devices.contains(stable.as_str()))
+            {
+                continue;
+            }
+            DEVICE_FACT_WRITER
+        } else {
+            HOST_FACT_WRITER
+        };
+        included.insert(id, writer);
+        if writer == DEVICE_FACT_WRITER {
+            device_nodes.push(id);
+        } else {
+            host_nodes.push(id);
+        }
+    }
+    let mut host_edges = Vec::new();
+    let mut device_edges = Vec::new();
+    for edge in graph.edges() {
+        if edge.kind != EdgeKind::Contains {
+            continue;
+        }
+        let Some(writer) = included.get(&edge.to).copied() else {
+            continue;
+        };
+        let fact = FactEdge::new(edge.from, edge.to, edge.kind);
+        if writer == DEVICE_FACT_WRITER {
+            device_edges.push(fact);
+        } else {
+            host_edges.push(fact);
+        }
+    }
+    [
+        FactWriterAssignment {
+            writer: HOST_FACT_WRITER,
+            nodes: host_nodes,
+            edges: host_edges,
+        },
+        FactWriterAssignment {
+            writer: DEVICE_FACT_WRITER,
+            nodes: device_nodes,
+            edges: device_edges,
+        },
+    ]
+    .into_iter()
+    .filter(|assignment| !assignment.nodes.is_empty() || !assignment.edges.is_empty())
+    .collect()
 }
 
 /// Validate the complete provider-normalized machine inventory before it can

@@ -1,6 +1,7 @@
 use archon_kernel::{
     BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Command, Edge, EdgeKind,
-    Need, Node, NodeId, OwnerId, ProviderId, Request, RequestClass, RequestId, ResourceClass, qty,
+    FactWriterAssignment, FactWriterId, Need, Node, NodeId, OwnerId, ProviderFactBatch, ProviderId,
+    Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::discover::{DeviceSpec, MachineDescription};
@@ -64,18 +65,21 @@ fn add_custom_resource(service: &mut NodeService, binding: Option<ClaimBinding>)
     );
     service
         .cluster
-        .apply(Command::ApplyResourceFacts {
-            nodes: vec![Node {
-                id,
-                kind,
-                attrs: Default::default(),
-                capacity: qty(CapacityDimension::Count, 1),
-            }],
-            edges: vec![Edge {
-                from: machine,
-                to: id,
-                kind: EdgeKind::Contains,
-                attrs: Default::default(),
+        .apply(Command::ApplyProviderFacts {
+            batches: vec![ProviderFactBatch {
+                writer: FactWriterId::from_u64(100),
+                nodes: vec![Node {
+                    id,
+                    kind,
+                    attrs: Default::default(),
+                    capacity: qty(CapacityDimension::Count, 1),
+                }],
+                edges: vec![Edge {
+                    from: machine,
+                    to: id,
+                    kind: EdgeKind::Contains,
+                    attrs: Default::default(),
+                }],
             }],
             claim_bindings: binding
                 .map(|binding| {
@@ -163,6 +167,18 @@ fn returning_agent_backfills_claim_contracts_missing_from_older_graph_state() {
         )
         .expect("validated returning agent backfills current provider contracts");
     assert_eq!(returned, machine);
+    assert_eq!(
+        service.cluster.graph.node_fact_writer(machine),
+        Some(FactWriterId::from_u64(1))
+    );
+    assert_eq!(
+        service.cluster.graph.node_fact_writer(cpu),
+        Some(FactWriterId::from_u64(1))
+    );
+    assert_eq!(
+        service.cluster.graph.node_fact_writer(memory),
+        Some(FactWriterId::from_u64(1))
+    );
     assert_eq!(
         service
             .cluster
@@ -288,6 +304,11 @@ fn returning_agent_backfills_only_devices_in_current_provider_inventory() {
         )
         .expect("current provider inventory reconciles");
 
+    assert_eq!(
+        service.cluster.graph.node_fact_writer(kept),
+        Some(FactWriterId::from_u64(2))
+    );
+    assert_eq!(service.cluster.graph.node_fact_writer(gone), None);
     assert_eq!(
         service
             .cluster
@@ -418,6 +439,58 @@ fn returning_host_contract_conflict_prevents_device_reconciliation_mutation() {
             .expect("conflicting host provider remains recorded")
             .provider,
         ProviderId::from_u64(99)
+    );
+    assert_eq!(
+        service
+            .cluster
+            .graph
+            .node(gpu)
+            .and_then(|node| node.attrs.get("dev"))
+            .map(String::as_str),
+        Some("/dev/gpu-old")
+    );
+    assert_eq!(
+        service.cluster.node_state(machine),
+        Some(archon_kernel::NodeState::Unavailable)
+    );
+}
+
+#[test]
+fn returning_host_writer_conflict_prevents_device_fact_mutation() {
+    let mut service = NodeService::new();
+    let mut legacy = legacy_description();
+    legacy.devices = vec![legacy_device("gpu-1", "/dev/gpu-old")];
+    let (_local, nodes, edges) = archon_node::discover::build_graph(&legacy, 0);
+    service
+        .cluster
+        .apply(Command::ApplyGraph { nodes, edges })
+        .unwrap();
+    let machine = service.cluster.graph.nodes_of_class(ResourceClass::Machine)[0];
+    let cpu = service.cluster.graph.nodes_of_class(ResourceClass::Cpu)[0];
+    let gpu = device_node(&service, "gpu-1");
+    service
+        .cluster
+        .apply(Command::AdoptFactWriters {
+            assignments: vec![FactWriterAssignment {
+                writer: FactWriterId::from_u64(77),
+                nodes: vec![cpu],
+                edges: Vec::new(),
+            }],
+        })
+        .unwrap();
+
+    let mut returning = legacy;
+    returning.devices = vec![legacy_device("gpu-1", "/dev/gpu-new")];
+    let error = service
+        .register_agent(
+            returning,
+            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+        )
+        .expect_err("discovery writer conflict must fail before device reconciliation");
+    assert!(error.to_string().contains("discovery writer"));
+    assert_eq!(
+        service.cluster.graph.node_fact_writer(cpu),
+        Some(FactWriterId::from_u64(77))
     );
     assert_eq!(
         service
