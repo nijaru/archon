@@ -3,11 +3,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use archon_kernel::{
-    CapacityDimension, LeaseId, LeaseState, Need, NodeId, OwnerId, Request, RequestClass, RequestId,
-    ResourceClass, qty,
+    CapacityDimension, LeaseId, LeaseState, Need, NodeId, OwnerId, Request, RequestClass,
+    RequestId, ResourceClass, qty,
 };
 use archon_node::discover::{HostNodeSpec, MachineDescription};
-use archon_node::protocol::{AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities};
+use archon_node::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities,
+};
 use archon_node::service::{LeaseExecutor, NodeService};
 
 const GIB: u64 = 1 << 30;
@@ -30,7 +32,10 @@ impl LeaseExecutor for ReplicaExecutor {
                 handle: binding,
             }),
             AgentRequest::Activate { binding, .. } => {
-                self.events.lock().expect("event lock").push(Event::Activate);
+                self.events
+                    .lock()
+                    .expect("event lock")
+                    .push(Event::Activate);
                 Ok(AgentResponse::Activated { binding })
             }
             AgentRequest::Fence { binding, .. } => {
@@ -92,10 +97,7 @@ fn capabilities() -> ExecutionCapabilities {
     }
 }
 
-fn register(
-    service: &mut NodeService,
-    name: &str,
-) -> (NodeId, Arc<Mutex<Vec<Event>>>) {
+fn register(service: &mut NodeService, name: &str) -> (NodeId, Arc<Mutex<Vec<Event>>>) {
     let events = Arc::new(Mutex::new(Vec::new()));
     let machine = service
         .register_agent_with_capabilities(
@@ -140,7 +142,11 @@ fn lease_machine(service: &NodeService, lease: LeaseId) -> NodeId {
         .iter()
         .filter_map(|claim| service.cluster.graph.machine_of(claim.node))
         .collect();
-    assert_eq!(machines.len(), 1, "a service replica owns one machine-local lease");
+    assert_eq!(
+        machines.len(),
+        1,
+        "a service replica owns one machine-local lease"
+    );
     *machines.first().expect("replica machine")
 }
 
@@ -158,6 +164,7 @@ fn service_replicas_keep_independent_failure_boundaries_and_replace_only_the_fai
     let mut service = NodeService::new();
     let (alpha, alpha_events) = register(&mut service, "alpha");
     let (beta, beta_events) = register(&mut service, "beta");
+    service.cluster.set_now(1);
 
     service.submit(replica(1), OwnerId::from_u64(1));
     service.submit(replica(2), OwnerId::from_u64(1));
@@ -208,7 +215,11 @@ fn service_replicas_keep_independent_failure_boundaries_and_replace_only_the_fai
     );
 
     let restarts = service.take_restarts();
-    assert_eq!(restarts.len(), 1, "only the failed keep-alive member is replaced");
+    assert_eq!(
+        restarts.len(),
+        1,
+        "only the failed keep-alive member is replaced"
+    );
     let replacement_id = restarts[0].0.id;
     service.submit(restarts[0].0.clone(), restarts[0].1);
     assert_eq!(
@@ -225,7 +236,10 @@ fn service_replicas_keep_independent_failure_boundaries_and_replace_only_the_fai
 
     let replacement = LeaseId::from_u64(3);
     assert_eq!(service.cluster.leases[&survivor].state, LeaseState::Active);
-    assert_eq!(service.cluster.leases[&replacement].state, LeaseState::Active);
+    assert_eq!(
+        service.cluster.leases[&replacement].state,
+        LeaseState::Active
+    );
     assert_eq!(lease_machine(&service, survivor), beta);
     assert_eq!(lease_machine(&service, replacement), gamma);
     assert_eq!(count(&gamma_events, Event::Activate), 1);
