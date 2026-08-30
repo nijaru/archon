@@ -22,6 +22,7 @@ jobs:
         with:
           tool: cargo-deny
       - run: python .github/scripts/add_fact_writer_ownership.py
+      - run: python .github/scripts/fix_fact_writer_integration.py
       - run: cargo fmt --all
       - run: cargo fmt --all -- --check
       - run: cargo test -p archon-kernel --test fact_writers
@@ -34,8 +35,9 @@ jobs:
       - run: cargo deny check advisories bans licenses sources
       - name: Publish validated source-only tree
         run: |
-          git checkout HEAD^ -- .github/workflows/ci.yml
+          git checkout HEAD^^ -- .github/workflows/ci.yml
           rm .github/scripts/add_fact_writer_ownership.py
+          rm .github/scripts/fix_fact_writer_integration.py
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
