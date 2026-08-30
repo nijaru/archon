@@ -4,17 +4,43 @@ on:
   push:
     branches: [tmp/privileged-cgroup-proof]
 
+permissions:
+  contents: write
+
 jobs:
-  cgroup:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Show cgroup environment
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Apply staged proof
+        run: python .github/scripts/strengthen_privileged_device_proof.py
+      - run: cargo fmt --all
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p archon-sim
+      - run: cargo deny check advisories bans licenses sources
+      - name: Build native cgroup enforcement proof
+        run: cargo test -p archon-node --test cgroup_linux --no-run
+      - name: Prove native cgroup and device enforcement as root
+        env:
+          ARCHON_REQUIRE_PRIVILEGED_CGROUP: "1"
         run: |
-          mount | grep cgroup || true
-          ls -ld /sys/fs/cgroup
-          cat /proc/self/cgroup
-      - name: Run native cgroup/BPF enforcement tests as root
-        run: sudo env PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" cargo test -p archon-node --test cgroup_linux -- --nocapture
+          test_bin="$(find target/debug/deps -maxdepth 1 -type f -perm -111 -name 'cgroup_linux-*' | head -n 1)"
+          test -n "$test_bin"
+          sudo --preserve-env=ARCHON_REQUIRE_PRIVILEGED_CGROUP env ARCHON_LOG_DIR="$RUNNER_TEMP/archon-privileged-logs" "$test_bin" --nocapture
+      - name: Publish validated source-only tree
+        run: |
+          rm .github/workflows/privileged-proof.yml
+          rm .github/scripts/strengthen_privileged_device_proof.py
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "test(node): prove native device claim isolation"
+          git push
