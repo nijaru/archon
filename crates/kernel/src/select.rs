@@ -153,33 +153,255 @@ fn select_one_machine(
                 }
             }
         }
-        if !fits || !topology_holds(graph, &picked, request) {
+        if fits && topology_holds(graph, &picked, request) {
+            let mut claims = Vec::new();
+            for group in &picked {
+                claims.extend(group.iter().cloned());
+            }
+            notes.extend(topology_notes(graph, &picked, request, &topology_trace));
+            return Ok(machine_allocation(
+                graph, request, mode, machine, claims, notes,
+            ));
+        }
+
+        // The ordinary selector is deliberately greedy. A failed greedy
+        // attempt can still have a valid allocation when an early need has a
+        // locally attractive candidate that conflicts with a later topology
+        // constraint. Search this machine with a small, deterministic budget
+        // before refusing the complete request.
+        if request.topology.is_empty() {
             continue;
         }
-        let mut claims = Vec::new();
-        for group in &picked {
-            claims.extend(group.iter().cloned());
+        let mut budget = SearchBudget::new(FALLBACK_SEARCH_BUDGET);
+        let mut fallback = vec![Vec::new(); request.needs.len()];
+        let mut search = MachineSearch {
+            graph,
+            occupancy,
+            request,
+            quarantine,
+            allowed: &allowed,
+            topology_trace: &mut topology_trace,
+            budget: &mut budget,
+        };
+        if search.needs(0, &mut fallback)? {
+            let claims = fallback
+                .iter()
+                .flat_map(|group| group.iter().cloned())
+                .collect();
+            let mut notes = selection_notes(graph, occupancy, request, mode, &fallback)?;
+            notes.extend(topology_notes(graph, &fallback, request, &topology_trace));
+            return Ok(machine_allocation(
+                graph, request, mode, machine, claims, notes,
+            ));
         }
-        notes.extend(topology_notes(graph, &picked, request, &topology_trace));
-        let claim_count = claims.len();
-        return Ok(Allocation {
-            claims,
-            graph_revision: graph.revision,
-            explanation: format!(
-                "{:?} {:?} selected {claim_count} claims on {machine}{}",
-                request.class,
-                mode,
-                if notes.is_empty() {
-                    String::new()
-                } else {
-                    format!("; {}", notes.join("; "))
-                }
-            ),
-        });
     }
     Err(Error::Refused {
-        explanation: "no single machine hosts every need of this workload".into(),
+        explanation: if request.topology.is_empty() {
+            "no single machine hosts every need of this workload".into()
+        } else {
+            "no single machine satisfies every need and topology constraint of this workload".into()
+        },
     })
+}
+
+const FALLBACK_SEARCH_BUDGET: usize = 4_096;
+
+struct SearchBudget {
+    remaining: usize,
+}
+
+impl SearchBudget {
+    fn new(limit: usize) -> Self {
+        Self { remaining: limit }
+    }
+
+    fn consume(&mut self) -> bool {
+        if self.remaining == 0 {
+            false
+        } else {
+            self.remaining -= 1;
+            true
+        }
+    }
+}
+
+struct MachineSearch<'a> {
+    graph: &'a Graph,
+    occupancy: &'a Occupancy,
+    request: &'a Request,
+    quarantine: &'a BTreeSet<NodeId>,
+    allowed: &'a BTreeSet<NodeId>,
+    topology_trace: &'a mut TopologyTrace,
+    budget: &'a mut SearchBudget,
+}
+
+impl MachineSearch<'_> {
+    fn needs(&mut self, index: usize, picked: &mut Vec<Vec<Claim>>) -> Result<bool, Error> {
+        if index == self.request.needs.len() {
+            return Ok(topology_holds_traced(
+                self.graph,
+                picked,
+                self.request,
+                self.topology_trace,
+            ));
+        }
+
+        let need = &self.request.needs[index];
+        let candidates: Vec<_> = candidates(self.graph, self.occupancy, need, self.quarantine)?
+            .into_iter()
+            .filter(|node| self.allowed.contains(node))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(false);
+        }
+        let ranked = rank(
+            &ScoreCtx {
+                graph: self.graph,
+                occupancy: self.occupancy,
+                request: self.request,
+                already: picked,
+                mode: pack_mode(self.request),
+                memory_want: quantity_get(&consumable_quantity(need), CapacityDimension::Bytes),
+            },
+            &[],
+            &candidates,
+        )?;
+
+        if is_consumable_need(need) {
+            let wanted = consumable_quantity(need);
+            for node in ranked {
+                if !self.budget.consume() {
+                    return Ok(false);
+                }
+                let claim = Claim {
+                    node,
+                    quantity: wanted.clone(),
+                };
+                if !self.occupancy.can_cover(self.graph, &claim)? {
+                    continue;
+                }
+                picked[index] = vec![claim];
+                if topology_holds_traced(self.graph, picked, self.request, self.topology_trace)
+                    && self.needs(index + 1, picked)?
+                {
+                    return Ok(true);
+                }
+                picked[index].clear();
+            }
+            return Ok(false);
+        }
+
+        let count = quantity_get(&need.quantity, CapacityDimension::Count).max(1);
+        let mut chosen = Vec::new();
+        self.group(index, &ranked, count, 0, &mut chosen, picked)
+    }
+
+    fn group(
+        &mut self,
+        index: usize,
+        ranked: &[NodeId],
+        count: u64,
+        start: usize,
+        chosen: &mut Vec<Claim>,
+        picked: &mut Vec<Vec<Claim>>,
+    ) -> Result<bool, Error> {
+        if chosen.len() as u64 == count {
+            return self.needs(index + 1, picked);
+        }
+
+        for (position, node) in ranked.iter().enumerate().skip(start) {
+            if !self.budget.consume() {
+                return Ok(false);
+            }
+            let claim = Claim {
+                node: *node,
+                quantity: qty(CapacityDimension::Count, 1),
+            };
+            if !self.occupancy.can_cover(self.graph, &claim)? {
+                continue;
+            }
+            chosen.push(claim);
+            picked[index] = chosen.clone();
+            let valid =
+                topology_holds_traced(self.graph, picked, self.request, self.topology_trace);
+            if valid && self.group(index, ranked, count, position + 1, chosen, picked)? {
+                return Ok(true);
+            }
+            chosen.pop();
+            picked[index] = chosen.clone();
+        }
+        Ok(false)
+    }
+}
+
+fn machine_allocation(
+    graph: &Graph,
+    request: &Request,
+    mode: PackMode,
+    machine: NodeId,
+    claims: Vec<Claim>,
+    notes: Vec<String>,
+) -> Allocation {
+    let claim_count = claims.len();
+    Allocation {
+        claims,
+        graph_revision: graph.revision,
+        explanation: format!(
+            "{:?} {:?} selected {claim_count} claims on {machine}{}",
+            request.class,
+            mode,
+            if notes.is_empty() {
+                String::new()
+            } else {
+                format!("; {}", notes.join("; "))
+            }
+        ),
+    }
+}
+
+fn selection_notes(
+    graph: &Graph,
+    occupancy: &Occupancy,
+    request: &Request,
+    mode: PackMode,
+    picked: &[Vec<Claim>],
+) -> Result<Vec<String>, Error> {
+    let mut notes = Vec::new();
+    for (index, group) in picked.iter().enumerate() {
+        let need = &request.needs[index];
+        let ctx = ScoreCtx {
+            graph,
+            occupancy,
+            request,
+            already: &picked[..index],
+            mode,
+            memory_want: quantity_get(&consumable_quantity(need), CapacityDimension::Bytes),
+        };
+        let mut chosen = Vec::new();
+        for claim in group {
+            let score = score_node(&ctx, &chosen, claim.node)?;
+            notes.push(format!(
+                "{} score={score}{}{}",
+                claim.node,
+                if request
+                    .data
+                    .iter()
+                    .any(|data| graph.caches(claim.node, *data))
+                {
+                    " data-local"
+                } else {
+                    ""
+                },
+                if graph.degraded_ancestor(claim.node).is_some() {
+                    " health-degraded"
+                } else {
+                    ""
+                }
+            ));
+            chosen.push(claim.clone());
+        }
+    }
+    Ok(notes)
 }
 
 fn pack_mode(request: &Request) -> PackMode {
