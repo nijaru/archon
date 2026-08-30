@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::error::Error;
 use crate::ids::NodeId;
 use crate::types::{
-    CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node, Quantity,
+    Attrs, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node, Quantity,
     ResourceClass, TopologyRelation,
 };
 
@@ -24,6 +24,13 @@ pub struct Graph {
         serde(default, skip_serializing_if = "BTreeMap::is_empty")
     )]
     claim_bindings: BTreeMap<NodeId, BTreeMap<CapacityDimension, ClaimBinding>>,
+    /// Non-authoritative observations used for scoring and diagnostics.
+    /// They never participate in `revision`, hard filters, Claims, or authority.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    observations: BTreeMap<NodeId, Attrs>,
 }
 
 impl Graph {
@@ -37,6 +44,14 @@ impl Graph {
         // log consistent for replay.
         let mut staged_nodes = self.nodes.clone();
         for node in nodes {
+            if node.attrs.contains_key("health") {
+                return Err(Error::Refused {
+                    explanation: format!(
+                        "resource fact {} uses reserved observation key health",
+                        node.id
+                    ),
+                });
+            }
             staged_nodes.insert(node.id, node);
         }
         let mut staged_edges = self.edges.clone();
@@ -173,16 +188,42 @@ impl Graph {
         Ok(())
     }
 
-    /// Set one node attribute without advancing `Graph.revision`. Returns
-    /// false when the node is unknown. Used for non-authoritative state such
-    /// as health that must never strand in-flight Allocations.
-    pub fn set_attr(&mut self, id: NodeId, key: &str, value: String) -> bool {
-        match self.nodes.get_mut(&id) {
-            Some(node) => {
-                node.attrs.insert(key.to_string(), value);
-                true
-            }
-            None => false,
+    pub fn observation(&self, id: NodeId, key: &str) -> Option<&str> {
+        self.observations
+            .get(&id)
+            .and_then(|attrs| attrs.get(key))
+            .map(String::as_str)
+    }
+
+    pub fn observations(&self) -> &BTreeMap<NodeId, Attrs> {
+        &self.observations
+    }
+
+    pub(crate) fn set_observation(&mut self, id: NodeId, key: &str, value: String) -> bool {
+        if !self.nodes.contains_key(&id) {
+            return false;
+        }
+        self.observations
+            .entry(id)
+            .or_default()
+            .insert(key.to_string(), value);
+        true
+    }
+
+    /// Upgrade snapshots written before observations were separated from
+    /// hard resource facts. A dedicated observation wins if both forms exist.
+    pub(crate) fn migrate_legacy_observations(&mut self) {
+        let legacy: Vec<_> = self
+            .nodes
+            .iter_mut()
+            .filter_map(|(id, node)| node.attrs.remove("health").map(|health| (*id, health)))
+            .collect();
+        for (id, health) in legacy {
+            self.observations
+                .entry(id)
+                .or_default()
+                .entry("health".into())
+                .or_insert(health);
         }
     }
 
@@ -256,10 +297,7 @@ impl Graph {
     /// The nearest ancestry node (including `id` itself) marked
     /// `health=degraded`, if any. Health is scoring input, never authority.
     pub fn degraded_ancestor(&self, id: NodeId) -> Option<NodeId> {
-        let degraded = |node: NodeId| {
-            self.node(node).and_then(|item| item.attrs.get("health"))
-                == Some(&"degraded".to_string())
-        };
+        let degraded = |node: NodeId| self.observation(node, "health") == Some("degraded");
         if degraded(id) {
             return Some(id);
         }

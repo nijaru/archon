@@ -1012,7 +1012,8 @@ impl NodeService {
 
     /// Restore a full controller from a snapshot: the cluster's decisions
     /// plus the controller-side state that outlives restarts.
-    pub fn restore(&mut self, cluster: archon_kernel::Cluster, state: ServiceState) {
+    pub fn restore(&mut self, mut cluster: archon_kernel::Cluster, state: ServiceState) {
+        cluster.migrate_legacy_observations();
         self.cluster = cluster;
         self.pending.clear();
         self.restore_state(state);
