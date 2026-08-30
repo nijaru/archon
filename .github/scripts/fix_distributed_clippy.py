@@ -2,6 +2,7 @@ from pathlib import Path
 
 path = Path('crates/node/tests/distributed_activation.rs')
 text = path.read_text()
+text = text.replace("    Prepare { machine: String },", "    Prepare,")
 text = text.replace(
 '''    Prepare {\n        machine: String,\n    },''',
 '''    Prepare,'''
