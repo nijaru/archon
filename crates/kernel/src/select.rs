@@ -421,9 +421,13 @@ fn candidates(
             explanation: "data objects are locality hints, not claimable resources".into(),
         });
     }
+    let required = need_unit(need);
     let mut out = Vec::new();
     for id in graph.nodes_of_class(need.kind) {
         let node = graph.node(*id).ok_or(Error::UnknownNode(*id))?;
+        if graph.claim_binding_for_quantity(*id, &required).is_err() {
+            continue;
+        }
         if quarantine.contains(&node.id)
             || graph
                 .ancestors(node.id)
@@ -443,7 +447,7 @@ fn candidates(
             graph,
             &Claim {
                 node: *id,
-                quantity: need_unit(need),
+                quantity: required.clone(),
             },
         )? {
             out.push(*id);

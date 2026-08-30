@@ -5,7 +5,9 @@ use crate::error::Error;
 use crate::graph::Graph;
 use crate::ids::{BindingId, LeaseId, NodeId};
 use crate::occupancy::{claim_fits, covers, occupancy_from_leases, resolve_claim, subtree_used};
-use crate::types::{Binding, BindingScope, BindingState, Lease, LeaseState, NodeState, Quantity};
+use crate::types::{
+    Binding, BindingScope, BindingState, ClaimBinding, Lease, LeaseState, NodeState, Quantity,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaseDigest {
@@ -39,6 +41,8 @@ pub struct Digest {
     pub graph_revision: u64,
     pub graph_nodes: BTreeMap<NodeId, (crate::types::ResourceClass, Quantity, crate::types::Attrs)>,
     pub graph_edges: Vec<(NodeId, NodeId, crate::types::EdgeKind)>,
+    pub graph_claim_bindings:
+        BTreeMap<NodeId, BTreeMap<crate::types::CapacityDimension, ClaimBinding>>,
     pub leases: BTreeMap<LeaseId, LeaseDigest>,
     pub bindings: BTreeMap<BindingId, BindingDigest>,
     pub sessions: BTreeMap<NodeId, u64>,
@@ -200,6 +204,7 @@ impl Cluster {
                 .iter()
                 .map(|edge| (edge.from, edge.to, edge.kind))
                 .collect(),
+            graph_claim_bindings: self.graph.claim_bindings().clone(),
             leases: self
                 .leases
                 .iter()
@@ -380,6 +385,11 @@ impl Cluster {
     fn dispatch(&mut self, command: &Command) -> Result<Vec<Effect>, Error> {
         match command {
             Command::ApplyGraph { nodes, edges } => self.apply_graph(nodes.clone(), edges.clone()),
+            Command::ApplyResourceFacts {
+                nodes,
+                edges,
+                claim_bindings,
+            } => self.apply_resource_facts(nodes.clone(), edges.clone(), claim_bindings.clone()),
             command @ Command::ReserveLease { .. } => self.reserve_lease(command),
             Command::PromoteLease {
                 lease,
@@ -457,6 +467,25 @@ impl Cluster {
         staged.apply(nodes, edges)?;
         // Capacity may grow freely but never drop below what live leases
         // already hold: saturating arithmetic would hide the overcommit.
+        let occupancy = self.occupancy();
+        if let Some(node) = occupancy.exceeds_capacity(&staged)? {
+            return Err(Error::CapacityBelowOccupancy { node });
+        }
+        self.graph = staged;
+        Ok(Vec::new())
+    }
+
+    fn apply_resource_facts(
+        &mut self,
+        nodes: Vec<crate::types::Node>,
+        edges: Vec<crate::types::Edge>,
+        claim_bindings: Vec<crate::types::ClaimBindingUpdate>,
+    ) -> Result<Vec<Effect>, Error> {
+        if !self.agreed {
+            return Err(Error::NotAgreed);
+        }
+        let mut staged = self.graph.clone();
+        staged.apply_resource_facts(nodes, edges, claim_bindings)?;
         let occupancy = self.occupancy();
         if let Some(node) = occupancy.exceeds_capacity(&staged)? {
             return Err(Error::CapacityBelowOccupancy { node });
@@ -765,18 +794,12 @@ impl Cluster {
         }) {
             return Err(Error::BindingsNotPrepared { lease: id });
         }
-        // A root lease must enforce every enforced claim through a prepared
-        // Binding before it becomes Active; accounting-only children may
-        // activate without Bindings.
+        // Every root-lease Claim was proven claimable when authority was
+        // reserved, so each one must have a prepared Binding before the Lease
+        // becomes Active. Accounting-only child leases reuse their parent's
+        // Bindings and therefore do not open a second endpoint authority.
         if parent.is_none() {
             for claim in &claims {
-                let enforced = self
-                    .graph
-                    .node(claim.node)
-                    .is_some_and(|node| node.kind.is_enforced());
-                if !enforced {
-                    continue;
-                }
                 let covered = self.bindings.values().any(|binding| {
                     binding.lease == id
                         && binding.node == claim.node
@@ -1037,13 +1060,24 @@ impl Cluster {
         if lease.parent.is_some() {
             return Err(Error::ChildBindingRefused { lease: lease_id });
         }
-        if !lease
+        let Some(claim) = lease
             .allocation
             .claims
             .iter()
-            .any(|claim| claim.node == node)
-        {
+            .find(|claim| claim.node == node)
+        else {
             return Err(Error::Invalid("binding node is not in lease claims"));
+        };
+        let required = self
+            .graph
+            .claim_binding_for_quantity(node, &claim.quantity)?;
+        if required.provider != provider || required.scope != scope {
+            return Err(Error::Refused {
+                explanation: format!(
+                    "binding for {node} must use provider {} with {:?} scope",
+                    required.provider, required.scope
+                ),
+            });
         }
         if self.node_quarantined(node) {
             return Err(Error::Quarantined(node));

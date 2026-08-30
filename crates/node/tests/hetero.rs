@@ -220,9 +220,14 @@ fn device_claims_resolve_to_host_paths() {
         },
         base,
     );
+    let claim_bindings = archon_node::discover::claim_bindings(&nodes);
     service
         .cluster
-        .apply(archon_kernel::Command::ApplyGraph { nodes, edges })
+        .apply(archon_kernel::Command::ApplyResourceFacts {
+            nodes,
+            edges,
+            claim_bindings,
+        })
         .unwrap();
 
     // Find the first GPU node and claim exactly it.

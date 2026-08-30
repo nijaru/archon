@@ -11,7 +11,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    BindingId, BindingScope, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, NodeId,
+    Allocation, BindingId, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, NodeId,
     OwnerId, ProviderId, Queued, Request, RequestId, ResourceClass, quantity_get,
 };
 
@@ -340,7 +340,15 @@ impl NodeService {
                         ),
                     });
                 }
+                if let Err(err) = self.preflight_claim_contracts(machine, &description.devices) {
+                    self.mark_inventory_mismatch(machine)?;
+                    return Err(err);
+                }
                 if let Err(err) = self.reconcile_device_subtree(machine, &description.devices) {
+                    self.mark_inventory_mismatch(machine)?;
+                    return Err(err);
+                }
+                if let Err(err) = self.reconcile_claim_contracts(machine, &description.devices) {
                     self.mark_inventory_mismatch(machine)?;
                     return Err(err);
                 }
@@ -355,7 +363,12 @@ impl NodeService {
                     .max()
                     .unwrap_or(0);
                 let (_local, nodes, edges) = crate::discover::build_graph(&description, base);
-                self.commit(Command::ApplyGraph { nodes, edges })?;
+                let claim_bindings = crate::discover::claim_bindings(&nodes);
+                self.commit(Command::ApplyResourceFacts {
+                    nodes,
+                    edges,
+                    claim_bindings,
+                })?;
                 let machine =
                     named(&self.cluster, &description.instance_id).ok_or(Error::Refused {
                         explanation: "applied graph fragment but machine node is missing".into(),
@@ -405,6 +418,96 @@ impl NodeService {
             self.finish_machine_recovery(machine);
         }
         Ok(machine)
+    }
+
+    fn missing_claim_contracts(
+        &self,
+        nodes: &[archon_kernel::Node],
+    ) -> Result<Vec<archon_kernel::ClaimBindingUpdate>, Error> {
+        let mut missing = Vec::new();
+        for update in crate::discover::claim_bindings(nodes) {
+            let expected = update
+                .binding
+                .expect("provider normalization emits additions");
+            match self
+                .cluster
+                .graph
+                .claim_binding(update.node, update.dimension)
+            {
+                None => missing.push(update),
+                Some(actual) if actual == expected => {}
+                Some(actual) => {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "resource {} dimension {} already belongs to provider {} with {:?} scope; returning agent reports provider {} with {:?} scope",
+                            update.node,
+                            update.dimension,
+                            actual.provider,
+                            actual.scope,
+                            expected.provider,
+                            expected.scope,
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(missing)
+    }
+
+    fn current_claim_contract_nodes(
+        &self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Vec<archon_kernel::Node> {
+        let current_devices: BTreeSet<String> =
+            devices.iter().map(|device| device.id.clone()).collect();
+        let mut ids = self.cluster.graph.descendants(machine);
+        ids.push(machine);
+        ids.into_iter()
+            .filter_map(|id| self.cluster.graph.node(id))
+            .filter(|node| {
+                !matches!(
+                    node.kind,
+                    ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
+                ) || node
+                    .attrs
+                    .get("id")
+                    .is_some_and(|id| current_devices.contains(id))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Reject conflicting current provider contracts before returning-device
+    /// reconciliation can mutate facts, availability, or Lease state.
+    fn preflight_claim_contracts(
+        &self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Result<(), Error> {
+        let nodes = self.current_claim_contract_nodes(machine, devices);
+        self.missing_claim_contracts(&nodes).map(|_| ())
+    }
+
+    /// Reconcile proof-stage provider contracts only for resources present in
+    /// the returning Agent's validated authoritative inventory. Older Graphs
+    /// may have no `ClaimBinding` metadata, but a provider-omitted tombstone
+    /// must never regain ownership merely because its stale Node still exists.
+    fn reconcile_claim_contracts(
+        &mut self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Result<(), Error> {
+        let nodes = self.current_claim_contract_nodes(machine, devices);
+        let missing = self.missing_claim_contracts(&nodes)?;
+        if !missing.is_empty() {
+            self.commit(Command::ApplyResourceFacts {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                claim_bindings: missing,
+            })?;
+        }
+        Ok(())
     }
 
     /// A returning Agent whose authoritative inventory cannot be reconciled
@@ -482,6 +585,7 @@ impl NodeService {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         let mut returning = BTreeSet::new();
+        let mut reported_existing = BTreeSet::new();
 
         for spec in devices {
             let requested_parent = spec
@@ -535,6 +639,7 @@ impl NodeService {
                         ),
                     });
                 }
+                reported_existing.insert(id);
                 match self.cluster.node_state(id) {
                     Some(NodeState::Retired) => {
                         return Err(Error::Refused {
@@ -591,8 +696,23 @@ impl NodeService {
             });
         }
 
-        if !nodes.is_empty() || !edges.is_empty() {
-            self.commit(Command::ApplyGraph { nodes, edges })?;
+        let existing_nodes: Vec<_> = reported_existing
+            .iter()
+            .filter_map(|id| self.cluster.graph.node(*id).cloned())
+            .collect();
+        let mut claim_bindings = self.missing_claim_contracts(&existing_nodes)?;
+        let fresh_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|node| !reported_existing.contains(&node.id))
+            .cloned()
+            .collect();
+        claim_bindings.extend(crate::discover::claim_bindings(&fresh_nodes));
+        if !nodes.is_empty() || !edges.is_empty() || !claim_bindings.is_empty() {
+            self.commit(Command::ApplyResourceFacts {
+                nodes,
+                edges,
+                claim_bindings,
+            })?;
         }
 
         let disappeared: BTreeSet<NodeId> = existing.into_values().collect();
@@ -837,6 +957,7 @@ impl NodeService {
         ) else {
             return Ok(None);
         };
+        self.validate_allocation_bindings(&admission.allocation)?;
         let request_id = admission.request.id;
         let lease = LeaseId::from_u64(self.next_lease);
         self.next_lease += 1;
@@ -1212,6 +1333,38 @@ impl NodeService {
         self.queue.retain(|queued| queued.request.id != *request_id);
     }
 
+    fn validate_allocation_bindings(&self, allocation: &Allocation) -> Result<(), Error> {
+        for claim in &allocation.claims {
+            let node = self
+                .cluster
+                .graph
+                .node(claim.node)
+                .ok_or(Error::UnknownNode(claim.node))?;
+            let binding = self
+                .cluster
+                .graph
+                .claim_binding_for_quantity(claim.node, &claim.quantity)?;
+            if binding.provider != ProviderId::ENFORCE
+                || !matches!(
+                    node.kind,
+                    ResourceClass::Cpu
+                        | ResourceClass::Memory
+                        | ResourceClass::Gpu
+                        | ResourceClass::Nic
+                        | ResourceClass::Nvme
+                )
+            {
+                return Err(Error::Refused {
+                    explanation: format!(
+                        "no registered resource provider can enforce claims on {} ({})",
+                        claim.node, node.kind
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn open_enforced_bindings(&mut self, lease: LeaseId) -> Result<(), Error> {
         let claims = self
             .cluster
@@ -1222,38 +1375,18 @@ impl NodeService {
             .claims
             .clone();
         for claim in claims {
-            let node = self
+            let binding_spec = self
                 .cluster
                 .graph
-                .node(claim.node)
-                .ok_or(Error::UnknownNode(claim.node))?;
-            let scope = match node.kind {
-                ResourceClass::Cpu
-                | ResourceClass::Gpu
-                | ResourceClass::Nic
-                | ResourceClass::Nvme => BindingScope::Exclusive,
-                // Memory limits are independently enforced by each lease's
-                // cgroup/container object. They therefore use the explicit
-                // shared-capacity Binding scope rather than pretending the
-                // whole Memory accounting Node is one exclusive endpoint.
-                ResourceClass::Memory => BindingScope::IndependentShare,
-                kind if !kind.is_enforced() => continue,
-                kind => {
-                    return Err(Error::Refused {
-                        explanation: format!(
-                            "no execution provider is registered for enforced resource class {kind}"
-                        ),
-                    });
-                }
-            };
+                .claim_binding_for_quantity(claim.node, &claim.quantity)?;
             let binding = BindingId::from_u64(self.next_binding);
             self.next_binding += 1;
             self.commit(Command::OpenBinding {
                 binding,
                 lease,
                 node: claim.node,
-                provider: ProviderId::ENFORCE,
-                scope,
+                provider: binding_spec.provider,
+                scope: binding_spec.scope,
             })?;
         }
         Ok(())

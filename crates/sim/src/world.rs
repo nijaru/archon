@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use archon_kernel::{
-    Allocation, BindingId, Cluster, Command, Digest, Effect, Endpoint, EndpointOp, Error, LeaseId,
-    NodeId, OwnerId, ProviderId, Queued, Request, RequestId,
+    Allocation, BindingId, BindingScope, ClaimBinding, ClaimBindingUpdate, Cluster, Command,
+    Digest, Effect, Endpoint, EndpointOp, Error, LeaseId, NodeId, OwnerId, ProviderId, Queued,
+    Request, RequestId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,12 +56,44 @@ impl World {
         }
     }
 
+    /// Simulation convenience for the proof-era ENFORCE provider: every
+    /// positive capacity dimension in this helper is explicitly published as
+    /// an exclusive claim contract in the command trace. Tests that need
+    /// placement-only facts or another provider can call `apply_resource_facts`.
     pub fn apply_graph(
         &mut self,
         nodes: Vec<archon_kernel::Node>,
         edges: Vec<archon_kernel::Edge>,
     ) -> Result<(), Error> {
-        self.apply(Command::ApplyGraph { nodes, edges })?;
+        let claim_bindings = nodes
+            .iter()
+            .flat_map(|node| {
+                node.capacity.iter().filter_map(move |(dimension, amount)| {
+                    (*amount > 0).then_some(ClaimBindingUpdate {
+                        node: node.id,
+                        dimension: *dimension,
+                        binding: Some(ClaimBinding {
+                            provider: ProviderId::ENFORCE,
+                            scope: BindingScope::Exclusive,
+                        }),
+                    })
+                })
+            })
+            .collect();
+        self.apply_resource_facts(nodes, edges, claim_bindings)
+    }
+
+    pub fn apply_resource_facts(
+        &mut self,
+        nodes: Vec<archon_kernel::Node>,
+        edges: Vec<archon_kernel::Edge>,
+        claim_bindings: Vec<ClaimBindingUpdate>,
+    ) -> Result<(), Error> {
+        self.apply(Command::ApplyResourceFacts {
+            nodes,
+            edges,
+            claim_bindings,
+        })?;
         Ok(())
     }
 
@@ -74,11 +107,11 @@ impl World {
                 epoch: self.cluster.epoch,
             },
         );
-        for node in enforced_under(&self.cluster, machine) {
+        for (provider, node) in enforced_under(&self.cluster, machine) {
             self.endpoints
-                .entry((ProviderId::ENFORCE, node))
+                .entry((provider, node))
                 .and_modify(|endpoint| endpoint.handshake(session))
-                .or_insert_with(|| Endpoint::new(ProviderId::ENFORCE, node, session));
+                .or_insert_with(|| Endpoint::new(provider, node, session));
         }
         self.apply(Command::SetAgentSession { machine, session })?;
         Ok(session)
@@ -347,25 +380,18 @@ impl World {
             .claims
             .clone();
         let mut bindings = Vec::new();
-        let mut next = start;
-        for claim in claims {
-            let kind = self
+        for (next, claim) in (start..).zip(claims) {
+            let required = self
                 .cluster
                 .graph
-                .node(claim.node)
-                .ok_or(Error::UnknownNode(claim.node))?
-                .kind;
-            if !kind.is_enforced() {
-                continue;
-            }
+                .claim_binding_for_quantity(claim.node, &claim.quantity)?;
             let binding = BindingId::from_u64(next);
-            next += 1;
             self.apply(Command::OpenBinding {
                 binding,
                 lease,
                 node: claim.node,
-                provider: ProviderId::ENFORCE,
-                scope: archon_kernel::BindingScope::Exclusive,
+                provider: required.provider,
+                scope: required.scope,
             })?;
             bindings.push(binding);
         }
@@ -649,17 +675,22 @@ impl World {
     }
 }
 
-fn enforced_under(cluster: &Cluster, machine: NodeId) -> Vec<NodeId> {
+fn enforced_under(cluster: &Cluster, machine: NodeId) -> Vec<(ProviderId, NodeId)> {
     let mut nodes = cluster.graph.descendants(machine);
     nodes.push(machine);
-    nodes
-        .into_iter()
-        .filter(|id| {
-            cluster
-                .graph
-                .node(*id)
-                .is_some_and(|node| node.kind.is_enforced())
+    let nodes: BTreeSet<NodeId> = nodes.into_iter().collect();
+    cluster
+        .graph
+        .claim_bindings()
+        .iter()
+        .filter(|(node, _)| nodes.contains(node))
+        .flat_map(|(node, dimensions)| {
+            dimensions
+                .values()
+                .map(move |binding| (binding.provider, *node))
         })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
