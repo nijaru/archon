@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 8
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -27,7 +27,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test -p archon-kernel --test fact_writers
       - run: cargo test -p archon-node --test claimability
-      - run: cargo test -p archon-node --test device_lifecycle
+      - run: cargo test -p archon-node --test devices
       - run: cargo test -p archon-control --test persist
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -35,7 +35,7 @@ jobs:
       - run: cargo deny check advisories bans licenses sources
       - name: Publish validated source-only tree
         run: |
-          git checkout HEAD^^ -- .github/workflows/ci.yml
+          git checkout ecf790a54e1d4fdfc39291c0bc1416c8b6382858 -- .github/workflows/ci.yml
           rm .github/scripts/add_fact_writer_ownership.py
           rm .github/scripts/fix_fact_writer_integration.py
           git add -A
