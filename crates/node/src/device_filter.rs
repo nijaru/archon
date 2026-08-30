@@ -31,11 +31,11 @@ const BPF_PROG_ATTACH: libc::c_int = 8;
 const BPF_PROG_TYPE_CGROUP_DEVICE: libc::c_int = 15;
 const BPF_CGROUP_DEVICE: libc::c_int = 6;
 
-// bpf_cgroup_dev_ctx access bits (linux/bpf.h).
-const DEVCG_ACC_READ: u32 = 1;
-const DEVCG_ACC_WRITE: u32 = 2;
-const DEVCG_ACC_MKNOD: u32 = 4;
-// Device type lives in the upper 16 bits of ctx->access_type.
+// bpf_cgroup_dev_ctx access/type encoding (linux/bpf.h).
+const DEVCG_ACC_MKNOD: u32 = 1;
+const DEVCG_ACC_READ: u32 = 2;
+const DEVCG_ACC_WRITE: u32 = 4;
+// Access bits live in the upper 16 bits and device type in the lower 16.
 const DEVCG_DEV_BLOCK: u32 = 1;
 const DEVCG_DEV_CHAR: u32 = 2;
 
@@ -114,8 +114,8 @@ fn load_ctx_word(dst: u8, byte_off: u16) -> Insn {
 /// ```text
 /// r2 = ctx->access_type; r3 = ctx->major; r4 = ctx->minor
 /// for each rule:
-///     if (access_type & 0xffff) & ~rule.access == 0        // request ⊆ grant
-///     && (access_type >> 16) == rule.dev_type
+///     if (access_type >> 16) & ~rule.access == 0          // request ⊆ grant
+///     && (access_type & 0xffff) == rule.dev_type
 ///     && major == rule.major && minor == rule.minor:
 ///         return 1
 /// return 0
@@ -154,9 +154,9 @@ pub(crate) fn compile(rules: &[DeviceRule]) -> Vec<Insn> {
         let next_rule = if i + 1 < rules.len() { s + 10 } else { deny };
         let granted = rule.access & (DEVCG_ACC_READ | DEVCG_ACC_WRITE | DEVCG_ACC_MKNOD);
         let disallowed = !granted;
-        // s+0..1: r6 = requested access flags.
+        // s+0..1: r6 = requested access flags from the upper half-word.
         prog.push(mov_reg(6, 2)); // r6 = access_type
-        prog.push(and_imm(6, 0xffff));
+        prog.push(rsh_imm(6, 16));
         // s+2..3: any requested bit outside the grant means "not this rule".
         prog.push(and_imm(6, disallowed));
         prog.push(Insn {
@@ -166,9 +166,9 @@ pub(crate) fn compile(rules: &[DeviceRule]) -> Vec<Insn> {
             off: jump_to(s + 3, next_rule),
             imm: 0,
         });
-        // s+4..6: device type from the upper half-word must match exactly.
+        // s+4..6: device type from the lower half-word must match exactly.
         prog.push(mov_reg(6, 2));
-        prog.push(rsh_imm(6, 16));
+        prog.push(and_imm(6, 0xffff));
         prog.push(Insn {
             code: BPF_JMP32_JNE_IMM,
             dst_reg: 6,
@@ -443,7 +443,20 @@ mod tests {
     }
 
     fn ctx_of(flags: u32, dev_type: u32, major: u32, minor: u32) -> (u32, u32, u32) {
-        ((dev_type << 16) | flags, major, minor)
+        ((flags << 16) | dev_type, major, minor)
+    }
+
+    #[test]
+    fn cgroup_device_constants_match_linux_abi() {
+        assert_eq!(DEVCG_ACC_MKNOD, 1);
+        assert_eq!(DEVCG_ACC_READ, 2);
+        assert_eq!(DEVCG_ACC_WRITE, 4);
+        assert_eq!(DEVCG_DEV_BLOCK, 1);
+        assert_eq!(DEVCG_DEV_CHAR, 2);
+        assert_eq!(
+            ctx_of(DEVCG_ACC_WRITE, DEVCG_DEV_CHAR, 195, 0).0,
+            (4 << 16) | 2
+        );
     }
 
     #[test]
