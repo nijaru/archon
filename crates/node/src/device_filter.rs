@@ -8,8 +8,8 @@
 
 use std::collections::BTreeSet;
 use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 use crate::protocol::DeviceAccess;
@@ -259,7 +259,7 @@ fn bpf_syscall(cmd: libc::c_int, attr: &AttrBlock) -> io::Result<i64> {
     }
 }
 
-fn load_program(prog: &[Insn]) -> io::Result<i64> {
+fn load_program(prog: &[Insn]) -> io::Result<OwnedFd> {
     let insns: Vec<u64> = prog.iter().map(encode).collect();
     let license = b"GPL\0";
     let mut attr = AttrBlock::zeroed();
@@ -269,7 +269,10 @@ fn load_program(prog: &[Insn]) -> io::Result<i64> {
     attr.write_u64(16, license.as_ptr() as usize as u64); // license
     attr.write_u32(68, BPF_CGROUP_DEVICE as u32); // expected_attach_type
     match bpf_syscall(BPF_PROG_LOAD, &attr) {
-        Ok(fd) => Ok(fd),
+        Ok(fd) => {
+            // SAFETY: a successful BPF_PROG_LOAD returns one fresh owned fd.
+            Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+        }
         Err(_) => {
             // Retry with the verifier log so rejections carry diagnostics.
             let mut log = vec![0u8; 64 * 1024];
@@ -290,12 +293,12 @@ fn load_program(prog: &[Insn]) -> io::Result<i64> {
     }
 }
 
-fn attach_to_cgroup(prog_fd: i64, cgroup_path: &Path) -> io::Result<()> {
+fn attach_to_cgroup(prog_fd: &OwnedFd, cgroup_path: &Path) -> io::Result<()> {
     let target = std::fs::File::open(cgroup_path)
         .map_err(|err| io::Error::other(format!("open {}: {err}", cgroup_path.display())))?;
     let mut attr = AttrBlock::zeroed();
     attr.write_u32(0, target.as_raw_fd() as u32); // target_fd
-    attr.write_u32(4, prog_fd as u32); // attach_bpf_fd
+    attr.write_u32(4, prog_fd.as_raw_fd() as u32); // attach_bpf_fd
     attr.write_u32(8, BPF_CGROUP_DEVICE as u32); // attach_type
     bpf_syscall(BPF_PROG_ATTACH, &attr).map(|_| ())
 }
@@ -383,7 +386,14 @@ pub fn enforce_devices(cgroup_path: &Path, devices: &[DeviceAccess]) -> Result<(
 
     let prog = compile(&rules);
     let prog_fd = load_program(&prog).map_err(|err| err.to_string())?;
-    attach_to_cgroup(prog_fd, cgroup_path).map_err(|err| err.to_string())
+    attach_to_cgroup(&prog_fd, cgroup_path).map_err(|err| err.to_string())
+}
+
+/// Prove that this process may load and attach a cgroup-device program to an
+/// empty cgroup. The temporary cgroup itself is owned by the runtime probe.
+pub(crate) fn probe(cgroup_path: &Path) -> Result<(), String> {
+    let prog_fd = load_program(&compile(&[])).map_err(|err| err.to_string())?;
+    attach_to_cgroup(&prog_fd, cgroup_path).map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
