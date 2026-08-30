@@ -1,0 +1,41 @@
+name: Distributed status proof
+
+on:
+  push:
+    branches: [tmp/distributed-status-aggregation]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Apply staged source patch
+        run: python .github/scripts/patch_distributed_status.py
+      - run: cargo fmt --all
+      - run: cargo fmt --all -- --check
+      - run: cargo test -p archon-node --test distributed_completion
+      - run: cargo test -p archon-node --test distributed_activation
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p archon-sim
+      - run: cargo deny check advisories bans licenses sources
+      - name: Publish validated source tree
+        run: |
+          rm .github/scripts/patch_distributed_status.py
+          rm .github/workflows/distributed-status-proof.yml
+          git config user.name "Nick"
+          git config user.email "nijaru7@gmail.com"
+          git add -A
+          git commit -m "fix(node): aggregate distributed member lifecycle"
+          git push origin HEAD:tmp/distributed-status-aggregation
