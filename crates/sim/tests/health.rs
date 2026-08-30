@@ -5,11 +5,12 @@ use archon_sim::{World, tiny_graph};
 
 fn boot(degraded_machine: Option<usize>) -> World {
     let mut world = World::new();
-    let mut graph = tiny_graph(2);
-    if let Some(index) = degraded_machine {
-        graph.with_degraded(index);
-    }
+    let graph = tiny_graph(2);
+    let degraded = degraded_machine.map(|index| graph.machines[index].machine);
     world.apply_graph(graph.nodes, graph.edges).unwrap();
+    if let Some(machine) = degraded {
+        world.set_health(machine, "degraded").unwrap();
+    }
     for machine in &graph.machines {
         world.register_agent(machine.machine).unwrap();
     }
