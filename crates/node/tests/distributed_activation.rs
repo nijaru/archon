@@ -1,23 +1,4 @@
-from pathlib import Path
-
-service = Path('crates/node/src/service.rs')
-text = service.read_text()
-
-old = '''    /// CPU and memory claims of a lease, as enforceable limits.\n    fn lease_limits(&self, lease: LeaseId) -> Result<LeaseLimits, Error> {\n        let mut limits = LeaseLimits::default();\n        let claims = &self\n            .cluster\n            .leases\n            .get(&lease)\n            .ok_or(Error::UnknownLease(lease))?\n            .allocation\n            .claims;\n        for claim in claims {\n            match self.cluster.graph.node(claim.node).map(|node| node.kind) {\n                Some(ResourceClass::Cpu) => {\n                    limits.cpu_count += quantity_get(&claim.quantity, CapacityDimension::Count);\n                }\n                Some(ResourceClass::Memory) => {\n                    limits.memory_bytes += quantity_get(&claim.quantity, CapacityDimension::Bytes);\n                }\n                _ => {}\n            }\n        }\n        Ok(limits)\n    }\n'''
-new = '''    /// CPU and memory claims of a lease enforced by one machine. A distributed\n    /// Lease may span several agents; no agent may receive another machine's\n    /// resource budget as if it were locally granted.\n    fn lease_limits_on_machine(\n        &self,\n        lease: LeaseId,\n        machine: NodeId,\n    ) -> Result<LeaseLimits, Error> {\n        let mut limits = LeaseLimits::default();\n        let claims = &self\n            .cluster\n            .leases\n            .get(&lease)\n            .ok_or(Error::UnknownLease(lease))?\n            .allocation\n            .claims;\n        for claim in claims {\n            if self.cluster.graph.machine_of(claim.node) != Some(machine) {\n                continue;\n            }\n            match self.cluster.graph.node(claim.node).map(|node| node.kind) {\n                Some(ResourceClass::Cpu) => {\n                    limits.cpu_count += quantity_get(&claim.quantity, CapacityDimension::Count);\n                }\n                Some(ResourceClass::Memory) => {\n                    limits.memory_bytes += quantity_get(&claim.quantity, CapacityDimension::Bytes);\n                }\n                _ => {}\n            }\n        }\n        Ok(limits)\n    }\n'''
-assert old in text
-text = text.replace(old, new)
-
-old = '''    /// Host device paths bound by a lease's device-kind claims, resolved\n    /// through the graph's `dev` attributes.\n    pub fn lease_devices(&self, lease: LeaseId) -> Vec<crate::protocol::DeviceAccess> {\n        use archon_kernel::ResourceClass;\n        let Some(allocation_lease) = self.cluster.leases.get(&lease) else {\n            return Vec::new();\n        };\n        allocation_lease\n            .allocation\n            .claims\n            .iter()\n            .filter(|claim| {\n                self.cluster.graph.node(claim.node).is_some_and(|node| {\n                    matches!(\n                        node.kind,\n                        ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme\n                    )\n                })\n            })\n            .filter_map(|claim| {\n                self.cluster\n                    .graph\n                    .node(claim.node)\n                    .and_then(|node| crate::protocol::DeviceAccess::from_attrs(&node.attrs))\n            })\n            .collect()\n    }\n'''
-new = '''    /// Host device paths bound by a lease's device-kind claims, resolved\n    /// through the graph's `dev` attributes.\n    pub fn lease_devices(&self, lease: LeaseId) -> Vec<crate::protocol::DeviceAccess> {\n        self.lease_devices_for_machine(lease, None)\n    }\n\n    fn lease_devices_on_machine(\n        &self,\n        lease: LeaseId,\n        machine: NodeId,\n    ) -> Vec<crate::protocol::DeviceAccess> {\n        self.lease_devices_for_machine(lease, Some(machine))\n    }\n\n    fn lease_devices_for_machine(\n        &self,\n        lease: LeaseId,\n        machine: Option<NodeId>,\n    ) -> Vec<crate::protocol::DeviceAccess> {\n        use archon_kernel::ResourceClass;\n        let Some(allocation_lease) = self.cluster.leases.get(&lease) else {\n            return Vec::new();\n        };\n        allocation_lease\n            .allocation\n            .claims\n            .iter()\n            .filter(|claim| {\n                machine.is_none_or(|machine| {\n                    self.cluster.graph.machine_of(claim.node) == Some(machine)\n                }) && self.cluster.graph.node(claim.node).is_some_and(|node| {\n                    matches!(\n                        node.kind,\n                        ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme\n                    )\n                })\n            })\n            .filter_map(|claim| {\n                self.cluster\n                    .graph\n                    .node(claim.node)\n                    .and_then(|node| crate::protocol::DeviceAccess::from_attrs(&node.attrs))\n            })\n            .collect()\n    }\n'''
-assert old in text
-text = text.replace(old, new)
-
-text = text.replace('limits: self.lease_limits(lease)?,', 'limits: self.lease_limits_on_machine(lease, machine)?,', 1)
-text = text.replace('devices: self.lease_devices(lease),', 'devices: self.lease_devices_on_machine(lease, machine),', 1)
-service.write_text(text)
-
-Path('crates/node/tests/distributed_activation.rs').write_text(r'''use std::collections::BTreeMap;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,7 +8,8 @@ use archon_kernel::{
 };
 use archon_node::discover::{DeviceSpec, HostNodeSpec, MachineDescription};
 use archon_node::protocol::{
-    AgentRequest, AgentResponse, DeviceAccess, ExecutionCapabilities, LeaseLimits, RuntimeCapabilities,
+    AgentRequest, AgentResponse, DeviceAccess, ExecutionCapabilities, LeaseLimits,
+    RuntimeCapabilities,
 };
 use archon_node::service::{LeaseExecutor, NodeService};
 
@@ -35,7 +17,7 @@ const GIB: u64 = 1 << 30;
 
 #[derive(Clone, Debug)]
 enum Event {
-    Prepare { machine: String },
+    Prepare,
     Activate {
         machine: String,
         limits: LeaseLimits,
@@ -52,12 +34,7 @@ impl LeaseExecutor for RecordingExecutor {
     fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         match request {
             AgentRequest::Prepare { binding, .. } => {
-                self.events
-                    .lock()
-                    .expect("event lock")
-                    .push(Event::Prepare {
-                        machine: self.machine.clone(),
-                    });
+                self.events.lock().expect("event lock").push(Event::Prepare);
                 Ok(AgentResponse::Prepared {
                     binding,
                     handle: binding,
@@ -243,7 +220,7 @@ fn distributed_activation_is_prepared_atomically_and_scoped_per_machine() {
     assert_eq!(
         events[..first_activate]
             .iter()
-            .filter(|event| matches!(event, Event::Prepare { .. }))
+            .filter(|event| matches!(event, Event::Prepare))
             .count(),
         6,
         "all six resource bindings must prepare before any member starts"
@@ -270,4 +247,3 @@ fn distributed_activation_is_prepared_atomically_and_scoped_per_machine() {
         }
     }
 }
-''')

@@ -1328,6 +1328,22 @@ impl NodeService {
     /// Host device paths bound by a lease's device-kind claims, resolved
     /// through the graph's `dev` attributes.
     pub fn lease_devices(&self, lease: LeaseId) -> Vec<crate::protocol::DeviceAccess> {
+        self.lease_devices_for_machine(lease, None)
+    }
+
+    fn lease_devices_on_machine(
+        &self,
+        lease: LeaseId,
+        machine: NodeId,
+    ) -> Vec<crate::protocol::DeviceAccess> {
+        self.lease_devices_for_machine(lease, Some(machine))
+    }
+
+    fn lease_devices_for_machine(
+        &self,
+        lease: LeaseId,
+        machine: Option<NodeId>,
+    ) -> Vec<crate::protocol::DeviceAccess> {
         use archon_kernel::ResourceClass;
         let Some(allocation_lease) = self.cluster.leases.get(&lease) else {
             return Vec::new();
@@ -1337,7 +1353,9 @@ impl NodeService {
             .claims
             .iter()
             .filter(|claim| {
-                self.cluster.graph.node(claim.node).is_some_and(|node| {
+                machine.is_none_or(|machine| {
+                    self.cluster.graph.machine_of(claim.node) == Some(machine)
+                }) && self.cluster.graph.node(claim.node).is_some_and(|node| {
                     matches!(
                         node.kind,
                         ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
@@ -1701,8 +1719,14 @@ impl NodeService {
         );
     }
 
-    /// CPU and memory claims of a lease, as enforceable limits.
-    fn lease_limits(&self, lease: LeaseId) -> Result<LeaseLimits, Error> {
+    /// CPU and memory claims of a lease enforced by one machine. A distributed
+    /// Lease may span several agents; no agent may receive another machine's
+    /// resource budget as if it were locally granted.
+    fn lease_limits_on_machine(
+        &self,
+        lease: LeaseId,
+        machine: NodeId,
+    ) -> Result<LeaseLimits, Error> {
         let mut limits = LeaseLimits::default();
         let claims = &self
             .cluster
@@ -1712,6 +1736,9 @@ impl NodeService {
             .allocation
             .claims;
         for claim in claims {
+            if self.cluster.graph.machine_of(claim.node) != Some(machine) {
+                continue;
+            }
             match self.cluster.graph.node(claim.node).map(|node| node.kind) {
                 Some(ResourceClass::Cpu) => {
                     limits.cpu_count += quantity_get(&claim.quantity, CapacityDimension::Count);
@@ -1970,7 +1997,7 @@ impl NodeService {
                 fence,
                 epoch,
                 command: self.lease_commands.get(&lease).cloned().unwrap_or_default(),
-                limits: self.lease_limits(lease)?,
+                limits: self.lease_limits_on_machine(lease, machine)?,
                 image: self
                     .lease_images
                     .get(&lease)
@@ -1992,7 +2019,7 @@ impl NodeService {
                     .get(&lease)
                     .map(|(request, _)| request.grace_secs)
                     .unwrap_or(0),
-                devices: self.lease_devices(lease),
+                devices: self.lease_devices_on_machine(lease, machine),
             },
             Effect::Release { .. } => AgentRequest::Release {
                 binding: binding_id.as_u64(),
