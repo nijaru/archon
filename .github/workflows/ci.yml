@@ -19,6 +19,21 @@ jobs:
       - run: cargo test --workspace
       - run: cargo run -p archon-sim
 
+  privileged-enforcement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build native cgroup enforcement test
+        run: cargo test -p archon-node --test cgroup_linux --no-run
+      - name: Prove native cgroup and device enforcement
+        env:
+          ARCHON_REQUIRE_PRIVILEGED_CGROUP: "1"
+        run: |
+          test_bin="$(find target/debug/deps -maxdepth 1 -type f -perm -111 -name 'cgroup_linux-*' | head -n 1)"
+          test -n "$test_bin"
+          sudo --preserve-env=ARCHON_REQUIRE_PRIVILEGED_CGROUP env ARCHON_LOG_DIR="$RUNNER_TEMP/archon-privileged-logs" "$test_bin" --nocapture
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:
