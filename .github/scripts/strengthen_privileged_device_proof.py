@@ -8,6 +8,105 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+filter_path = Path("crates/node/src/device_filter.rs")
+filter_text = filter_path.read_text()
+filter_text = replace_once(
+    filter_text,
+    '''// bpf_cgroup_dev_ctx access bits (linux/bpf.h).
+const DEVCG_ACC_READ: u32 = 1;
+const DEVCG_ACC_WRITE: u32 = 2;
+const DEVCG_ACC_MKNOD: u32 = 4;
+// Device type lives in the upper 16 bits of ctx->access_type.
+const DEVCG_DEV_BLOCK: u32 = 1;
+const DEVCG_DEV_CHAR: u32 = 2;
+''',
+    '''// bpf_cgroup_dev_ctx access/type encoding (linux/bpf.h).
+const DEVCG_ACC_MKNOD: u32 = 1;
+const DEVCG_ACC_READ: u32 = 2;
+const DEVCG_ACC_WRITE: u32 = 4;
+// Access bits live in the upper 16 bits and device type in the lower 16.
+const DEVCG_DEV_BLOCK: u32 = 1;
+const DEVCG_DEV_CHAR: u32 = 2;
+''',
+    "cgroup device ABI constants",
+)
+filter_text = replace_once(
+    filter_text,
+    '''/// r2 = ctx->access_type; r3 = ctx->major; r4 = ctx->minor
+/// for each rule:
+///     if (access_type & 0xffff) & ~rule.access == 0        // request ⊆ grant
+///     && (access_type >> 16) == rule.dev_type
+''',
+    '''/// r2 = ctx->access_type; r3 = ctx->major; r4 = ctx->minor
+/// for each rule:
+///     if (access_type >> 16) & ~rule.access == 0          // request ⊆ grant
+///     && (access_type & 0xffff) == rule.dev_type
+''',
+    "cgroup device ABI documentation",
+)
+filter_text = replace_once(
+    filter_text,
+    '''        // s+0..1: r6 = requested access flags.
+        prog.push(mov_reg(6, 2)); // r6 = access_type
+        prog.push(and_imm(6, 0xffff));
+        // s+2..3: any requested bit outside the grant means "not this rule".
+        prog.push(and_imm(6, disallowed));
+        prog.push(Insn {
+            code: BPF_JMP32_JNE_IMM,
+            dst_reg: 6,
+            src_reg: 0,
+            off: jump_to(s + 3, next_rule),
+            imm: 0,
+        });
+        // s+4..6: device type from the upper half-word must match exactly.
+        prog.push(mov_reg(6, 2));
+        prog.push(rsh_imm(6, 16));
+''',
+    '''        // s+0..1: r6 = requested access flags from the upper half-word.
+        prog.push(mov_reg(6, 2)); // r6 = access_type
+        prog.push(rsh_imm(6, 16));
+        // s+2..3: any requested bit outside the grant means "not this rule".
+        prog.push(and_imm(6, disallowed));
+        prog.push(Insn {
+            code: BPF_JMP32_JNE_IMM,
+            dst_reg: 6,
+            src_reg: 0,
+            off: jump_to(s + 3, next_rule),
+            imm: 0,
+        });
+        // s+4..6: device type from the lower half-word must match exactly.
+        prog.push(mov_reg(6, 2));
+        prog.push(and_imm(6, 0xffff));
+''',
+    "compiled cgroup device ABI decoding",
+)
+filter_text = replace_once(
+    filter_text,
+    '''    fn ctx_of(flags: u32, dev_type: u32, major: u32, minor: u32) -> (u32, u32, u32) {
+        ((dev_type << 16) | flags, major, minor)
+    }
+''',
+    '''    fn ctx_of(flags: u32, dev_type: u32, major: u32, minor: u32) -> (u32, u32, u32) {
+        ((flags << 16) | dev_type, major, minor)
+    }
+
+    #[test]
+    fn cgroup_device_constants_match_linux_abi() {
+        assert_eq!(DEVCG_ACC_MKNOD, 1);
+        assert_eq!(DEVCG_ACC_READ, 2);
+        assert_eq!(DEVCG_ACC_WRITE, 4);
+        assert_eq!(DEVCG_DEV_BLOCK, 1);
+        assert_eq!(DEVCG_DEV_CHAR, 2);
+        assert_eq!(
+            ctx_of(DEVCG_ACC_WRITE, DEVCG_DEV_CHAR, 195, 0).0,
+            (4 << 16) | 2
+        );
+    }
+''',
+    "unit-test cgroup device ABI encoding",
+)
+filter_path.write_text(filter_text)
+
 path = Path("crates/node/tests/cgroup_linux.rs")
 text = path.read_text()
 text = replace_once(
@@ -96,6 +195,18 @@ fn claimed_devices_are_enforced_by_cgroup_device_filter() {
     let (_claimed_master, claimed) = pty_slave();
     let (_unclaimed_master, unclaimed) = pty_slave();
     assert_ne!(claimed, unclaimed);
+
+    // Prove both PTY slaves are usable before the lease filter is attached;
+    // otherwise a parent cgroup/device policy could masquerade as Archon's
+    // deny decision and make the test environment unsuitable.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&claimed)
+        .expect("claimed PTY must be host-accessible before filtering");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&unclaimed)
+        .expect("unclaimed PTY must be host-accessible before filtering");
 
     let mut runtime = ProcessRuntime::new().with_cgroup_root(root.clone());
     let lease = LeaseId::from_u64(2);
