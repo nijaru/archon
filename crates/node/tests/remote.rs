@@ -2,16 +2,14 @@
 //! TCP. The agent runs in a thread here; the same code path serves remote
 //! machines.
 
-use std::net::TcpListener;
-use std::time::{Duration, Instant};
-
 use archon_kernel::{
-    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
+    CapacityDimension, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::protocol::{read_request, write_response};
 use archon_node::runtime::ProcessRuntime;
 use archon_node::service::NodeService;
+use std::net::TcpListener;
 
 /// Serve one controller connection with a fresh agent, like `archon
 /// agent` does.
@@ -63,19 +61,8 @@ fn request(id: u64, command: Vec<String>) -> Request {
     }
 }
 
-fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < deadline {
-        if check() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    check()
-}
-
 #[test]
-fn controller_runs_and_kills_a_process_on_a_remote_agent() {
+fn controller_excludes_unenforced_cpu_work_on_a_remote_agent() {
     let addr = spawn_agent("remote-a");
     let mut service = NodeService::new();
     service
@@ -86,18 +73,14 @@ fn controller_runs_and_kills_a_process_on_a_remote_agent() {
         OwnerId::from_u64(1),
     );
     service.tick().unwrap();
-    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
-    let lease = LeaseId::from_u64(1);
-    // The process lives in the agent thread's process tree — this same OS,
-    // proving the round trip executed something real.
-    assert!(
-        wait_until(Duration::from_secs(5), || service.is_running(lease)),
-        "sleep must run on the remote agent"
+    assert_eq!(
+        service.admit_one().unwrap(),
+        None,
+        "a remote lifecycle-only process runtime must not receive a CPU Claim"
     );
-    service.revoke(lease).unwrap();
     assert!(
-        wait_until(Duration::from_secs(5), || !service.is_running(lease)),
-        "revoke must kill the remote process"
+        service.cluster.leases.is_empty(),
+        "remote capability refusal must happen before Lease authority"
     );
 }
 

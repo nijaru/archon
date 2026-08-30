@@ -7,10 +7,42 @@ use archon_kernel::{
     CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
-use archon_node::protocol::{read_request, write_response};
+use archon_node::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities, read_request,
+    write_response,
+};
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::LocalExecutor;
-use archon_node::service::NodeService;
+use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
+
+fn hetero_capabilities(device_isolation: bool) -> ExecutionCapabilities {
+    ExecutionCapabilities {
+        process: RuntimeCapabilities {
+            available: true,
+            cpu_limit: true,
+            memory_limit: false,
+            device_isolation,
+            physical_cpu_placement: false,
+            numa_memory_placement: false,
+        },
+        container: RuntimeCapabilities::default(),
+    }
+}
+
+struct HeteroExecutor {
+    inner: LocalExecutor,
+    device_isolation: bool,
+}
+
+impl LeaseExecutor for HeteroExecutor {
+    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+        if matches!(request, AgentRequest::Capabilities) {
+            return Ok(AgentResponse::Capabilities {
+                capabilities: hetero_capabilities(self.device_isolation),
+            });
+        }
+        self.inner.execute(request)
+    }
+}
 
 /// An agent reporting a specific machine shape.
 fn spawn_shaped_agent(instance: &'static str, name: &'static str, cpus: u64) -> String {
@@ -22,7 +54,6 @@ fn spawn_shaped_agent(instance: &'static str, name: &'static str, cpus: u64) -> 
             let Ok(mut stream) = archon_node::transport::establish_responder(stream, None) else {
                 return;
             };
-            use archon_node::protocol::{AgentRequest, AgentResponse};
             let _ = archon_node::protocol::read_greeting(&mut stream);
             let Ok(AgentRequest::Hello) = read_request(&mut stream) else {
                 return;
@@ -41,7 +72,13 @@ fn spawn_shaped_agent(instance: &'static str, name: &'static str, cpus: u64) -> 
             }
             let mut lease_agent = LeaseAgent::new(ProcessRuntime::new());
             while let Ok(request) = read_request(&mut stream) {
-                let response = lease_agent.handle(request);
+                let response = if matches!(request, AgentRequest::Capabilities) {
+                    AgentResponse::Capabilities {
+                        capabilities: hetero_capabilities(false),
+                    }
+                } else {
+                    lease_agent.handle(request)
+                };
                 if write_response(&mut stream, &response).is_err() {
                     break;
                 }
@@ -218,7 +255,10 @@ fn device_claims_resolve_to_host_paths() {
                 host_nodes: Vec::new(),
                 devices: vec![gpu_spec("/dev/gpuA"), gpu_spec("/dev/gpuB")],
             },
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            Box::new(HeteroExecutor {
+                inner: LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new())),
+                device_isolation: true,
+            }),
         )
         .unwrap();
 

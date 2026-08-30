@@ -8,9 +8,53 @@ use archon_kernel::{
     CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
-use archon_node::protocol::{read_request, write_response};
+use archon_node::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities, read_request,
+    write_response,
+};
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::NodeService;
+use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
+
+fn lifecycle_capabilities() -> ExecutionCapabilities {
+    ExecutionCapabilities {
+        process: RuntimeCapabilities {
+            available: true,
+            cpu_limit: true,
+            memory_limit: false,
+            device_isolation: false,
+            physical_cpu_placement: false,
+            numa_memory_placement: false,
+        },
+        container: RuntimeCapabilities::default(),
+    }
+}
+
+struct HealthProcessExecutor {
+    inner: LocalExecutor,
+}
+
+impl LeaseExecutor for HealthProcessExecutor {
+    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+        if matches!(request, AgentRequest::Capabilities) {
+            return Ok(AgentResponse::Capabilities {
+                capabilities: lifecycle_capabilities(),
+            });
+        }
+        self.inner.execute(request)
+    }
+}
+
+fn register_local_health_agent(service: &mut NodeService) {
+    let description = archon_node::discover::try_describe().expect("local discovery");
+    service
+        .register_agent(
+            description,
+            Box::new(HealthProcessExecutor {
+                inner: LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new())),
+            }),
+        )
+        .expect("register health test machine");
+}
 
 /// A keep-alive agent that dies when the returned guard drops.
 fn spawn_agent(instance: &'static str) -> (String, std::thread::JoinHandle<()>) {
@@ -22,7 +66,6 @@ fn spawn_agent(instance: &'static str) -> (String, std::thread::JoinHandle<()>) 
             let Ok(mut stream) = archon_node::transport::establish_responder(stream, None) else {
                 return;
             };
-            use archon_node::protocol::{AgentRequest, AgentResponse};
             let _ = archon_node::protocol::read_greeting(&mut stream);
             let Ok(AgentRequest::Hello) = read_request(&mut stream) else {
                 return;
@@ -41,7 +84,13 @@ fn spawn_agent(instance: &'static str) -> (String, std::thread::JoinHandle<()>) 
             }
             let mut lease_agent = LeaseAgent::new(ProcessRuntime::new());
             while let Ok(request) = read_request(&mut stream) {
-                let response = lease_agent.handle(request);
+                let response = if matches!(request, AgentRequest::Capabilities) {
+                    AgentResponse::Capabilities {
+                        capabilities: lifecycle_capabilities(),
+                    }
+                } else {
+                    lease_agent.handle(request)
+                };
                 if write_response(&mut stream, &response).is_err() {
                     break;
                 }
@@ -203,9 +252,7 @@ fn submit_run_once(service: &mut NodeService, id: u64) -> Option<RequestId> {
 #[test]
 fn restarts_back_off_exponentially() {
     let mut service = NodeService::new();
-    service
-        .register_local(None)
-        .expect("register local machine");
+    register_local_health_agent(&mut service);
 
     // A keep-alive workload whose command always fails.
     let mut request = Request {
@@ -272,9 +319,7 @@ fn restarts_back_off_exponentially() {
 #[test]
 fn restart_cap_survives_generations() {
     let mut service = NodeService::new();
-    service
-        .register_local(None)
-        .expect("register local machine");
+    register_local_health_agent(&mut service);
 
     let request = Request {
         id: RequestId::from_u64(1),

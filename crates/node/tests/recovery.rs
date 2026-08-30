@@ -12,9 +12,24 @@ use archon_kernel::{
     RequestId, ResourceClass, qty,
 };
 use archon_node::protocol::{
-    AgentRequest, AgentResponse, read_greeting, read_request, write_response,
+    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities, read_greeting,
+    read_request, write_response,
 };
 use archon_node::service::{NodeService, RemoteExecutor};
+
+fn recovery_capabilities() -> ExecutionCapabilities {
+    ExecutionCapabilities {
+        process: RuntimeCapabilities {
+            available: true,
+            cpu_limit: true,
+            memory_limit: false,
+            device_isolation: false,
+            physical_cpu_placement: false,
+            numa_memory_placement: false,
+        },
+        container: RuntimeCapabilities::default(),
+    }
+}
 
 #[derive(Default)]
 struct FakeState {
@@ -61,6 +76,9 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                             memory_bytes: 16 << 30,
                             host_nodes: Vec::new(),
                             devices: Vec::new(),
+                        },
+                        AgentRequest::Capabilities => AgentResponse::Capabilities {
+                            capabilities: recovery_capabilities(),
                         },
                         AgentRequest::Prepare { binding, .. } => {
                             shared.lock().unwrap().prepares += 1;

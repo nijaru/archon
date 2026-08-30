@@ -1,7 +1,8 @@
 //! Persistence tests: the command log reproduces cluster state exactly, and
 //! recovery expires live work instead of re-executing it.
 
-use std::net::TcpStream;
+use std::collections::BTreeSet;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -11,7 +12,126 @@ use archon_kernel::{
     CapacityDimension, Command, LeaseId, LeaseState, Need, OwnerId, Request, RequestClass,
     RequestId, ResourceClass, qty,
 };
-use archon_node::service::NodeService;
+use archon_node::discover::MachineDescription;
+use archon_node::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities, read_greeting,
+    read_request, write_response,
+};
+use archon_node::service::{LeaseExecutor, NodeService};
+
+#[derive(Default)]
+struct EnforcingTestExecutor {
+    running: BTreeSet<u64>,
+}
+
+impl EnforcingTestExecutor {
+    fn capabilities() -> ExecutionCapabilities {
+        ExecutionCapabilities {
+            process: RuntimeCapabilities {
+                available: true,
+                cpu_limit: true,
+                memory_limit: true,
+                device_isolation: true,
+                physical_cpu_placement: false,
+                numa_memory_placement: false,
+            },
+            container: RuntimeCapabilities::default(),
+        }
+    }
+}
+
+impl LeaseExecutor for EnforcingTestExecutor {
+    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+        Ok(match request {
+            AgentRequest::Capabilities => AgentResponse::Capabilities {
+                capabilities: Self::capabilities(),
+            },
+            AgentRequest::Hello => AgentResponse::Welcome {
+                instance_id: "persist-agent".into(),
+                name: "persist-agent".into(),
+                cpus: 4,
+                memory_bytes: 8 * (1 << 30),
+                host_nodes: Vec::new(),
+                devices: Vec::new(),
+            },
+            AgentRequest::Prepare { binding, .. } => AgentResponse::Prepared {
+                binding,
+                handle: binding,
+            },
+            AgentRequest::Activate { binding, lease, .. } => {
+                self.running.insert(lease);
+                AgentResponse::Activated { binding }
+            }
+            AgentRequest::Release { binding, lease, .. } => {
+                self.running.remove(&lease);
+                AgentResponse::Released { binding }
+            }
+            AgentRequest::Fence { binding, lease, .. } => {
+                self.running.remove(&lease);
+                AgentResponse::Fenced { binding }
+            }
+            AgentRequest::Status { lease } => AgentResponse::Running {
+                lease,
+                running: self.running.contains(&lease),
+                exit_code: None,
+            },
+            AgentRequest::Logs { lease } => AgentResponse::Logs {
+                lease,
+                output: String::new(),
+            },
+            AgentRequest::Register { .. } => AgentResponse::Failed {
+                binding: 0,
+                reason: "unexpected Register request".into(),
+            },
+        })
+    }
+}
+
+fn test_machine() -> MachineDescription {
+    MachineDescription {
+        instance_id: "persist-agent".into(),
+        name: "persist-agent".into(),
+        cpus: 4,
+        memory_bytes: 8 * (1 << 30),
+        host_nodes: Vec::new(),
+        devices: Vec::new(),
+    }
+}
+
+fn register_test_agent(service: &mut NodeService) {
+    service
+        .register_agent(test_machine(), Box::new(EnforcingTestExecutor::default()))
+        .expect("register enforcing test agent");
+}
+
+/// Serve one controller-initiated remote connection with the same explicit
+/// enforcement double used by the direct persistence tests. The transport,
+/// protocol, sessions, command log, and recovery paths remain production code;
+/// only workload execution itself is simulated because hosted CI has no
+/// delegated cgroup subtree.
+fn spawn_test_agent() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test agent");
+    let addr = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        let Ok((stream, _)) = listener.accept() else {
+            return;
+        };
+        let Ok(mut stream) = archon_node::transport::establish_responder(stream, None) else {
+            return;
+        };
+        let _ = read_greeting(&mut stream);
+        let mut executor = EnforcingTestExecutor::default();
+        while let Ok(request) = read_request(&mut stream) {
+            let response = executor
+                .execute(request)
+                .unwrap_or_else(|reason| AgentResponse::Failed { binding: 0, reason });
+            if write_response(&mut stream, &response).is_err() {
+                break;
+            }
+        }
+    });
+    addr
+}
 
 fn temp_log(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -28,9 +148,7 @@ fn logged_service(path: &Path) -> NodeService {
     service.set_command_sink(Some(Box::new(move |command: &Command| {
         log.append(command).expect("append log");
     })));
-    service
-        .register_local(None)
-        .expect("register local machine");
+    register_test_agent(&mut service);
     service
 }
 
@@ -102,9 +220,7 @@ fn restart_recovery_revokes_unprovable_work_through_reconciliation() {
         "replay alone restores the pre-crash state"
     );
     assert_eq!(recovered.live_lease_count(), 1);
-    recovered
-        .register_local(None)
-        .expect("register local agent");
+    register_test_agent(&mut recovered);
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline
         && !matches!(
@@ -128,7 +244,6 @@ fn restart_recovery_revokes_unprovable_work_through_reconciliation() {
 
 #[test]
 fn snapshot_compaction_preserves_state_across_restarts() {
-    use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
     let dir = std::env::temp_dir().join(format!("archon-snap-{}", std::process::id()));
@@ -138,7 +253,11 @@ fn snapshot_compaction_preserves_state_across_restarts() {
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
-    let link = archon_control::server::AgentLink::Local { cgroup_root: None };
+    let agent_addr = spawn_test_agent();
+    let link = archon_control::server::AgentLink::Remote {
+        addr: agent_addr,
+        token: None,
+    };
     let plane = Arc::new(Mutex::new(
         ControlPlane::boot(link, log.clone(), 0).expect("boot"),
     ));
@@ -200,7 +319,11 @@ fn snapshot_compaction_preserves_state_across_restarts() {
 
     // Restart from the snapshot alone.
     drop(stream);
-    let link2 = archon_control::server::AgentLink::Local { cgroup_root: None };
+    let restarted_agent_addr = spawn_test_agent();
+    let link2 = archon_control::server::AgentLink::Remote {
+        addr: restarted_agent_addr,
+        token: None,
+    };
     let mut plane2 = ControlPlane::boot(link2, log.clone(), 0).expect("reboot");
     // The fresh local agent holds no processes: reconciliation proves the
     // live workload gone, revokes its lease, and fences its bindings.
@@ -282,7 +405,7 @@ fn replay_recovers_id_high_water_marks() {
     let commands = archon_control::log::CommandLog::read(&path).expect("read log");
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
-    recovered.register_local(None).expect("register");
+    register_test_agent(&mut recovered);
     submit_sleep(&mut recovered, 2, 60);
     recovered
         .admit_one()
