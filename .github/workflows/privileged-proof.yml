@@ -35,12 +35,10 @@ jobs:
           test_bin="$(find target/debug/deps -maxdepth 1 -type f -perm -111 -name 'cgroup_linux-*' | head -n 1)"
           test -n "$test_bin"
           sudo --preserve-env=ARCHON_REQUIRE_PRIVILEGED_CGROUP env ARCHON_LOG_DIR="$RUNNER_TEMP/archon-privileged-logs" "$test_bin" --nocapture
-      - name: Publish validated source-only tree
+      - name: Publish validated source commit
         run: |
-          rm .github/workflows/privileged-proof.yml
-          rm .github/scripts/strengthen_privileged_device_proof.py
-          git add -A
+          git add crates/node/src/device_filter.rs crates/node/tests/cgroup_linux.rs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "test(node): prove native device claim isolation"
+          git commit -m "fix(node): correct cgroup device claim enforcement"
           git push
