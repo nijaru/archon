@@ -22,294 +22,412 @@ jobs:
       - name: Apply observation split
         shell: bash
         run: |
-          cat > /tmp/health.patch <<'PATCH'
-          diff --git a/crates/kernel/src/graph.rs b/crates/kernel/src/graph.rs
-          --- a/crates/kernel/src/graph.rs
-          +++ b/crates/kernel/src/graph.rs
-          @@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
-           use crate::error::Error;
-           use crate::ids::NodeId;
-           use crate::types::{
-          -    CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node, Quantity,
-          +    Attrs, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node, Quantity,
-               ResourceClass, TopologyRelation,
-           };
-          @@ -24,6 +24,15 @@ pub struct Graph {
-               )]
-               claim_bindings: BTreeMap<NodeId, BTreeMap<CapacityDimension, ClaimBinding>>,
-          +    /// Non-authoritative observations used for scoring/diagnostics. They
-          +    /// never participate in `revision`, hard filters, Claims, or authority.
-          +    #[cfg_attr(
-          +        feature = "serde",
-          +        serde(default, skip_serializing_if = "BTreeMap::is_empty")
-          +    )]
-          +    observations: BTreeMap<NodeId, Attrs>,
-           }
-           
-           impl Graph {
-          @@ -36,6 +45,13 @@ impl Graph {
-               // log consistent for replay.
-               let mut staged_nodes = self.nodes.clone();
-               for node in nodes {
-          +        if node.attrs.contains_key("health") {
-          +            return Err(Error::Refused {
-          +                explanation: format!(
-          +                    "resource fact {} uses reserved observation key health",
-          +                    node.id
-          +                ),
-          +            });
-          +        }
-                   staged_nodes.insert(node.id, node);
-               }
-               let mut staged_edges = self.edges.clone();
-          @@ -169,18 +185,43 @@ impl Graph {
-               }
-               Ok(())
-           }
-           
-          -    /// Set one node attribute without advancing `Graph.revision`. Returns
-          -    /// false when the node is unknown. Used for non-authoritative state such
-          -    /// as health that must never strand in-flight Allocations.
-          -    pub fn set_attr(&mut self, id: NodeId, key: &str, value: String) -> bool {
-          -        match self.nodes.get_mut(&id) {
-          -            Some(node) => {
-          -                node.attrs.insert(key.to_string(), value);
-          -                true
-          -            }
-          -            None => false,
-          +    pub fn observation(&self, id: NodeId, key: &str) -> Option<&str> {
-          +        self.observations
-          +            .get(&id)
-          +            .and_then(|attrs| attrs.get(key))
-          +            .map(String::as_str)
-          +    }
-          +
-          +    pub fn observations(&self) -> &BTreeMap<NodeId, Attrs> {
-          +        &self.observations
-          +    }
-          +
-          +    pub(crate) fn set_observation(&mut self, id: NodeId, key: &str, value: String) -> bool {
-          +        if !self.nodes.contains_key(&id) {
-          +            return false;
-               }
-          +        self.observations
-          +            .entry(id)
-          +            .or_default()
-          +            .insert(key.to_string(), value);
-          +        true
-          +    }
-          +
-          +    /// Upgrade old snapshots that stored health alongside hard facts.
-          +    /// The dedicated observation value wins if a mixed-version snapshot
-          +    /// somehow contains both forms.
-          +    pub(crate) fn migrate_legacy_observations(&mut self) {
-          +        let legacy: Vec<_> = self
-          +            .nodes
-          +            .iter_mut()
-          +            .filter_map(|(id, node)| node.attrs.remove("health").map(|health| (*id, health)))
-          +            .collect();
-          +        for (id, health) in legacy {
-          +            self.observations
-          +                .entry(id)
-          +                .or_default()
-          +                .entry("health".into())
-          +                .or_insert(health);
-          +        }
-               }
-           
-               pub fn node(&self, id: NodeId) -> Option<&Node> {
-          @@ -244,8 +285,7 @@ impl Graph {
-               /// `health=degraded`, if any. Health is scoring input, never authority.
-               pub fn degraded_ancestor(&self, id: NodeId) -> Option<NodeId> {
-          -        let degraded = |node: NodeId| {
-          -            self.node(node).and_then(|item| item.attrs.get("health"))
-          -                == Some(&"degraded".to_string())
-          -        };
-          +        let degraded = |node: NodeId| self.observation(node, "health") == Some("degraded");
-                   if degraded(id) {
-                       return Some(id);
-                   }
-          diff --git a/crates/kernel/src/cluster.rs b/crates/kernel/src/cluster.rs
-          --- a/crates/kernel/src/cluster.rs
-          +++ b/crates/kernel/src/cluster.rs
-          @@ -35,6 +35,7 @@ pub struct Digest {
-               pub graph_edges: Vec<(NodeId, NodeId, crate::types::EdgeKind)>,
-               pub graph_claim_bindings:
-                   BTreeMap<NodeId, BTreeMap<crate::types::CapacityDimension, ClaimBinding>>,
-          +    pub graph_observations: BTreeMap<NodeId, crate::types::Attrs>,
-               pub leases: BTreeMap<LeaseId, LeaseDigest>,
-               pub bindings: BTreeMap<BindingId, BindingDigest>,
-               pub sessions: BTreeMap<NodeId, u64>,
-          @@ -179,6 +180,7 @@ impl Cluster {
-                           .collect(),
-                       graph_claim_bindings: self.graph.claim_bindings().clone(),
-          +            graph_observations: self.graph.observations().clone(),
-                       leases: self
-                           .leases
-                           .iter()
-          @@ -1364,12 +1366,17 @@ impl Cluster {
-               }
-           }
-           
-          -    /// Health is scoring input, not authoritative ownership state: it changes
-          -    /// node attrs without advancing Graph.revision, so in-flight Allocations
-          -    /// are never stranded by a health update.
-          +    /// Health is an observation used for scoring/diagnostics, not a resource
-          +    /// fact or ownership state. It therefore never advances Graph.revision.
-               fn set_node_health(&mut self, node: NodeId, health: String) -> Result<Vec<Effect>, Error> {
-                   self.graph
-          -            .set_attr(node, "health", health)
-          +            .set_observation(node, "health", health)
-                       .then_some(Vec::new())
-                       .ok_or(Error::UnknownNode(node))
-               }
-          +
-          +    /// Normalize persisted state from snapshots written before observations
-          +    /// were separated from revisioned Node attributes.
-          +    pub fn migrate_legacy_observations(&mut self) {
-          +        self.graph.migrate_legacy_observations();
-          +    }
-          diff --git a/crates/node/src/service.rs b/crates/node/src/service.rs
-          --- a/crates/node/src/service.rs
-          +++ b/crates/node/src/service.rs
-          @@ -1017,7 +1017,9 @@ impl NodeService {
-               /// Restore a full controller from a snapshot: the cluster's decisions
-               /// plus the controller-side state that outlives restarts.
-          -    pub fn restore(&mut self, cluster: archon_kernel::Cluster, state: ServiceState) {
-          +    pub fn restore(&mut self, mut cluster: archon_kernel::Cluster, state: ServiceState) {
-          +        cluster.migrate_legacy_observations();
-                   self.cluster = cluster;
-                   self.pending.clear();
-                   self.restore_state(state);
-          diff --git a/crates/kernel/tests/observations.rs b/crates/kernel/tests/observations.rs
-          new file mode 100644
-          --- /dev/null
-          +++ b/crates/kernel/tests/observations.rs
-          @@ -0,0 +1,144 @@
-          +use archon_kernel::{
-          +    BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Cluster, Command,
-          +    Edge, EdgeKind, Filter, Need, Node, NodeId, ProviderId, Quantity, Request, RequestClass,
-          +    RequestId, ResourceClass, qty,
-          +};
-          +
-          +fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> Node {
-          +    Node {
-          +        id: NodeId::from_u64(id),
-          +        kind,
-          +        attrs: Default::default(),
-          +        capacity,
-          +    }
-          +}
-          +
-          +fn cluster() -> Cluster {
-          +    let mut cluster = Cluster::new();
-          +    cluster
-          +        .apply(Command::ApplyResourceFacts {
-          +            nodes: vec![
-          +                node(1, ResourceClass::Machine, Quantity::new()),
-          +                node(2, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
-          +                node(3, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
-          +            ],
-          +            edges: vec![
-          +                Edge { from: NodeId::from_u64(1), to: NodeId::from_u64(2), kind: EdgeKind::Contains, attrs: Default::default() },
-          +                Edge { from: NodeId::from_u64(1), to: NodeId::from_u64(3), kind: EdgeKind::Contains, attrs: Default::default() },
-          +            ],
-          +            claim_bindings: [2, 3].into_iter().map(|node| ClaimBindingUpdate {
-          +                node: NodeId::from_u64(node),
-          +                dimension: CapacityDimension::Count,
-          +                binding: Some(ClaimBinding { provider: ProviderId::ENFORCE, scope: BindingScope::Exclusive }),
-          +            }).collect(),
-          +        })
-          +        .unwrap();
-          +    cluster
-          +}
-          +
-          +fn request(filters: Vec<Filter>) -> Request {
-          +    Request {
-          +        id: RequestId::from_u64(1),
-          +        class: RequestClass::Batch,
-          +        needs: vec![Need { kind: ResourceClass::Cpu, quantity: qty(CapacityDimension::Count, 1), filters }],
-          +        topology: Vec::new(), preferences: Vec::new(), data: Vec::new(), command: Vec::new(),
-          +        image: None, storage: Vec::new(), ports: Vec::new(), lifetime: 60, priority: 1,
-          +        machine_local: true, grace_secs: 0, keep_alive: false,
-          +    }
-          +}
-          +
-          +#[test]
-          +fn health_is_non_revisioned_observation_not_a_hard_fact() {
-          +    let mut cluster = cluster();
-          +    let cpu = NodeId::from_u64(2);
-          +    let revision = cluster.graph.revision;
-          +    cluster.apply(Command::SetNodeHealth { node: cpu, health: "degraded".into() }).unwrap();
-          +    assert_eq!(cluster.graph.revision, revision);
-          +    assert_eq!(cluster.graph.observation(cpu, "health"), Some("degraded"));
-          +    assert!(!cluster.graph.node(cpu).unwrap().attrs.contains_key("health"));
-          +    let error = cluster.allocate(&request(vec![Filter { key: "health".into(), value: "degraded".into() }]))
-          +        .expect_err("observations must not satisfy hard resource filters");
-          +    assert!(matches!(error, archon_kernel::Error::Refused { .. }));
-          +}
-          +
-          +#[test]
-          +fn degraded_observation_still_changes_scoring() {
-          +    let mut cluster = cluster();
-          +    cluster.apply(Command::SetNodeHealth { node: NodeId::from_u64(2), health: "degraded".into() }).unwrap();
-          +    let allocation = cluster.allocate(&request(Vec::new())).unwrap();
-          +    assert_eq!(allocation.claims[0].node, NodeId::from_u64(3));
-          +}
-          +
-          +#[test]
-          +fn provider_facts_cannot_publish_reserved_health_observation() {
-          +    let mut cluster = Cluster::new();
-          +    let mut machine = node(1, ResourceClass::Machine, Quantity::new());
-          +    machine.attrs.insert("health".into(), "degraded".into());
-          +    let error = cluster.apply(Command::ApplyResourceFacts { nodes: vec![machine], edges: Vec::new(), claim_bindings: Vec::new() })
-          +        .expect_err("health is observation state, not a provider-authored fact");
-          +    assert!(error.to_string().contains("reserved observation key health"));
-          +    assert_eq!(cluster.graph.revision, 0);
-          +}
-          +
-          +#[test]
-          +fn observation_replay_is_deterministic_without_changing_revision() {
-          +    let mut cluster = cluster();
-          +    let revision = cluster.graph.revision;
-          +    cluster.apply(Command::SetNodeHealth { node: NodeId::from_u64(1), health: "degraded".into() }).unwrap();
-          +    let replayed = Cluster::replay(&cluster.log).unwrap();
-          +    assert_eq!(cluster.digest(), replayed.digest());
-          +    assert_eq!(replayed.graph.revision, revision);
-          +}
-          diff --git a/crates/node/tests/observations.rs b/crates/node/tests/observations.rs
-          new file mode 100644
-          --- /dev/null
-          +++ b/crates/node/tests/observations.rs
-          @@ -0,0 +1,71 @@
-          +use archon_kernel::{Cluster, Command, Node, NodeId, Quantity, ResourceClass};
-          +use archon_node::service::{NodeService, ServiceState};
-          +
-          +#[test]
-          +fn restore_migrates_legacy_health_attrs_out_of_resource_facts() {
-          +    let mut cluster = Cluster::new();
-          +    cluster.apply(Command::ApplyGraph {
-          +        nodes: vec![Node { id: NodeId::from_u64(1), kind: ResourceClass::Machine, attrs: Default::default(), capacity: Quantity::new() }],
-          +        edges: Vec::new(),
-          +    }).unwrap();
-          +    let revision = cluster.graph.revision;
-          +    let mut value = serde_json::to_value(&cluster).unwrap();
-          +    let graph = value.get_mut("graph").and_then(serde_json::Value::as_object_mut).expect("serialized Graph object");
-          +    graph.remove("observations");
-          +    let nodes = graph.get_mut("nodes").and_then(serde_json::Value::as_object_mut).expect("serialized Node map");
-          +    let legacy = nodes.values_mut().next().expect("one serialized Node");
-          +    legacy.get_mut("attrs").and_then(serde_json::Value::as_object_mut).expect("serialized Node attrs")
-          +        .insert("health".into(), serde_json::Value::String("degraded".into()));
-          +    let restored: Cluster = serde_json::from_value(value).unwrap();
-          +    assert_eq!(restored.graph.node(NodeId::from_u64(1)).unwrap().attrs.get("health").map(String::as_str), Some("degraded"));
-          +    let mut service = NodeService::new();
-          +    service.restore(restored, ServiceState::default());
-          +    assert_eq!(service.cluster.graph.revision, revision);
-          +    assert_eq!(service.cluster.graph.observation(NodeId::from_u64(1), "health"), Some("degraded"));
-          +    assert!(!service.cluster.graph.node(NodeId::from_u64(1)).unwrap().attrs.contains_key("health"));
-          +}
-          PATCH
-          git apply /tmp/health.patch
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:80]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "crates/kernel/src/graph.rs",
+              '''use crate::types::{
+              CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node, Quantity,
+              ResourceClass, TopologyRelation,
+          };''',
+              '''use crate::types::{
+              Attrs, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node, Quantity,
+              ResourceClass, TopologyRelation,
+          };''',
+          )
+
+          replace_once(
+              "crates/kernel/src/graph.rs",
+              '''    claim_bindings: BTreeMap<NodeId, BTreeMap<CapacityDimension, ClaimBinding>>,
+          }''',
+              '''    claim_bindings: BTreeMap<NodeId, BTreeMap<CapacityDimension, ClaimBinding>>,
+              /// Non-authoritative observations used for scoring and diagnostics.
+              /// They never participate in `revision`, hard filters, Claims, or authority.
+              #[cfg_attr(
+                  feature = "serde",
+                  serde(default, skip_serializing_if = "BTreeMap::is_empty")
+              )]
+              observations: BTreeMap<NodeId, Attrs>,
+          }''',
+          )
+
+          replace_once(
+              "crates/kernel/src/graph.rs",
+              '''        let mut staged_nodes = self.nodes.clone();
+              for node in nodes {
+                  staged_nodes.insert(node.id, node);
+              }''',
+              '''        let mut staged_nodes = self.nodes.clone();
+              for node in nodes {
+                  if node.attrs.contains_key("health") {
+                      return Err(Error::Refused {
+                          explanation: format!(
+                              "resource fact {} uses reserved observation key health",
+                              node.id
+                          ),
+                      });
+                  }
+                  staged_nodes.insert(node.id, node);
+              }''',
+          )
+
+          replace_once(
+              "crates/kernel/src/graph.rs",
+              '''    /// Set one node attribute without advancing `Graph.revision`. Returns
+              /// false when the node is unknown. Used for non-authoritative state such
+              /// as health that must never strand in-flight Allocations.
+              pub fn set_attr(&mut self, id: NodeId, key: &str, value: String) -> bool {
+                  match self.nodes.get_mut(&id) {
+                      Some(node) => {
+                          node.attrs.insert(key.to_string(), value);
+                          true
+                      }
+                      None => false,
+                  }
+              }''',
+              '''    pub fn observation(&self, id: NodeId, key: &str) -> Option<&str> {
+                  self.observations
+                      .get(&id)
+                      .and_then(|attrs| attrs.get(key))
+                      .map(String::as_str)
+              }
+
+              pub fn observations(&self) -> &BTreeMap<NodeId, Attrs> {
+                  &self.observations
+              }
+
+              pub(crate) fn set_observation(&mut self, id: NodeId, key: &str, value: String) -> bool {
+                  if !self.nodes.contains_key(&id) {
+                      return false;
+                  }
+                  self.observations
+                      .entry(id)
+                      .or_default()
+                      .insert(key.to_string(), value);
+                  true
+              }
+
+              /// Upgrade snapshots written before observations were separated from
+              /// hard resource facts. A dedicated observation wins if both forms exist.
+              pub(crate) fn migrate_legacy_observations(&mut self) {
+                  let legacy: Vec<_> = self
+                      .nodes
+                      .iter_mut()
+                      .filter_map(|(id, node)| node.attrs.remove("health").map(|health| (*id, health)))
+                      .collect();
+                  for (id, health) in legacy {
+                      self.observations
+                          .entry(id)
+                          .or_default()
+                          .entry("health".into())
+                          .or_insert(health);
+                  }
+              }''',
+          )
+
+          replace_once(
+              "crates/kernel/src/graph.rs",
+              '''        let degraded = |node: NodeId| {
+                  self.node(node).and_then(|item| item.attrs.get("health"))
+                      == Some(&"degraded".to_string())
+              };''',
+              '''        let degraded = |node: NodeId| self.observation(node, "health") == Some("degraded");''',
+          )
+
+          replace_once(
+              "crates/kernel/src/cluster.rs",
+              '''    pub graph_claim_bindings:
+                  BTreeMap<NodeId, BTreeMap<crate::types::CapacityDimension, ClaimBinding>>,
+              pub leases: BTreeMap<LeaseId, LeaseDigest>,''',
+              '''    pub graph_claim_bindings:
+                  BTreeMap<NodeId, BTreeMap<crate::types::CapacityDimension, ClaimBinding>>,
+              pub graph_observations: BTreeMap<NodeId, crate::types::Attrs>,
+              pub leases: BTreeMap<LeaseId, LeaseDigest>,''',
+          )
+
+          replace_once(
+              "crates/kernel/src/cluster.rs",
+              '''            graph_claim_bindings: self.graph.claim_bindings().clone(),
+                  leases: self''',
+              '''            graph_claim_bindings: self.graph.claim_bindings().clone(),
+                  graph_observations: self.graph.observations().clone(),
+                  leases: self''',
+          )
+
+          replace_once(
+              "crates/kernel/src/cluster.rs",
+              '''    /// Health is scoring input, not authoritative ownership state: it changes
+              /// node attrs without advancing Graph.revision, so in-flight Allocations
+              /// are never stranded by a health update.
+              fn set_node_health(&mut self, node: NodeId, health: String) -> Result<Vec<Effect>, Error> {
+                  self.graph
+                      .set_attr(node, "health", health)
+                      .then_some(Vec::new())
+                      .ok_or(Error::UnknownNode(node))
+              }''',
+              '''    /// Health is an observation used for scoring and diagnostics, not a
+              /// resource fact or ownership state. It never advances Graph.revision.
+              fn set_node_health(&mut self, node: NodeId, health: String) -> Result<Vec<Effect>, Error> {
+                  self.graph
+                      .set_observation(node, "health", health)
+                      .then_some(Vec::new())
+                      .ok_or(Error::UnknownNode(node))
+              }
+
+              /// Normalize persisted state from snapshots written before observations
+              /// were separated from revisioned Node attributes.
+              pub fn migrate_legacy_observations(&mut self) {
+                  self.graph.migrate_legacy_observations();
+              }''',
+          )
+
+          replace_once(
+              "crates/node/src/service.rs",
+              '''    pub fn restore(&mut self, cluster: archon_kernel::Cluster, state: ServiceState) {
+                  self.cluster = cluster;
+                  self.pending.clear();
+                  self.restore_state(state);
+              }''',
+              '''    pub fn restore(&mut self, mut cluster: archon_kernel::Cluster, state: ServiceState) {
+                  cluster.migrate_legacy_observations();
+                  self.cluster = cluster;
+                  self.pending.clear();
+                  self.restore_state(state);
+              }''',
+          )
+
+          Path("crates/kernel/tests/observations.rs").write_text(r'''use archon_kernel::{
+              BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Cluster, Command,
+              Edge, EdgeKind, Filter, Need, Node, NodeId, ProviderId, Quantity, Request, RequestClass,
+              RequestId, ResourceClass, qty,
+          };
+
+          fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> Node {
+              Node {
+                  id: NodeId::from_u64(id),
+                  kind,
+                  attrs: Default::default(),
+                  capacity,
+              }
+          }
+
+          fn cluster() -> Cluster {
+              let mut cluster = Cluster::new();
+              cluster
+                  .apply(Command::ApplyResourceFacts {
+                      nodes: vec![
+                          node(1, ResourceClass::Machine, Quantity::new()),
+                          node(2, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+                          node(3, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
+                      ],
+                      edges: vec![
+                          Edge {
+                              from: NodeId::from_u64(1),
+                              to: NodeId::from_u64(2),
+                              kind: EdgeKind::Contains,
+                              attrs: Default::default(),
+                          },
+                          Edge {
+                              from: NodeId::from_u64(1),
+                              to: NodeId::from_u64(3),
+                              kind: EdgeKind::Contains,
+                              attrs: Default::default(),
+                          },
+                      ],
+                      claim_bindings: [2, 3]
+                          .into_iter()
+                          .map(|node| ClaimBindingUpdate {
+                              node: NodeId::from_u64(node),
+                              dimension: CapacityDimension::Count,
+                              binding: Some(ClaimBinding {
+                                  provider: ProviderId::ENFORCE,
+                                  scope: BindingScope::Exclusive,
+                              }),
+                          })
+                          .collect(),
+                  })
+                  .unwrap();
+              cluster
+          }
+
+          fn request(filters: Vec<Filter>) -> Request {
+              Request {
+                  id: RequestId::from_u64(1),
+                  class: RequestClass::Batch,
+                  needs: vec![Need {
+                      kind: ResourceClass::Cpu,
+                      quantity: qty(CapacityDimension::Count, 1),
+                      filters,
+                  }],
+                  topology: Vec::new(),
+                  preferences: Vec::new(),
+                  data: Vec::new(),
+                  command: Vec::new(),
+                  image: None,
+                  storage: Vec::new(),
+                  ports: Vec::new(),
+                  lifetime: 60,
+                  priority: 1,
+                  machine_local: true,
+                  grace_secs: 0,
+                  keep_alive: false,
+              }
+          }
+
+          #[test]
+          fn health_is_non_revisioned_observation_not_a_hard_fact() {
+              let mut cluster = cluster();
+              let cpu = NodeId::from_u64(2);
+              let revision = cluster.graph.revision;
+              cluster
+                  .apply(Command::SetNodeHealth {
+                      node: cpu,
+                      health: "degraded".into(),
+                  })
+                  .unwrap();
+
+              assert_eq!(cluster.graph.revision, revision);
+              assert_eq!(cluster.graph.observation(cpu, "health"), Some("degraded"));
+              assert!(!cluster.graph.node(cpu).unwrap().attrs.contains_key("health"));
+
+              let error = cluster
+                  .allocate(&request(vec![Filter {
+                      key: "health".into(),
+                      value: "degraded".into(),
+                  }]))
+                  .expect_err("observations must not satisfy hard resource filters");
+              assert!(matches!(error, archon_kernel::Error::Refused { .. }));
+          }
+
+          #[test]
+          fn degraded_observation_still_changes_scoring() {
+              let mut cluster = cluster();
+              cluster
+                  .apply(Command::SetNodeHealth {
+                      node: NodeId::from_u64(2),
+                      health: "degraded".into(),
+                  })
+                  .unwrap();
+              let allocation = cluster.allocate(&request(Vec::new())).unwrap();
+              assert_eq!(allocation.claims[0].node, NodeId::from_u64(3));
+          }
+
+          #[test]
+          fn provider_facts_cannot_publish_reserved_health_observation() {
+              let mut cluster = Cluster::new();
+              let mut machine = node(1, ResourceClass::Machine, Quantity::new());
+              machine.attrs.insert("health".into(), "degraded".into());
+              let error = cluster
+                  .apply(Command::ApplyResourceFacts {
+                      nodes: vec![machine],
+                      edges: Vec::new(),
+                      claim_bindings: Vec::new(),
+                  })
+                  .expect_err("health is observation state, not a provider-authored fact");
+              assert!(error.to_string().contains("reserved observation key health"));
+              assert_eq!(cluster.graph.revision, 0);
+          }
+
+          #[test]
+          fn observation_replay_is_deterministic_without_changing_revision() {
+              let mut cluster = cluster();
+              let revision = cluster.graph.revision;
+              cluster
+                  .apply(Command::SetNodeHealth {
+                      node: NodeId::from_u64(1),
+                      health: "degraded".into(),
+                  })
+                  .unwrap();
+              let replayed = Cluster::replay(&cluster.log).unwrap();
+              assert_eq!(cluster.digest(), replayed.digest());
+              assert_eq!(replayed.graph.revision, revision);
+          }
+          ''')
+
+          Path("crates/node/tests/observations.rs").write_text(r'''use archon_kernel::{Cluster, Command, Node, NodeId, Quantity, ResourceClass};
+          use archon_node::service::{NodeService, ServiceState};
+
+          #[test]
+          fn restore_migrates_legacy_health_attrs_out_of_resource_facts() {
+              let mut cluster = Cluster::new();
+              cluster
+                  .apply(Command::ApplyGraph {
+                      nodes: vec![Node {
+                          id: NodeId::from_u64(1),
+                          kind: ResourceClass::Machine,
+                          attrs: Default::default(),
+                          capacity: Quantity::new(),
+                      }],
+                      edges: Vec::new(),
+                  })
+                  .unwrap();
+              let revision = cluster.graph.revision;
+
+              let mut value = serde_json::to_value(&cluster).unwrap();
+              let graph = value
+                  .get_mut("graph")
+                  .and_then(serde_json::Value::as_object_mut)
+                  .expect("serialized Graph object");
+              graph.remove("observations");
+              let nodes = graph
+                  .get_mut("nodes")
+                  .and_then(serde_json::Value::as_object_mut)
+                  .expect("serialized Node map");
+              let legacy = nodes.values_mut().next().expect("one serialized Node");
+              legacy
+                  .get_mut("attrs")
+                  .and_then(serde_json::Value::as_object_mut)
+                  .expect("serialized Node attrs")
+                  .insert(
+                      "health".into(),
+                      serde_json::Value::String("degraded".into()),
+                  );
+
+              let restored: Cluster = serde_json::from_value(value).unwrap();
+              assert_eq!(
+                  restored
+                      .graph
+                      .node(NodeId::from_u64(1))
+                      .unwrap()
+                      .attrs
+                      .get("health")
+                      .map(String::as_str),
+                  Some("degraded"),
+                  "fixture must represent the old snapshot layout"
+              );
+
+              let mut service = NodeService::new();
+              service.restore(restored, ServiceState::default());
+              assert_eq!(service.cluster.graph.revision, revision);
+              assert_eq!(
+                  service
+                      .cluster
+                      .graph
+                      .observation(NodeId::from_u64(1), "health"),
+                  Some("degraded")
+              );
+              assert!(
+                  !service
+                      .cluster
+                      .graph
+                      .node(NodeId::from_u64(1))
+                      .unwrap()
+                      .attrs
+                      .contains_key("health")
+              );
+          }
+          ''')
+          PY
+          cargo fmt --all
       - name: Focused observation tests
         run: |
           cargo test -p archon-kernel --test observations
@@ -328,6 +446,6 @@ jobs:
           rm .github/workflows/validate-health-observations.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/kernel/src/graph.rs crates/kernel/src/cluster.rs crates/node/src/service.rs crates/kernel/tests/observations.rs crates/node/tests/observations.rs
+          git add -A .github/workflows/validate-health-observations.yml crates/kernel/src/graph.rs crates/kernel/src/cluster.rs crates/node/src/service.rs crates/kernel/tests/observations.rs crates/node/tests/observations.rs
           git commit -m "fix(kernel): separate health observations from resource facts"
           git push
