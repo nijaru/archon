@@ -57,6 +57,38 @@ fn lifecycle_only_process_reports_no_resource_enforcement() {
     assert!(!capabilities.process.numa_memory_placement);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn configured_but_unusable_cgroup_root_reports_no_resource_enforcement() {
+    let runtime = ProcessRuntime::new()
+        .with_cgroup_root("/proc/archon-capability-proof-must-not-exist".into());
+    let capabilities = runtime.capabilities();
+    assert!(capabilities.available);
+    assert!(!capabilities.cpu_limit);
+    assert!(!capabilities.memory_limit);
+    assert!(!capabilities.device_isolation);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unusable_cgroup_configuration_is_excluded_before_cpu_lease_authority() {
+    let mut service = NodeService::new();
+    let runtime = ProcessRuntime::new()
+        .with_cgroup_root("/proc/archon-capability-authority-proof-must-not-exist".into());
+    service
+        .register_agent(
+            machine("unusable-cgroup"),
+            Box::new(LocalExecutor::new(LeaseAgent::new(runtime))),
+        )
+        .expect("registration");
+    service.submit(cpu_request(1), OwnerId::from_u64(1));
+    assert_eq!(service.admit_one().unwrap(), None);
+    assert!(
+        service.cluster.leases.is_empty(),
+        "unproven enforcement must exclude the machine before Lease authority"
+    );
+}
+
 #[test]
 fn lifecycle_only_process_is_excluded_before_cpu_lease_authority() {
     let mut service = NodeService::new();

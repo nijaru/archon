@@ -7,6 +7,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_os = "linux")]
 use std::fs::File;
@@ -21,6 +22,8 @@ pub struct CgroupGroup {
     path: PathBuf,
 }
 
+static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
+
 impl CgroupGroup {
     /// Create `archon/lease-<id>` under the cgroup v2 root and enable only
     /// the controllers required by this lease's CPU/memory limits. A
@@ -28,10 +31,7 @@ impl CgroupGroup {
     /// cgroup-device BPF attach point.
     pub fn create(root: &str, lease: LeaseId, limits: &LeaseLimits) -> Result<Self, String> {
         let root = PathBuf::from(root);
-        fs::create_dir_all(&root).map_err(|err| format!("create {}: {err}", root.display()))?;
-        // Controllers must be enabled in the parent's subtree_control before
-        // children can use their limit files.
-        enable_controllers(&root, limits)?;
+        prepare_root(&root, limits)?;
         let path = root.join(format!("lease-{}", lease.as_u64()));
         if let Err(err) = fs::create_dir(&path) {
             if err.kind() != std::io::ErrorKind::AlreadyExists {
@@ -42,22 +42,47 @@ impl CgroupGroup {
             Self { path: path.clone() }.kill()?;
         }
         let group = Self { path };
+        if let Err(err) = group.configure_limits(limits) {
+            let _ = group.kill();
+            let _ = fs::remove_dir(&group.path);
+            return Err(err);
+        }
+        Ok(group)
+    }
+
+    /// Create one empty, uniquely-named probe group. Device capability proof
+    /// attaches its BPF program here before deleting the group again.
+    pub(crate) fn create_probe(root: &str, limits: &LeaseLimits) -> Result<Self, String> {
+        let root = PathBuf::from(root);
+        prepare_root(&root, limits)?;
+        let seq = PROBE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = root.join(format!(".archon-probe-{}-{seq}", std::process::id()));
+        fs::create_dir(&path).map_err(|err| format!("create {}: {err}", path.display()))?;
+        let group = Self { path };
+        if let Err(err) = group.configure_limits(limits) {
+            let _ = fs::remove_dir(&group.path);
+            return Err(err);
+        }
+        Ok(group)
+    }
+
+    fn configure_limits(&self, limits: &LeaseLimits) -> Result<(), String> {
         if limits.cpu_count > 0 {
             // quota/period: cpu_count cores worth of every 100 ms window.
             let quota = limits
                 .cpu_count
                 .checked_mul(100_000)
                 .ok_or("cpu quota overflow")?;
-            group.write("cpu.max", &format!("{quota} 100000"))?;
+            self.write("cpu.max", &format!("{quota} 100000"))?;
         }
         if limits.memory_bytes > 0 {
-            group.write("memory.max", &limits.memory_bytes.to_string())?;
+            self.write("memory.max", &limits.memory_bytes.to_string())?;
             // A memory Claim is a hard resident-memory boundary. Do not let
             // an unbounded host swap configuration turn it into an
             // effectively larger, unaccounted allocation.
-            group.write("memory.swap.max", "0")?;
+            self.write("memory.swap.max", "0")?;
         }
-        Ok(group)
+        Ok(())
     }
 
     /// Open the cgroup directory for `clone3(CLONE_INTO_CGROUP)`.
@@ -70,12 +95,12 @@ impl CgroupGroup {
             .map_err(|err| format!("open {}: {err}", self.path.display()))
     }
 
-    /// Kill every process in the group atomically (kernel 5.14+).
     /// The lease group's filesystem path (the BPF attach point).
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
 
+    /// Kill every process in the group atomically (kernel 5.14+).
     pub fn kill(&self) -> Result<(), String> {
         self.write("cgroup.kill", "1")
     }
@@ -105,6 +130,13 @@ impl CgroupGroup {
         file.write_all(content.as_bytes())
             .map_err(|err| format!("write {}: {err}", path.display()))
     }
+}
+
+fn prepare_root(root: &Path, limits: &LeaseLimits) -> Result<(), String> {
+    fs::create_dir_all(root).map_err(|err| format!("create {}: {err}", root.display()))?;
+    // Controllers must be enabled in the parent's subtree_control before
+    // children can use their limit files.
+    enable_controllers(root, limits)
 }
 
 fn enable_controllers(root: &Path, limits: &LeaseLimits) -> Result<(), String> {
