@@ -90,11 +90,7 @@ fn register(local_memory_gib: u64) -> NodeService {
     let mut service = NodeService::new();
     let executor = LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()));
     service
-        .register_agent_with_capabilities(
-            description(local_memory_gib),
-            Box::new(executor),
-            caps(),
-        )
+        .register_agent_with_capabilities(description(local_memory_gib), Box::new(executor), caps())
         .expect("normalized heterogeneous machine registration");
     service
 }
@@ -170,12 +166,23 @@ fn cpu_memory_and_gpu_allocate_as_one_numa_local_request() {
                 .expect("every requested resource is NUMA-contained")
         })
         .collect();
-    assert_eq!(numa.len(), 1, "all heterogeneous claims must share one NUMA node");
+    assert_eq!(
+        numa.len(),
+        1,
+        "all heterogeneous claims must share one NUMA node"
+    );
 
     let kinds: BTreeSet<_> = allocation
         .claims
         .iter()
-        .map(|claim| service.cluster.graph.node(claim.node).expect("claim node").kind)
+        .map(|claim| {
+            service
+                .cluster
+                .graph
+                .node(claim.node)
+                .expect("claim node")
+                .kind
+        })
         .collect();
     assert_eq!(
         kinds,
@@ -186,7 +193,9 @@ fn cpu_memory_and_gpu_allocate_as_one_numa_local_request() {
         ])
     );
     assert!(
-        allocation.explanation.contains("same-ancestor(numa) constrained placement"),
+        allocation
+            .explanation
+            .contains("same-ancestor(numa) constrained placement"),
         "material topology must be visible in the allocation explanation: {}",
         allocation.explanation
     );
