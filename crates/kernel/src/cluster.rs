@@ -43,6 +43,7 @@ pub struct Digest {
     pub graph_edges: Vec<(NodeId, NodeId, crate::types::EdgeKind)>,
     pub graph_claim_bindings:
         BTreeMap<NodeId, BTreeMap<crate::types::CapacityDimension, ClaimBinding>>,
+    pub graph_observations: BTreeMap<NodeId, crate::types::Attrs>,
     pub leases: BTreeMap<LeaseId, LeaseDigest>,
     pub bindings: BTreeMap<BindingId, BindingDigest>,
     pub sessions: BTreeMap<NodeId, u64>,
@@ -205,6 +206,7 @@ impl Cluster {
                 .map(|edge| (edge.from, edge.to, edge.kind))
                 .collect(),
             graph_claim_bindings: self.graph.claim_bindings().clone(),
+            graph_observations: self.graph.observations().clone(),
             leases: self
                 .leases
                 .iter()
@@ -1439,14 +1441,19 @@ impl Cluster {
         Ok(Vec::new())
     }
 
-    /// Health is scoring input, not authoritative ownership state: it changes
-    /// node attrs without advancing Graph.revision, so in-flight Allocations
-    /// are never stranded by a health update.
+    /// Health is an observation used for scoring and diagnostics, not a
+    /// resource fact or ownership state. It never advances Graph.revision.
     fn set_node_health(&mut self, node: NodeId, health: String) -> Result<Vec<Effect>, Error> {
         self.graph
-            .set_attr(node, "health", health)
+            .set_observation(node, "health", health)
             .then_some(Vec::new())
             .ok_or(Error::UnknownNode(node))
+    }
+
+    /// Normalize persisted state from snapshots written before observations
+    /// were separated from revisioned Node attributes.
+    pub fn migrate_legacy_observations(&mut self) {
+        self.graph.migrate_legacy_observations();
     }
 
     fn set_agent_session(&mut self, machine: NodeId, session: u64) -> Result<Vec<Effect>, Error> {
