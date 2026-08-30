@@ -10,6 +10,8 @@ use archon_node::discover::{HostNodeSpec, MachineDescription};
 use archon_node::protocol::{AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities};
 use archon_node::service::{LeaseExecutor, NodeService};
 
+const GIB: u64 = 1 << 30;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Event {
     Activate,
@@ -55,14 +57,23 @@ fn description(name: &str) -> MachineDescription {
         instance_id: format!("replica-{name}"),
         name: format!("replica-{name}"),
         cpus: 1,
-        memory_bytes: 0,
-        host_nodes: vec![HostNodeSpec {
-            id: "cpu0".into(),
-            kind: ResourceClass::Cpu,
-            parent: None,
-            attrs: Default::default(),
-            capacity: qty(CapacityDimension::Count, 1),
-        }],
+        memory_bytes: GIB,
+        host_nodes: vec![
+            HostNodeSpec {
+                id: "cpu0".into(),
+                kind: ResourceClass::Cpu,
+                parent: None,
+                attrs: Default::default(),
+                capacity: qty(CapacityDimension::Count, 1),
+            },
+            HostNodeSpec {
+                id: "mem0".into(),
+                kind: ResourceClass::Memory,
+                parent: None,
+                attrs: Default::default(),
+                capacity: qty(CapacityDimension::Bytes, GIB),
+            },
+        ],
         devices: Vec::new(),
     }
 }
