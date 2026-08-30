@@ -16,6 +16,23 @@ text = replace_once(
     "use std::ffi::CStr;\nuse std::fs;\nuse std::os::fd::FromRawFd;\nuse std::time::{Duration, Instant};",
     "linux test imports",
 )
+text = replace_once(
+    text,
+    '''        Err(err) => {
+            eprintln!("skipping: cannot create cgroups at {root}: {err}");
+            false
+        }
+''',
+    '''        Err(err) => {
+            if std::env::var_os("ARCHON_REQUIRE_PRIVILEGED_CGROUP").is_some() {
+                panic!("privileged cgroup proof required but {root} is not writable: {err}");
+            }
+            eprintln!("skipping: cannot create cgroups at {root}: {err}");
+            false
+        }
+''',
+    "required privileged cgroup guard",
+)
 
 marker = '''fn cleanup_root(root: &str) {
     if let Ok(entries) = fs::read_dir(root) {
@@ -68,7 +85,6 @@ fn pty_slave() -> (fs::File, String) {
 text = replace_once(text, marker, helper, "pty helper")
 
 start = text.index("#[test]\nfn claimed_devices_are_enforced_by_cgroup_device_filter()")
-old = text[start:]
 new = r'''#[test]
 fn claimed_devices_are_enforced_by_cgroup_device_filter() {
     let root = root("devices");
@@ -86,7 +102,7 @@ fn claimed_devices_are_enforced_by_cgroup_device_filter() {
     let log = ProcessRuntime::log_dir().join(format!("lease-{}.log", lease.as_u64()));
     let _ = fs::remove_file(log);
     let devices = vec![archon_node::protocol::DeviceAccess {
-        id: "gpu0".into(),
+        id: "test-device".into(),
         dev: claimed.clone(),
         paths: Vec::new(),
         cdi: None,
@@ -143,8 +159,7 @@ fn claimed_devices_are_enforced_by_cgroup_device_filter() {
     cleanup_root(&root);
 }
 '''
-text = text[:start] + new
-path.write_text(text)
+path.write_text(text[:start] + new)
 
 ci = Path(".github/workflows/ci.yml")
 ci_text = ci.read_text()
@@ -158,10 +173,12 @@ addition = r'''
       - name: Build native cgroup enforcement test
         run: cargo test -p archon-node --test cgroup_linux --no-run
       - name: Prove native cgroup and device enforcement
+        env:
+          ARCHON_REQUIRE_PRIVILEGED_CGROUP: "1"
         run: |
           test_bin="$(find target/debug/deps -maxdepth 1 -type f -perm -111 -name 'cgroup_linux-*' | head -n 1)"
           test -n "$test_bin"
-          sudo env ARCHON_LOG_DIR="$RUNNER_TEMP/archon-privileged-logs" "$test_bin" --nocapture
+          sudo --preserve-env=ARCHON_REQUIRE_PRIVILEGED_CGROUP env ARCHON_LOG_DIR="$RUNNER_TEMP/archon-privileged-logs" "$test_bin" --nocapture
 '''
 if "privileged-enforcement:" in ci_text:
     raise SystemExit("CI already has privileged-enforcement job")
