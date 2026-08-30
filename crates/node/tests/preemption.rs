@@ -6,7 +6,9 @@ use archon_kernel::{
     ResourceClass, preempt_victims, qty,
 };
 use archon_node::discover::{HostNodeSpec, MachineDescription};
-use archon_node::protocol::{AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities};
+use archon_node::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities,
+};
 use archon_node::service::{LeaseExecutor, NodeService};
 
 const GIB: u64 = 1 << 30;
