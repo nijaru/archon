@@ -30,6 +30,7 @@ id!(BindingId);
 id!(RequestId);
 id!(OwnerId);
 id!(ProviderId);
+id!(FactWriterId);
 
 impl ProviderId {
     pub const ENFORCE: Self = Self(1);

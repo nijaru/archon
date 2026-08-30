@@ -3,10 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::command::{Command, Effect};
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::ids::{BindingId, LeaseId, NodeId};
+use crate::ids::{BindingId, FactWriterId, LeaseId, NodeId};
 use crate::occupancy::{claim_fits, covers, occupancy_from_leases, resolve_claim, subtree_used};
 use crate::types::{
-    Binding, BindingScope, BindingState, ClaimBinding, Lease, LeaseState, NodeState, Quantity,
+    Binding, BindingScope, BindingState, ClaimBinding, FactEdge, FactWriterAssignment, Lease,
+    LeaseState, NodeState, ProviderFactBatch, Quantity,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +45,8 @@ pub struct Digest {
     pub graph_claim_bindings:
         BTreeMap<NodeId, BTreeMap<crate::types::CapacityDimension, ClaimBinding>>,
     pub graph_observations: BTreeMap<NodeId, crate::types::Attrs>,
+    pub graph_node_fact_writers: BTreeMap<NodeId, FactWriterId>,
+    pub graph_edge_fact_writers: Vec<(FactEdge, FactWriterId)>,
     pub leases: BTreeMap<LeaseId, LeaseDigest>,
     pub bindings: BTreeMap<BindingId, BindingDigest>,
     pub sessions: BTreeMap<NodeId, u64>,
@@ -207,6 +210,8 @@ impl Cluster {
                 .collect(),
             graph_claim_bindings: self.graph.claim_bindings().clone(),
             graph_observations: self.graph.observations().clone(),
+            graph_node_fact_writers: self.graph.node_fact_writers().clone(),
+            graph_edge_fact_writers: self.graph.edge_fact_writers(),
             leases: self
                 .leases
                 .iter()
@@ -392,6 +397,13 @@ impl Cluster {
                 edges,
                 claim_bindings,
             } => self.apply_resource_facts(nodes.clone(), edges.clone(), claim_bindings.clone()),
+            Command::ApplyProviderFacts {
+                batches,
+                claim_bindings,
+            } => self.apply_provider_facts(batches.clone(), claim_bindings.clone()),
+            Command::AdoptFactWriters { assignments } => {
+                self.adopt_fact_writers(assignments.clone())
+            }
             command @ Command::ReserveLease { .. } => self.reserve_lease(command),
             Command::PromoteLease {
                 lease,
@@ -492,6 +504,37 @@ impl Cluster {
         if let Some(node) = occupancy.exceeds_capacity(&staged)? {
             return Err(Error::CapacityBelowOccupancy { node });
         }
+        self.graph = staged;
+        Ok(Vec::new())
+    }
+
+    fn apply_provider_facts(
+        &mut self,
+        batches: Vec<ProviderFactBatch>,
+        claim_bindings: Vec<crate::types::ClaimBindingUpdate>,
+    ) -> Result<Vec<Effect>, Error> {
+        if !self.agreed {
+            return Err(Error::NotAgreed);
+        }
+        let mut staged = self.graph.clone();
+        staged.apply_provider_facts(batches, claim_bindings)?;
+        let occupancy = self.occupancy();
+        if let Some(node) = occupancy.exceeds_capacity(&staged)? {
+            return Err(Error::CapacityBelowOccupancy { node });
+        }
+        self.graph = staged;
+        Ok(Vec::new())
+    }
+
+    fn adopt_fact_writers(
+        &mut self,
+        assignments: Vec<FactWriterAssignment>,
+    ) -> Result<Vec<Effect>, Error> {
+        if !self.agreed {
+            return Err(Error::NotAgreed);
+        }
+        let mut staged = self.graph.clone();
+        staged.adopt_fact_writers(assignments)?;
         self.graph = staged;
         Ok(Vec::new())
     }

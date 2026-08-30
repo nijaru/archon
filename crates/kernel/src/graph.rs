@@ -1,11 +1,65 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Error;
-use crate::ids::NodeId;
+use crate::ids::{FactWriterId, NodeId};
 use crate::types::{
-    Attrs, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, Node, Quantity,
-    ResourceClass, TopologyRelation,
+    Attrs, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Edge, EdgeKind, FactEdge,
+    FactWriterAssignment, Node, ProviderFactBatch, Quantity, ResourceClass, TopologyRelation,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+struct EdgeFactKey {
+    from: NodeId,
+    to: NodeId,
+    kind: EdgeKind,
+}
+
+impl EdgeFactKey {
+    fn from_edge(edge: &Edge) -> Self {
+        Self {
+            from: edge.from,
+            to: edge.to,
+            kind: edge.kind,
+        }
+    }
+
+    fn from_fact(edge: FactEdge) -> Self {
+        Self {
+            from: edge.from,
+            to: edge.to,
+            kind: edge.kind,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+mod edge_writer_map {
+    use super::EdgeFactKey;
+    use crate::ids::FactWriterId;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<EdgeFactKey, FactWriterId>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        map.iter()
+            .map(|(key, writer)| (*key, *writer))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<EdgeFactKey, FactWriterId>, D::Error> {
+        Ok(
+            Vec::<(EdgeFactKey, FactWriterId)>::deserialize(deserializer)?
+                .into_iter()
+                .collect(),
+        )
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -24,6 +78,23 @@ pub struct Graph {
         serde(default, skip_serializing_if = "BTreeMap::is_empty")
     )]
     claim_bindings: BTreeMap<NodeId, BTreeMap<CapacityDimension, ClaimBinding>>,
+    /// Authoritative discovery writer for each complete Node fact set. A
+    /// legacy Graph may have no entries until a verified provider adopts it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    node_fact_writers: BTreeMap<NodeId, FactWriterId>,
+    /// Authoritative discovery writer for each exact stored Edge tuple.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            with = "edge_writer_map",
+            default,
+            skip_serializing_if = "BTreeMap::is_empty"
+        )
+    )]
+    edge_fact_writers: BTreeMap<EdgeFactKey, FactWriterId>,
     /// Non-authoritative observations used for scoring and diagnostics.
     /// They never participate in `revision`, hard filters, Claims, or authority.
     #[cfg_attr(
@@ -39,9 +110,19 @@ impl Graph {
     }
 
     pub fn apply(&mut self, nodes: Vec<Node>, edges: Vec<Edge>) -> Result<(), Error> {
+        if (!nodes.is_empty() || !edges.is_empty()) && self.has_fact_writers() {
+            return Err(Error::Refused {
+                explanation: "legacy unowned Graph updates are disabled after explicit fact ownership is established".into(),
+            });
+        }
+        self.apply_fact_values(nodes, edges)?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(())
+    }
+
+    fn apply_fact_values(&mut self, nodes: Vec<Node>, edges: Vec<Edge>) -> Result<(), Error> {
         // Validate the complete update against staged state before mutating
-        // anything: a rejected ApplyGraph must leave the Graph and the command
-        // log consistent for replay.
+        // anything: a rejected fact update must leave Graph state replay-safe.
         let mut staged_nodes = self.nodes.clone();
         for node in nodes {
             if node.attrs.contains_key("health") {
@@ -67,9 +148,6 @@ impl Graph {
             }) {
                 staged_edges.push(edge);
             } else {
-                // Same-tuple edges update attributes in place; topology
-                // shape is unchanged, so the forest check below still sees
-                // one edge per tuple.
                 for existing in staged_edges.iter_mut() {
                     if existing.from == edge.from
                         && existing.to == edge.to
@@ -85,7 +163,6 @@ impl Graph {
         self.nodes = staged_nodes;
         self.edges = staged_edges;
         self.rebuild();
-        self.revision = self.revision.saturating_add(1);
         Ok(())
     }
 
@@ -113,6 +190,214 @@ impl Graph {
         staged.revision = target_revision;
         *self = staged;
         Ok(())
+    }
+
+    /// Apply one or more explicitly-owned provider fragments as a single Graph
+    /// revision. Existing unowned legacy facts must be adopted first; an
+    /// existing fact owned by a different writer can never be overwritten.
+    pub fn apply_provider_facts(
+        &mut self,
+        batches: Vec<ProviderFactBatch>,
+        updates: Vec<ClaimBindingUpdate>,
+    ) -> Result<(), Error> {
+        validate_update_keys(&updates)?;
+        let target_revision = self.revision.saturating_add(1);
+        let mut staged = self.clone();
+        for update in updates.iter().filter(|update| update.binding.is_none()) {
+            staged.set_claim_binding(*update)?;
+        }
+
+        let mut seen_nodes = BTreeSet::new();
+        let mut seen_edges = BTreeSet::new();
+        for batch in batches {
+            for node in &batch.nodes {
+                if !seen_nodes.insert(node.id) {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "resource fact update names node {} more than once",
+                            node.id
+                        ),
+                    });
+                }
+                match staged.node_fact_writers.get(&node.id).copied() {
+                    Some(writer) if writer != batch.writer => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "resource node {} belongs to fact writer {} and cannot be overwritten by {}",
+                                node.id, writer, batch.writer
+                            ),
+                        });
+                    }
+                    None if staged.nodes.contains_key(&node.id) => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "legacy resource node {} has no fact writer; adopt verified ownership before mutation",
+                                node.id
+                            ),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            for edge in &batch.edges {
+                let key = EdgeFactKey::from_edge(edge);
+                if !seen_edges.insert(key) {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "resource fact update names edge {} -> {} {:?} more than once",
+                            edge.from, edge.to, edge.kind
+                        ),
+                    });
+                }
+                let exists = staged.edges.iter().any(|existing| {
+                    existing.from == edge.from
+                        && existing.to == edge.to
+                        && existing.kind == edge.kind
+                });
+                match staged.edge_fact_writers.get(&key).copied() {
+                    Some(writer) if writer != batch.writer => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "resource edge {} -> {} {:?} belongs to fact writer {} and cannot be overwritten by {}",
+                                edge.from, edge.to, edge.kind, writer, batch.writer
+                            ),
+                        });
+                    }
+                    None if exists => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "legacy resource edge {} -> {} {:?} has no fact writer; adopt verified ownership before mutation",
+                                edge.from, edge.to, edge.kind
+                            ),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+
+            let writer = batch.writer;
+            let node_ids: Vec<_> = batch.nodes.iter().map(|node| node.id).collect();
+            let edge_keys: Vec<_> = batch.edges.iter().map(EdgeFactKey::from_edge).collect();
+            staged.apply_fact_values(batch.nodes, batch.edges)?;
+            for node in node_ids {
+                staged.node_fact_writers.insert(node, writer);
+            }
+            for edge in edge_keys {
+                staged.edge_fact_writers.insert(edge, writer);
+            }
+        }
+
+        for update in updates.iter().filter(|update| update.binding.is_some()) {
+            staged.set_claim_binding(*update)?;
+        }
+        validate_claim_bindings(&staged.nodes, &staged.claim_bindings)?;
+        staged.revision = target_revision;
+        *self = staged;
+        Ok(())
+    }
+
+    /// Adopt fact-writer provenance for a legacy Graph without modifying facts
+    /// or advancing the scheduling revision. Conflicting prior ownership is
+    /// rejected atomically.
+    pub fn adopt_fact_writers(
+        &mut self,
+        assignments: Vec<FactWriterAssignment>,
+    ) -> Result<(), Error> {
+        let mut staged_nodes = self.node_fact_writers.clone();
+        let mut staged_edges = self.edge_fact_writers.clone();
+        let mut seen_nodes = BTreeSet::new();
+        let mut seen_edges = BTreeSet::new();
+        for assignment in assignments {
+            for node in assignment.nodes {
+                if !seen_nodes.insert(node) {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "fact writer adoption names node {node} more than once"
+                        ),
+                    });
+                }
+                if !self.nodes.contains_key(&node) {
+                    return Err(Error::UnknownNode(node));
+                }
+                match staged_nodes.get(&node).copied() {
+                    Some(writer) if writer != assignment.writer => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "resource node {node} already belongs to fact writer {writer}; cannot adopt {}",
+                                assignment.writer
+                            ),
+                        });
+                    }
+                    _ => {
+                        staged_nodes.insert(node, assignment.writer);
+                    }
+                }
+            }
+            for edge in assignment.edges {
+                let key = EdgeFactKey::from_fact(edge);
+                if !seen_edges.insert(key) {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "fact writer adoption names edge {} -> {} {:?} more than once",
+                            edge.from, edge.to, edge.kind
+                        ),
+                    });
+                }
+                if !self.edges.iter().any(|existing| {
+                    existing.from == edge.from
+                        && existing.to == edge.to
+                        && existing.kind == edge.kind
+                }) {
+                    return Err(Error::Refused {
+                        explanation: format!(
+                            "cannot adopt missing resource edge {} -> {} {:?}",
+                            edge.from, edge.to, edge.kind
+                        ),
+                    });
+                }
+                match staged_edges.get(&key).copied() {
+                    Some(writer) if writer != assignment.writer => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "resource edge {} -> {} {:?} already belongs to fact writer {}; cannot adopt {}",
+                                edge.from, edge.to, edge.kind, writer, assignment.writer
+                            ),
+                        });
+                    }
+                    _ => {
+                        staged_edges.insert(key, assignment.writer);
+                    }
+                }
+            }
+        }
+        self.node_fact_writers = staged_nodes;
+        self.edge_fact_writers = staged_edges;
+        Ok(())
+    }
+
+    pub fn node_fact_writer(&self, node: NodeId) -> Option<FactWriterId> {
+        self.node_fact_writers.get(&node).copied()
+    }
+
+    pub fn edge_fact_writer(&self, edge: FactEdge) -> Option<FactWriterId> {
+        self.edge_fact_writers
+            .get(&EdgeFactKey::from_fact(edge))
+            .copied()
+    }
+
+    pub fn node_fact_writers(&self) -> &BTreeMap<NodeId, FactWriterId> {
+        &self.node_fact_writers
+    }
+
+    pub fn edge_fact_writers(&self) -> Vec<(FactEdge, FactWriterId)> {
+        self.edge_fact_writers
+            .iter()
+            .map(|(edge, writer)| (FactEdge::new(edge.from, edge.to, edge.kind), *writer))
+            .collect()
+    }
+
+    fn has_fact_writers(&self) -> bool {
+        !self.node_fact_writers.is_empty() || !self.edge_fact_writers.is_empty()
     }
 
     pub fn claim_binding(
