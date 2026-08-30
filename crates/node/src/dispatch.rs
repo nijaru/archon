@@ -38,6 +38,7 @@ pub enum Tag {
     },
     Status {
         lease: LeaseId,
+        machine: NodeId,
     },
     Probe {
         machine: NodeId,

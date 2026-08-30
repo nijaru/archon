@@ -85,6 +85,12 @@ impl LeaseExecutor for RemoteExecutor {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MemberStatus {
+    running: bool,
+    exit_code: Option<i32>,
+}
+
 pub struct NodeService {
     pub cluster: Cluster,
     /// Shared secret for outbound agent connections; None runs open mode.
@@ -101,8 +107,9 @@ pub struct NodeService {
     inbox: Arc<Inbox>,
     /// Outstanding asynchronous calls, keyed by their completion tag.
     inflight: BTreeSet<Tag>,
-    /// Last observed running state per lease, from status polls.
-    running: BTreeMap<LeaseId, bool>,
+    /// Last observed workload state per (lease, machine) member. A rigid
+    /// multi-machine Lease is complete only after member states aggregate.
+    member_status: BTreeMap<(LeaseId, NodeId), MemberStatus>,
     /// Machines whose last probe failed, consumed by health policy.
     unreachable: Vec<NodeId>,
     queue: Vec<Queued>,
@@ -138,8 +145,10 @@ pub struct NodeService {
     /// Bindings are still being proven against actual endpoint state.
     /// Each entry lists the Active Leases awaiting their proof query.
     recovering_machines: BTreeMap<NodeId, BTreeSet<LeaseId>>,
-    /// Active Leases whose recovery Status query is outstanding.
-    recovering_leases: BTreeSet<LeaseId>,
+    /// Active (Lease, machine) members whose recovery Status query is
+    /// outstanding. Recovery authority is machine-local even when the Lease
+    /// itself spans several agents.
+    recovering_members: BTreeSet<(LeaseId, NodeId)>,
     /// Observes every command applied to the cluster; the control plane
     /// persists them here.
     command_sink: Option<CommandSink>,
@@ -864,7 +873,7 @@ impl NodeService {
             execution_capabilities: BTreeMap::new(),
             inbox: Arc::new(Inbox::default()),
             inflight: BTreeSet::new(),
-            running: BTreeMap::new(),
+            member_status: BTreeMap::new(),
             unreachable: Vec::new(),
             queue: Vec::new(),
             commands: BTreeMap::new(),
@@ -882,7 +891,7 @@ impl NodeService {
             next_binding: 1,
             session_floor: 0,
             recovering_machines: BTreeMap::new(),
-            recovering_leases: BTreeSet::new(),
+            recovering_members: BTreeSet::new(),
             command_sink: None,
             history: Vec::new(),
         }
@@ -1258,10 +1267,6 @@ impl NodeService {
     pub fn collect_completions(&mut self) -> Result<Vec<LeaseId>, Error> {
         let finished = self.absorb()?;
         for lease in self.executing_leases() {
-            let tag = Tag::Status { lease };
-            if self.inflight.contains(&tag) {
-                continue;
-            }
             self.request_status(lease);
         }
         self.pump()?;
@@ -1281,11 +1286,26 @@ impl NodeService {
             .collect()
     }
 
-    /// The machine executing a lease's first claim, if any.
+    /// Machines participating in a Lease, derived from its authoritative
+    /// allocation. The sorted set gives deterministic member aggregation.
+    fn lease_machines(&self, lease: LeaseId) -> Vec<NodeId> {
+        let Some(allocation_lease) = self.cluster.leases.get(&lease) else {
+            return Vec::new();
+        };
+        allocation_lease
+            .allocation
+            .claims
+            .iter()
+            .filter_map(|claim| self.cluster.graph.machine_of(claim.node))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// First participating machine, retained only for single-endpoint helper
+    /// APIs such as the current log view. Lifecycle status never uses this.
     fn lease_machine(&self, lease: LeaseId) -> Option<NodeId> {
-        let allocation_lease = self.cluster.leases.get(&lease)?;
-        let claim = allocation_lease.allocation.claims.first()?;
-        self.cluster.graph.machine_of(claim.node)
+        self.lease_machines(lease).into_iter().next()
     }
 
     /// The command executing under a lease, for status reporting.
@@ -1436,7 +1456,13 @@ impl NodeService {
         }
         self.request_status(lease);
         let _ = self.drive(Duration::from_secs(1));
-        self.running.get(&lease).copied().unwrap_or(false)
+        let machines = self.lease_machines(lease);
+        !machines.is_empty()
+            && machines.iter().all(|machine| {
+                self.member_status
+                    .get(&(lease, *machine))
+                    .is_some_and(|status| status.running)
+            })
     }
 
     fn dequeue(&mut self, request_id: &RequestId) {
@@ -1611,29 +1637,40 @@ impl NodeService {
                     }
                 }
                 (
-                    Tag::Status { lease },
+                    Tag::Status { lease, machine },
                     Ok(AgentResponse::Running {
                         running, exit_code, ..
                     }),
                 ) => {
-                    let lease = *lease;
-                    if self.recovering_leases.remove(&lease) {
-                        self.resolve_recovered_lease(lease, running, exit_code, &mut finished);
+                    let (lease, machine) = (*lease, *machine);
+                    if self.recovering_members.remove(&(lease, machine)) {
+                        self.resolve_recovered_member(
+                            lease,
+                            machine,
+                            running,
+                            exit_code,
+                            &mut finished,
+                        );
                     } else {
-                        self.running.insert(lease, running);
-                        if let Some(code) = exit_code {
-                            self.commit_lenient(Command::CompleteLease {
-                                lease,
-                                exit_code: code,
-                            });
-                            finished.push(lease);
-                        }
+                        self.member_status
+                            .insert((lease, machine), MemberStatus { running, exit_code });
+                        self.resolve_observed_completion(lease, &mut finished);
                     }
                 }
-                (Tag::Status { .. }, Ok(other)) => {
-                    eprintln!("archon: unexpected status response: {other:?}")
+                (Tag::Status { lease, machine }, Ok(other)) => {
+                    eprintln!("archon: unexpected status response: {other:?}");
+                    if self.recovering_members.remove(&(*lease, *machine)) {
+                        self.resolve_recovered_member(*lease, *machine, false, None, &mut finished);
+                    }
                 }
-                (Tag::Status { .. }, Err(_)) => {}
+                (Tag::Status { lease, machine }, Err(reason)) => {
+                    if self.recovering_members.remove(&(*lease, *machine)) {
+                        eprintln!(
+                            "archon: recovery status for lease {lease} on machine {machine} failed: {reason}"
+                        );
+                        self.resolve_recovered_member(*lease, *machine, false, None, &mut finished);
+                    }
+                }
                 (Tag::Probe { machine }, Err(_)) => self.unreachable.push(*machine),
                 (Tag::Probe { .. }, Ok(_)) => {}
             }
@@ -1703,13 +1740,16 @@ impl NodeService {
     }
 
     fn request_status(&mut self, lease: LeaseId) {
-        let tag = Tag::Status { lease };
+        for machine in self.lease_machines(lease) {
+            self.request_status_on_machine(lease, machine);
+        }
+    }
+
+    fn request_status_on_machine(&mut self, lease: LeaseId, machine: NodeId) {
+        let tag = Tag::Status { lease, machine };
         if self.inflight.contains(&tag) {
             return;
         }
-        let Some(machine) = self.lease_machine(lease) else {
-            return;
-        };
         self.dispatch(
             machine,
             tag,
@@ -1786,6 +1826,8 @@ impl NodeService {
         bindings: Vec<BindingId>,
     ) -> Result<Vec<Command>, Error> {
         let mut commands = Vec::new();
+        let mut active = BTreeSet::new();
+        let mut preparing = BTreeSet::new();
         for binding in bindings {
             let Some(record) = self.cluster.bindings.get(&binding) else {
                 continue;
@@ -1793,80 +1835,131 @@ impl NodeService {
             let Some(lease_record) = self.cluster.leases.get(&record.lease) else {
                 continue;
             };
-            let (lease_id, state) = (record.lease, lease_record.state);
-            match state {
+            match lease_record.state {
                 archon_kernel::LeaseState::Active => {
-                    if self.recovering_leases.insert(lease_id)
-                        && let Some(pending) = self.recovering_machines.get_mut(&machine)
-                    {
-                        pending.insert(lease_id);
-                    }
-                    self.dispatch(
-                        machine,
-                        Tag::Status { lease: lease_id },
-                        AgentRequest::Status {
-                            lease: lease_id.as_u64(),
-                        },
-                    );
+                    active.insert(record.lease);
                 }
-                archon_kernel::LeaseState::Preparing => commands.push(Command::FailLease {
-                    lease: lease_id,
-                    reason: "restart left preparation unproven".into(),
-                }),
+                archon_kernel::LeaseState::Preparing => {
+                    preparing.insert(record.lease);
+                }
                 _ => commands.push(Command::FenceBinding { binding }),
+            }
+        }
+        for lease in preparing {
+            commands.push(Command::FailLease {
+                lease,
+                reason: "restart left preparation unproven".into(),
+            });
+        }
+        for lease in active {
+            if let Some(pending) = self.recovering_machines.get_mut(&machine) {
+                pending.insert(lease);
+            }
+            if self.recovering_members.insert((lease, machine)) {
+                self.request_status_on_machine(lease, machine);
             }
         }
         Ok(commands)
     }
 
-    /// Resolve one lease whose ownership was unproven at controller restart:
-    /// running work is adopted onto the agent's new session (never
-    /// re-executed), a natural exit completes the lease normally, and
-    /// anything else is revoked so its bindings fence before reuse.
-    fn resolve_recovered_lease(
+    /// Resolve one machine member whose ownership was unproven at controller
+    /// restart. Proven endpoints are rebound only on that machine; whole-Lease
+    /// completion still aggregates every rigid member.
+    fn resolve_recovered_member(
         &mut self,
         lease: LeaseId,
+        machine: NodeId,
         running: bool,
         exit_code: Option<i32>,
         finished: &mut Vec<LeaseId>,
     ) {
-        if running {
-            let session = self
-                .lease_machine(lease)
-                .and_then(|machine| self.cluster.sessions.get(&machine).copied());
-            if let Some(session) = session {
-                for binding in self.cluster.bindings_for(lease) {
-                    if let Err(err) = self.commit(Command::RebindSession { binding, session }) {
-                        eprintln!(
-                            "archon: adopting lease {lease} failed on binding {binding}: {err}"
-                        );
-                        return;
-                    }
-                }
-                self.running.insert(lease, true);
-                eprintln!("archon: recovered lease {lease}: adopted from its agent");
+        self.member_status
+            .insert((lease, machine), MemberStatus { running, exit_code });
+        if running || exit_code.is_some() {
+            if let Err(err) = self.rebind_lease_machine(lease, machine) {
+                eprintln!("archon: adopting lease {lease} on machine {machine} failed: {err}");
+                self.commit_lenient(Command::RevokeLease { lease });
+                finished.push(lease);
+                self.settle_machine_recovery(lease, machine);
+                return;
             }
-        } else if let Some(code) = exit_code {
-            self.commit_lenient(Command::CompleteLease {
-                lease,
-                exit_code: code,
-            });
-            finished.push(lease);
-            eprintln!("archon: recovered lease {lease}: workload exited while detached");
+            self.resolve_observed_completion(lease, finished);
+            eprintln!("archon: recovered lease {lease} member on machine {machine}");
         } else {
             self.commit_lenient(Command::RevokeLease { lease });
             finished.push(lease);
-            eprintln!("archon: recovered lease {lease}: ownership unprovable, revoking");
+            eprintln!(
+                "archon: recovered lease {lease} on machine {machine}: ownership unprovable, revoking"
+            );
         }
-        self.settle_machine_recovery(lease);
+        self.settle_machine_recovery(lease, machine);
     }
 
-    /// Drop `lease` from its machine's recovery set; when every recovering
-    /// lease on that machine resolved, restore its deferred health marks.
-    fn settle_machine_recovery(&mut self, lease: LeaseId) {
-        let Some(machine) = self.lease_machine(lease) else {
+    /// Decide whole-Lease natural completion from machine-member observations.
+    /// Any failed member fails the rigid root; success requires every member
+    /// to have exited successfully. Running or unknown siblings keep it Active.
+    fn resolve_observed_completion(&mut self, lease: LeaseId, finished: &mut Vec<LeaseId>) {
+        if !self
+            .cluster
+            .leases
+            .get(&lease)
+            .is_some_and(|record| record.state == archon_kernel::LeaseState::Active)
+        {
             return;
+        }
+        let machines = self.lease_machines(lease);
+        if machines.is_empty() {
+            return;
+        }
+        let failure = machines.iter().find_map(|machine| {
+            self.member_status
+                .get(&(lease, *machine))
+                .and_then(|status| status.exit_code)
+                .filter(|code| *code != 0)
+        });
+        if let Some(exit_code) = failure {
+            self.commit_lenient(Command::CompleteLease { lease, exit_code });
+            finished.push(lease);
+            return;
+        }
+        let complete = machines.iter().all(|machine| {
+            self.member_status
+                .get(&(lease, *machine))
+                .is_some_and(|status| status.exit_code == Some(0))
+        });
+        if complete {
+            self.commit_lenient(Command::CompleteLease {
+                lease,
+                exit_code: 0,
+            });
+            finished.push(lease);
+        }
+    }
+
+    fn rebind_lease_machine(&mut self, lease: LeaseId, machine: NodeId) -> Result<(), Error> {
+        let Some(session) = self.cluster.sessions.get(&machine).copied() else {
+            return Ok(());
         };
+        let bindings: Vec<_> = self
+            .cluster
+            .bindings_for(lease)
+            .into_iter()
+            .filter(|binding| {
+                self.cluster.bindings.get(binding).is_some_and(|record| {
+                    record.agent_session != session
+                        && self.cluster.graph.machine_of(record.node) == Some(machine)
+                })
+            })
+            .collect();
+        for binding in bindings {
+            self.commit(Command::RebindSession { binding, session })?;
+        }
+        Ok(())
+    }
+
+    /// Drop one lease member from a machine's recovery set; when every
+    /// recovering lease on that machine resolved, restore deferred health.
+    fn settle_machine_recovery(&mut self, lease: LeaseId, machine: NodeId) {
         let mut done = false;
         if let Some(pending) = self.recovering_machines.get_mut(&machine) {
             pending.remove(&lease);
