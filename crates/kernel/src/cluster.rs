@@ -3,9 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::command::{Command, Effect};
 use crate::error::Error;
 use crate::graph::Graph;
-use crate::ids::{BindingId, LeaseId, NodeId};
+use crate::ids::{BindingId, FactWriterId, LeaseId, NodeId};
 use crate::occupancy::{claim_fits, covers, occupancy_from_leases, resolve_claim, subtree_used};
-use crate::types::{Binding, BindingScope, BindingState, Lease, LeaseState, NodeState, Quantity};
+use crate::types::{
+    Binding, BindingScope, BindingState, ClaimBinding, FactEdge, FactWriterAssignment, Lease,
+    LeaseState, NodeState, ProviderFactBatch, Quantity,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaseDigest {
@@ -39,6 +42,11 @@ pub struct Digest {
     pub graph_revision: u64,
     pub graph_nodes: BTreeMap<NodeId, (crate::types::ResourceClass, Quantity, crate::types::Attrs)>,
     pub graph_edges: Vec<(NodeId, NodeId, crate::types::EdgeKind)>,
+    pub graph_claim_bindings:
+        BTreeMap<NodeId, BTreeMap<crate::types::CapacityDimension, ClaimBinding>>,
+    pub graph_observations: BTreeMap<NodeId, crate::types::Attrs>,
+    pub graph_node_fact_writers: BTreeMap<NodeId, FactWriterId>,
+    pub graph_edge_fact_writers: Vec<(FactEdge, FactWriterId)>,
     pub leases: BTreeMap<LeaseId, LeaseDigest>,
     pub bindings: BTreeMap<BindingId, BindingDigest>,
     pub sessions: BTreeMap<NodeId, u64>,
@@ -200,6 +208,10 @@ impl Cluster {
                 .iter()
                 .map(|edge| (edge.from, edge.to, edge.kind))
                 .collect(),
+            graph_claim_bindings: self.graph.claim_bindings().clone(),
+            graph_observations: self.graph.observations().clone(),
+            graph_node_fact_writers: self.graph.node_fact_writers().clone(),
+            graph_edge_fact_writers: self.graph.edge_fact_writers(),
             leases: self
                 .leases
                 .iter()
@@ -380,6 +392,18 @@ impl Cluster {
     fn dispatch(&mut self, command: &Command) -> Result<Vec<Effect>, Error> {
         match command {
             Command::ApplyGraph { nodes, edges } => self.apply_graph(nodes.clone(), edges.clone()),
+            Command::ApplyResourceFacts {
+                nodes,
+                edges,
+                claim_bindings,
+            } => self.apply_resource_facts(nodes.clone(), edges.clone(), claim_bindings.clone()),
+            Command::ApplyProviderFacts {
+                batches,
+                claim_bindings,
+            } => self.apply_provider_facts(batches.clone(), claim_bindings.clone()),
+            Command::AdoptFactWriters { assignments } => {
+                self.adopt_fact_writers(assignments.clone())
+            }
             command @ Command::ReserveLease { .. } => self.reserve_lease(command),
             Command::PromoteLease {
                 lease,
@@ -461,6 +485,56 @@ impl Cluster {
         if let Some(node) = occupancy.exceeds_capacity(&staged)? {
             return Err(Error::CapacityBelowOccupancy { node });
         }
+        self.graph = staged;
+        Ok(Vec::new())
+    }
+
+    fn apply_resource_facts(
+        &mut self,
+        nodes: Vec<crate::types::Node>,
+        edges: Vec<crate::types::Edge>,
+        claim_bindings: Vec<crate::types::ClaimBindingUpdate>,
+    ) -> Result<Vec<Effect>, Error> {
+        if !self.agreed {
+            return Err(Error::NotAgreed);
+        }
+        let mut staged = self.graph.clone();
+        staged.apply_resource_facts(nodes, edges, claim_bindings)?;
+        let occupancy = self.occupancy();
+        if let Some(node) = occupancy.exceeds_capacity(&staged)? {
+            return Err(Error::CapacityBelowOccupancy { node });
+        }
+        self.graph = staged;
+        Ok(Vec::new())
+    }
+
+    fn apply_provider_facts(
+        &mut self,
+        batches: Vec<ProviderFactBatch>,
+        claim_bindings: Vec<crate::types::ClaimBindingUpdate>,
+    ) -> Result<Vec<Effect>, Error> {
+        if !self.agreed {
+            return Err(Error::NotAgreed);
+        }
+        let mut staged = self.graph.clone();
+        staged.apply_provider_facts(batches, claim_bindings)?;
+        let occupancy = self.occupancy();
+        if let Some(node) = occupancy.exceeds_capacity(&staged)? {
+            return Err(Error::CapacityBelowOccupancy { node });
+        }
+        self.graph = staged;
+        Ok(Vec::new())
+    }
+
+    fn adopt_fact_writers(
+        &mut self,
+        assignments: Vec<FactWriterAssignment>,
+    ) -> Result<Vec<Effect>, Error> {
+        if !self.agreed {
+            return Err(Error::NotAgreed);
+        }
+        let mut staged = self.graph.clone();
+        staged.adopt_fact_writers(assignments)?;
         self.graph = staged;
         Ok(Vec::new())
     }
@@ -765,18 +839,12 @@ impl Cluster {
         }) {
             return Err(Error::BindingsNotPrepared { lease: id });
         }
-        // A root lease must enforce every enforced claim through a prepared
-        // Binding before it becomes Active; accounting-only children may
-        // activate without Bindings.
+        // Every root-lease Claim was proven claimable when authority was
+        // reserved, so each one must have a prepared Binding before the Lease
+        // becomes Active. Accounting-only child leases reuse their parent's
+        // Bindings and therefore do not open a second endpoint authority.
         if parent.is_none() {
             for claim in &claims {
-                let enforced = self
-                    .graph
-                    .node(claim.node)
-                    .is_some_and(|node| node.kind.is_enforced());
-                if !enforced {
-                    continue;
-                }
                 let covered = self.bindings.values().any(|binding| {
                     binding.lease == id
                         && binding.node == claim.node
@@ -1037,13 +1105,24 @@ impl Cluster {
         if lease.parent.is_some() {
             return Err(Error::ChildBindingRefused { lease: lease_id });
         }
-        if !lease
+        let Some(claim) = lease
             .allocation
             .claims
             .iter()
-            .any(|claim| claim.node == node)
-        {
+            .find(|claim| claim.node == node)
+        else {
             return Err(Error::Invalid("binding node is not in lease claims"));
+        };
+        let required = self
+            .graph
+            .claim_binding_for_quantity(node, &claim.quantity)?;
+        if required.provider != provider || required.scope != scope {
+            return Err(Error::Refused {
+                explanation: format!(
+                    "binding for {node} must use provider {} with {:?} scope",
+                    required.provider, required.scope
+                ),
+            });
         }
         if self.node_quarantined(node) {
             return Err(Error::Quarantined(node));
@@ -1405,14 +1484,19 @@ impl Cluster {
         Ok(Vec::new())
     }
 
-    /// Health is scoring input, not authoritative ownership state: it changes
-    /// node attrs without advancing Graph.revision, so in-flight Allocations
-    /// are never stranded by a health update.
+    /// Health is an observation used for scoring and diagnostics, not a
+    /// resource fact or ownership state. It never advances Graph.revision.
     fn set_node_health(&mut self, node: NodeId, health: String) -> Result<Vec<Effect>, Error> {
         self.graph
-            .set_attr(node, "health", health)
+            .set_observation(node, "health", health)
             .then_some(Vec::new())
             .ok_or(Error::UnknownNode(node))
+    }
+
+    /// Normalize persisted state from snapshots written before observations
+    /// were separated from revisioned Node attributes.
+    pub fn migrate_legacy_observations(&mut self) {
+        self.graph.migrate_legacy_observations();
     }
 
     fn set_agent_session(&mut self, machine: NodeId, session: u64) -> Result<Vec<Effect>, Error> {

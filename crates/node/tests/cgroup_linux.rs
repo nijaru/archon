@@ -4,7 +4,9 @@
 
 #![cfg(target_os = "linux")]
 
+use std::ffi::CStr;
 use std::fs;
+use std::os::fd::FromRawFd;
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
@@ -30,6 +32,9 @@ fn require_cgroup_writable(name: &str) -> bool {
             true
         }
         Err(err) => {
+            if std::env::var_os("ARCHON_REQUIRE_PRIVILEGED_CGROUP").is_some() {
+                panic!("privileged cgroup proof required but {root} is not writable: {err}");
+            }
             eprintln!("skipping: cannot create cgroups at {root}: {err}");
             false
         }
@@ -43,6 +48,44 @@ fn cleanup_root(root: &str) {
         }
     }
     let _ = fs::remove_dir(root);
+}
+
+/// Create one safe, disposable character device that is not part of the
+/// runtime's fixed pseudo-device allowlist. Holding the PTY master keeps its
+/// slave node alive for the duration of the enforcement test.
+fn pty_slave() -> (fs::File, String) {
+    // SAFETY: posix_openpt returns a new owned fd or -1. grantpt/unlockpt and
+    // ptsname_r operate on that fd while it remains live.
+    let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+    assert!(
+        master >= 0,
+        "posix_openpt: {}",
+        std::io::Error::last_os_error()
+    );
+    if unsafe { libc::grantpt(master) } != 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::close(master) };
+        panic!("grantpt: {error}");
+    }
+    if unsafe { libc::unlockpt(master) } != 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::close(master) };
+        panic!("unlockpt: {error}");
+    }
+    let mut name = [0 as libc::c_char; 128];
+    if unsafe { libc::ptsname_r(master, name.as_mut_ptr(), name.len()) } != 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::close(master) };
+        panic!("ptsname_r: {error}");
+    }
+    // SAFETY: successful ptsname_r wrote a NUL-terminated path into `name`.
+    let path = unsafe { CStr::from_ptr(name.as_ptr()) }
+        .to_str()
+        .expect("PTY path is UTF-8")
+        .to_owned();
+    // SAFETY: `master` is a fresh owned fd and ownership transfers to File.
+    let master = unsafe { fs::File::from_raw_fd(master) };
+    (master, path)
 }
 
 fn request(id: u64, command: Vec<String>, memory_mib: u64) -> Request {
@@ -85,6 +128,28 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(20));
     }
     check()
+}
+
+#[test]
+fn configured_cgroup_capabilities_are_proven_against_the_kernel() {
+    let root = root("capabilities");
+    if !require_cgroup_writable("capabilities") {
+        return;
+    }
+    cleanup_root(&root);
+    let runtime = ProcessRuntime::new().with_cgroup_root(root.clone());
+    let capabilities = runtime.capabilities();
+    assert!(capabilities.available);
+    assert!(capabilities.cpu_limit, "cpu controller probe must succeed");
+    assert!(
+        capabilities.memory_limit,
+        "memory controller probe must succeed"
+    );
+    assert!(
+        capabilities.device_isolation,
+        "cgroup-device BPF load/attach probe must succeed"
+    );
+    cleanup_root(&root);
 }
 
 #[test]
@@ -292,11 +357,30 @@ fn claimed_devices_are_enforced_by_cgroup_device_filter() {
         return;
     }
     cleanup_root(&root);
+
+    let (_claimed_master, claimed) = pty_slave();
+    let (_unclaimed_master, unclaimed) = pty_slave();
+    assert_ne!(claimed, unclaimed);
+
+    // Prove both PTY slaves are usable before the lease filter is attached;
+    // otherwise a parent cgroup/device policy could masquerade as Archon's
+    // deny decision and make the test environment unsuitable.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&claimed)
+        .expect("claimed PTY must be host-accessible before filtering");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&unclaimed)
+        .expect("unclaimed PTY must be host-accessible before filtering");
+
     let mut runtime = ProcessRuntime::new().with_cgroup_root(root.clone());
     let lease = LeaseId::from_u64(2);
+    let log = ProcessRuntime::log_dir().join(format!("lease-{}.log", lease.as_u64()));
+    let _ = fs::remove_file(log);
     let devices = vec![archon_node::protocol::DeviceAccess {
-        id: "gpu0".into(),
-        dev: "/dev/null".into(),
+        id: "test-device".into(),
+        dev: claimed.clone(),
         paths: Vec::new(),
         cdi: None,
     }];
@@ -306,26 +390,48 @@ fn claimed_devices_are_enforced_by_cgroup_device_filter() {
             &[
                 "sh".into(),
                 "-c".into(),
-                "cat /dev/zero > /dev/null && cat /dev/urandom > /dev/null; test -r /dev/tty0 && echo tty-ok || echo tty-denied".to_string(),
+                // The first write must succeed only because this exact PTY
+                // slave is claimed. A second same-class PTY slave is not in
+                // the claim and must be denied by the attached cgroup-device
+                // program. Distinct exit codes make either failure explicit.
+                "printf claimed-ok > \"$1\" || exit 10; if printf unclaimed-opened > \"$2\"; then echo unclaimed-opened; exit 11; fi; echo device-proof-ok"
+                    .into(),
+                "archon-device-proof".into(),
+                claimed,
+                unclaimed,
             ],
             &LeaseLimits::default(),
             &devices,
         )
         .expect("device-only activation with device filter");
 
-    // /dev/null is claimed, so reads/writes through it succeed; the log
-    // captures the outcome of probing an unclaimed device node.
     let deadline = Instant::now() + Duration::from_secs(5);
-    let mut output = String::new();
+    let mut exit_code = None;
     while Instant::now() < deadline {
-        output = ProcessRuntime::read_log(lease);
-        if output.contains("tty-denied") || output.contains("tty-ok") {
-            break;
+        match runtime.status(lease) {
+            WorkStatus::Exited(code) => {
+                exit_code = Some(code);
+                break;
+            }
+            WorkStatus::Running => std::thread::sleep(Duration::from_millis(20)),
+            WorkStatus::Gone => break,
         }
-        std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(
-        output.contains("tty-denied"),
-        "unclaimed devices must be denied by the cgroup-device filter, got: {output}"
+    let output = ProcessRuntime::read_log(lease);
+    assert_eq!(
+        exit_code,
+        Some(0),
+        "claimed device must open while the unclaimed peer is denied; log: {output}"
     );
+    assert!(
+        output.contains("device-proof-ok"),
+        "kernel device proof did not complete: {output}"
+    );
+    assert!(
+        !output.contains("unclaimed-opened"),
+        "unclaimed device unexpectedly opened: {output}"
+    );
+
+    runtime.terminate(lease).unwrap();
+    cleanup_root(&root);
 }

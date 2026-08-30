@@ -8,8 +8,8 @@
 
 use std::collections::BTreeSet;
 use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 use crate::protocol::DeviceAccess;
@@ -31,11 +31,11 @@ const BPF_PROG_ATTACH: libc::c_int = 8;
 const BPF_PROG_TYPE_CGROUP_DEVICE: libc::c_int = 15;
 const BPF_CGROUP_DEVICE: libc::c_int = 6;
 
-// bpf_cgroup_dev_ctx access bits (linux/bpf.h).
-const DEVCG_ACC_READ: u32 = 1;
-const DEVCG_ACC_WRITE: u32 = 2;
-const DEVCG_ACC_MKNOD: u32 = 4;
-// Device type lives in the upper 16 bits of ctx->access_type.
+// bpf_cgroup_dev_ctx access/type encoding (linux/bpf.h).
+const DEVCG_ACC_MKNOD: u32 = 1;
+const DEVCG_ACC_READ: u32 = 2;
+const DEVCG_ACC_WRITE: u32 = 4;
+// Access bits live in the upper 16 bits and device type in the lower 16.
 const DEVCG_DEV_BLOCK: u32 = 1;
 const DEVCG_DEV_CHAR: u32 = 2;
 
@@ -114,8 +114,8 @@ fn load_ctx_word(dst: u8, byte_off: u16) -> Insn {
 /// ```text
 /// r2 = ctx->access_type; r3 = ctx->major; r4 = ctx->minor
 /// for each rule:
-///     if (access_type & 0xffff) & ~rule.access == 0        // request ⊆ grant
-///     && (access_type >> 16) == rule.dev_type
+///     if (access_type >> 16) & ~rule.access == 0          // request ⊆ grant
+///     && (access_type & 0xffff) == rule.dev_type
 ///     && major == rule.major && minor == rule.minor:
 ///         return 1
 /// return 0
@@ -154,9 +154,9 @@ pub(crate) fn compile(rules: &[DeviceRule]) -> Vec<Insn> {
         let next_rule = if i + 1 < rules.len() { s + 10 } else { deny };
         let granted = rule.access & (DEVCG_ACC_READ | DEVCG_ACC_WRITE | DEVCG_ACC_MKNOD);
         let disallowed = !granted;
-        // s+0..1: r6 = requested access flags.
+        // s+0..1: r6 = requested access flags from the upper half-word.
         prog.push(mov_reg(6, 2)); // r6 = access_type
-        prog.push(and_imm(6, 0xffff));
+        prog.push(rsh_imm(6, 16));
         // s+2..3: any requested bit outside the grant means "not this rule".
         prog.push(and_imm(6, disallowed));
         prog.push(Insn {
@@ -166,9 +166,9 @@ pub(crate) fn compile(rules: &[DeviceRule]) -> Vec<Insn> {
             off: jump_to(s + 3, next_rule),
             imm: 0,
         });
-        // s+4..6: device type from the upper half-word must match exactly.
+        // s+4..6: device type from the lower half-word must match exactly.
         prog.push(mov_reg(6, 2));
-        prog.push(rsh_imm(6, 16));
+        prog.push(and_imm(6, 0xffff));
         prog.push(Insn {
             code: BPF_JMP32_JNE_IMM,
             dst_reg: 6,
@@ -259,7 +259,7 @@ fn bpf_syscall(cmd: libc::c_int, attr: &AttrBlock) -> io::Result<i64> {
     }
 }
 
-fn load_program(prog: &[Insn]) -> io::Result<i64> {
+fn load_program(prog: &[Insn]) -> io::Result<OwnedFd> {
     let insns: Vec<u64> = prog.iter().map(encode).collect();
     let license = b"GPL\0";
     let mut attr = AttrBlock::zeroed();
@@ -269,7 +269,10 @@ fn load_program(prog: &[Insn]) -> io::Result<i64> {
     attr.write_u64(16, license.as_ptr() as usize as u64); // license
     attr.write_u32(68, BPF_CGROUP_DEVICE as u32); // expected_attach_type
     match bpf_syscall(BPF_PROG_LOAD, &attr) {
-        Ok(fd) => Ok(fd),
+        Ok(fd) => {
+            // SAFETY: a successful BPF_PROG_LOAD returns one fresh owned fd.
+            Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+        }
         Err(_) => {
             // Retry with the verifier log so rejections carry diagnostics.
             let mut log = vec![0u8; 64 * 1024];
@@ -290,12 +293,12 @@ fn load_program(prog: &[Insn]) -> io::Result<i64> {
     }
 }
 
-fn attach_to_cgroup(prog_fd: i64, cgroup_path: &Path) -> io::Result<()> {
+fn attach_to_cgroup(prog_fd: &OwnedFd, cgroup_path: &Path) -> io::Result<()> {
     let target = std::fs::File::open(cgroup_path)
         .map_err(|err| io::Error::other(format!("open {}: {err}", cgroup_path.display())))?;
     let mut attr = AttrBlock::zeroed();
     attr.write_u32(0, target.as_raw_fd() as u32); // target_fd
-    attr.write_u32(4, prog_fd as u32); // attach_bpf_fd
+    attr.write_u32(4, prog_fd.as_raw_fd() as u32); // attach_bpf_fd
     attr.write_u32(8, BPF_CGROUP_DEVICE as u32); // attach_type
     bpf_syscall(BPF_PROG_ATTACH, &attr).map(|_| ())
 }
@@ -383,7 +386,14 @@ pub fn enforce_devices(cgroup_path: &Path, devices: &[DeviceAccess]) -> Result<(
 
     let prog = compile(&rules);
     let prog_fd = load_program(&prog).map_err(|err| err.to_string())?;
-    attach_to_cgroup(prog_fd, cgroup_path).map_err(|err| err.to_string())
+    attach_to_cgroup(&prog_fd, cgroup_path).map_err(|err| err.to_string())
+}
+
+/// Prove that this process may load and attach a cgroup-device program to an
+/// empty cgroup. The temporary cgroup itself is owned by the runtime probe.
+pub(crate) fn probe(cgroup_path: &Path) -> Result<(), String> {
+    let prog_fd = load_program(&compile(&[])).map_err(|err| err.to_string())?;
+    attach_to_cgroup(&prog_fd, cgroup_path).map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
@@ -443,7 +453,20 @@ mod tests {
     }
 
     fn ctx_of(flags: u32, dev_type: u32, major: u32, minor: u32) -> (u32, u32, u32) {
-        ((dev_type << 16) | flags, major, minor)
+        ((flags << 16) | dev_type, major, minor)
+    }
+
+    #[test]
+    fn cgroup_device_constants_match_linux_abi() {
+        assert_eq!(DEVCG_ACC_MKNOD, 1);
+        assert_eq!(DEVCG_ACC_READ, 2);
+        assert_eq!(DEVCG_ACC_WRITE, 4);
+        assert_eq!(DEVCG_DEV_BLOCK, 1);
+        assert_eq!(DEVCG_DEV_CHAR, 2);
+        assert_eq!(
+            ctx_of(DEVCG_ACC_WRITE, DEVCG_DEV_CHAR, 195, 0).0,
+            (4 << 16) | 2
+        );
     }
 
     #[test]

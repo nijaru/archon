@@ -1,7 +1,7 @@
 use archon_kernel::{
-    Allocation, CapacityDimension, Claim, Cluster, Command, Edge, EdgeKind, LeaseId, Need, Node,
-    NodeId, OwnerId, Quantity, Request, RequestClass, RequestId, ResourceClass, TopologyConstraint,
-    TopologyRelation, qty,
+    Allocation, BindingScope, CapacityDimension, Claim, ClaimBinding, ClaimBindingUpdate, Cluster,
+    Command, Edge, EdgeKind, LeaseId, Need, Node, NodeId, OwnerId, ProviderId, Quantity, Request,
+    RequestClass, RequestId, ResourceClass, TopologyConstraint, TopologyRelation, qty,
 };
 
 fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> Node {
@@ -22,10 +22,21 @@ fn contain(from: u64, to: u64) -> Edge {
     }
 }
 
+fn claim_binding(node: u64, dimension: CapacityDimension) -> ClaimBindingUpdate {
+    ClaimBindingUpdate {
+        node: NodeId::from_u64(node),
+        dimension,
+        binding: Some(ClaimBinding {
+            provider: ProviderId::ENFORCE,
+            scope: BindingScope::Exclusive,
+        }),
+    }
+}
+
 fn graph() -> Cluster {
     let mut cluster = Cluster::new();
     cluster
-        .apply(Command::ApplyGraph {
+        .apply(Command::ApplyResourceFacts {
             nodes: vec![
                 node(1, ResourceClass::Machine, Quantity::new()),
                 node(2, ResourceClass::Numa, Quantity::new()),
@@ -40,6 +51,12 @@ fn graph() -> Cluster {
                 contain(2, 4),
                 contain(2, 5),
                 contain(2, 6),
+            ],
+            claim_bindings: vec![
+                claim_binding(3, CapacityDimension::Count),
+                claim_binding(4, CapacityDimension::Count),
+                claim_binding(5, CapacityDimension::Bytes),
+                claim_binding(6, CapacityDimension::Count),
             ],
         })
         .unwrap();
@@ -230,7 +247,7 @@ fn machine_local_multi_need_stays_on_one_machine() {
     let mem2 = NodeId::from_u64(21);
     let m2 = NodeId::from_u64(2);
     cluster
-        .apply(Command::ApplyGraph {
+        .apply(Command::ApplyResourceFacts {
             nodes: vec![
                 node(1, ResourceClass::Machine, Quantity::new()),
                 node(10, ResourceClass::Cpu, qty(CapacityDimension::Count, 1)),
@@ -252,6 +269,12 @@ fn machine_local_multi_need_stays_on_one_machine() {
                 edge(m1, mem1),
                 edge(m2, cpu2),
                 edge(m2, mem2),
+            ],
+            claim_bindings: vec![
+                claim_binding(10, CapacityDimension::Count),
+                claim_binding(11, CapacityDimension::Bytes),
+                claim_binding(20, CapacityDimension::Count),
+                claim_binding(21, CapacityDimension::Bytes),
             ],
         })
         .unwrap();
@@ -317,7 +340,7 @@ fn edge(from: NodeId, to: NodeId) -> archon_kernel::Edge {
 fn explanation_reports_topology_that_changes_machine_choice() {
     let mut cluster = Cluster::new();
     cluster
-        .apply(Command::ApplyGraph {
+        .apply(Command::ApplyResourceFacts {
             nodes: vec![
                 node(100, ResourceClass::Machine, Quantity::new()),
                 node(101, ResourceClass::Numa, Quantity::new()),
@@ -337,6 +360,12 @@ fn explanation_reports_topology_that_changes_machine_choice() {
                 contain(200, 201),
                 contain(201, 202),
                 contain(201, 203),
+            ],
+            claim_bindings: vec![
+                claim_binding(103, CapacityDimension::Count),
+                claim_binding(104, CapacityDimension::Count),
+                claim_binding(202, CapacityDimension::Count),
+                claim_binding(203, CapacityDimension::Count),
             ],
         })
         .unwrap();

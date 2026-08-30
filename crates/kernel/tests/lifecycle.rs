@@ -1,6 +1,7 @@
 use archon_kernel::{
-    CapacityDimension, Cluster, Command, Edge, EdgeKind, Error, LeaseId, Need, Node, NodeId,
-    NodeState, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
+    BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Cluster, Command, Edge,
+    EdgeKind, Error, LeaseId, Need, Node, NodeId, NodeState, OwnerId, ProviderId, Request,
+    RequestClass, RequestId, ResourceClass, qty,
 };
 
 fn cluster() -> (Cluster, NodeId, NodeId) {
@@ -8,7 +9,7 @@ fn cluster() -> (Cluster, NodeId, NodeId) {
     let cpu = NodeId::from_u64(2);
     let mut cluster = Cluster::new();
     cluster
-        .apply(Command::ApplyGraph {
+        .apply(Command::ApplyResourceFacts {
             nodes: vec![
                 Node {
                     id: machine,
@@ -28,6 +29,14 @@ fn cluster() -> (Cluster, NodeId, NodeId) {
                 to: cpu,
                 kind: EdgeKind::Contains,
                 attrs: Default::default(),
+            }],
+            claim_bindings: vec![ClaimBindingUpdate {
+                node: cpu,
+                dimension: CapacityDimension::Count,
+                binding: Some(ClaimBinding {
+                    provider: ProviderId::ENFORCE,
+                    scope: BindingScope::Exclusive,
+                }),
             }],
         })
         .unwrap();

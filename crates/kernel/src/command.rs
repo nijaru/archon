@@ -1,5 +1,8 @@
 use crate::ids::{BindingId, LeaseId, NodeId, OwnerId, ProviderId};
-use crate::types::{Allocation, BindingScope, Edge, Node, NodeState};
+use crate::types::{
+    Allocation, BindingScope, ClaimBindingUpdate, Edge, FactWriterAssignment, Node, NodeState,
+    ProviderFactBatch,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -7,6 +10,25 @@ pub enum Command {
     ApplyGraph {
         nodes: Vec<Node>,
         edges: Vec<Edge>,
+    },
+    /// Apply provider-authored resource facts and their claim contracts in one
+    /// Graph revision. Capacity omitted from `claim_bindings` is placement-only.
+    ApplyResourceFacts {
+        nodes: Vec<Node>,
+        edges: Vec<Edge>,
+        claim_bindings: Vec<ClaimBindingUpdate>,
+    },
+    /// Apply explicitly-owned provider facts and claim contracts in one Graph
+    /// revision. `ProviderFactBatch.writer` is discovery/fact provenance and
+    /// is intentionally independent from `ClaimBinding.provider` enforcement.
+    ApplyProviderFacts {
+        batches: Vec<ProviderFactBatch>,
+        claim_bindings: Vec<ClaimBindingUpdate>,
+    },
+    /// Adopt writer provenance for legacy facts after the caller has verified
+    /// them against a current authoritative provider inventory.
+    AdoptFactWriters {
+        assignments: Vec<FactWriterAssignment>,
     },
     ReserveLease {
         lease: LeaseId,

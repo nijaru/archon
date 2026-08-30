@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use crate::ids::{BindingId, LeaseId, NodeId, OwnerId, ProviderId};
+use crate::ids::{BindingId, FactWriterId, LeaseId, NodeId, OwnerId, ProviderId};
 
 const MAX_IDENTIFIER_LEN: usize = 63;
 
@@ -193,21 +193,6 @@ impl ResourceClass {
             _ => None,
         }
     }
-
-    pub const fn is_enforced(self) -> bool {
-        !matches!(
-            self,
-            Self::Machine
-                | Self::Rack
-                | Self::PowerDomain
-                | Self::Socket
-                | Self::Numa
-                | Self::PcieRoot
-                | Self::Region
-                | Self::Datacenter
-                | Self::DataObject
-        )
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -233,6 +218,46 @@ pub enum EdgeKind {
     Contains,
     Connected,
     CachedOn,
+}
+
+/// Stable identity for one stored edge fact. Fact-writer ownership is
+/// tracked on the exact stored tuple rather than on derived topology predicates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FactEdge {
+    pub from: NodeId,
+    pub to: NodeId,
+    pub kind: EdgeKind,
+}
+
+impl FactEdge {
+    pub const fn new(from: NodeId, to: NodeId, kind: EdgeKind) -> Self {
+        Self { from, to, kind }
+    }
+}
+
+/// One provider/discovery writer's atomic contribution to revisioned Graph
+/// facts. Node ownership is deliberately coarse in this contract: one writer
+/// owns the complete fact set for a Node. Providers compose by adding their
+/// own Nodes/Edges that reference another writer's Nodes; same-Node multi-writer
+/// augmentation requires an explicit future composition rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ProviderFactBatch {
+    pub writer: FactWriterId,
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+}
+
+/// Upgrade-only adoption of already-persisted facts that predate explicit
+/// discovery ownership. Adoption never changes a fact or Graph revision and
+/// can only fill an unowned writer slot; an existing different writer wins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FactWriterAssignment {
+    pub writer: FactWriterId,
+    pub nodes: Vec<NodeId>,
+    pub edges: Vec<FactEdge>,
 }
 
 /// A placement relationship evaluated against the graph's containment and
@@ -472,6 +497,27 @@ pub enum BindingScope {
     #[default]
     Exclusive,
     IndependentShare,
+}
+
+/// The provider contract required to turn one capacity dimension into Lease
+/// authority. Absence means the dimension is placement-only and cannot be
+/// claimed. The scope is part of the provider contract rather than inferred
+/// from the resource class.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ClaimBinding {
+    pub provider: ProviderId,
+    pub scope: BindingScope,
+}
+
+/// One atomic resource-fact update to a node/dimension claim contract. `None`
+/// removes claimability without deleting the underlying placement fact.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ClaimBindingUpdate {
+    pub node: NodeId,
+    pub dimension: CapacityDimension,
+    pub binding: Option<ClaimBinding>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -222,6 +222,25 @@ pub(crate) fn spawn(
     }
 }
 
+/// Prove the exact process-entry primitive used by lease activation. The
+/// caller owns a temporary cgroup and removes it after this child exits.
+pub(crate) fn probe(group: &CgroupGroup) -> Result<(), String> {
+    let log = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .map_err(|err| format!("open /dev/null for process probe: {err}"))?;
+    let mut child = spawn(group, "/bin/true", &[], &log)
+        .map_err(|err| format!("process cgroup probe: {err}"))?;
+    let status = child
+        .wait()
+        .map_err(|err| format!("wait for process cgroup probe: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("process cgroup probe exited with {status}"))
+    }
+}
+
 fn redirect_fd_or_exit(source: RawFd, target: RawFd, error_fd: RawFd) {
     if source != target {
         // SAFETY: the descriptors are inherited from the parent and the
