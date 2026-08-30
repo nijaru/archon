@@ -21,7 +21,9 @@ jobs:
         with:
           tool: cargo-deny
       - name: Apply staged source patch
-        run: python .github/scripts/patch_machine_activation_context.py
+        run: |
+          python .github/scripts/patch_machine_activation_context.py
+          python .github/scripts/fix_distributed_clippy.py
       - run: cargo fmt --all
       - run: cargo fmt --all -- --check
       - run: cargo test -p archon-node --test distributed_activation
@@ -32,6 +34,7 @@ jobs:
       - name: Publish validated source tree
         run: |
           rm .github/scripts/patch_machine_activation_context.py
+          rm .github/scripts/fix_distributed_clippy.py
           rm .github/workflows/machine-local-activation-proof.yml
           git config user.name "Nick"
           git config user.email "nijaru7@gmail.com"
