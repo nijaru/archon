@@ -20,6 +20,18 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
+      - name: Stage deterministic restart clock
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('crates/node/tests/service_replicas.rs')
+          text = path.read_text()
+          old = '    let (beta, beta_events) = register(&mut service, "beta");\n\n    service.submit(replica(1), OwnerId::from_u64(1));'
+          new = '    let (beta, beta_events) = register(&mut service, "beta");\n    service.cluster.set_now(1);\n\n    service.submit(replica(1), OwnerId::from_u64(1));'
+          if text.count(old) != 1:
+              raise SystemExit('restart-clock fixture anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
       - run: cargo fmt --all
       - run: cargo fmt --all -- --check
       - run: cargo test -p archon-node --test service_replicas
