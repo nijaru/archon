@@ -34,15 +34,6 @@ pub struct TinyGraph {
 }
 
 impl TinyGraph {
-    /// Mark machine `machine_index` degraded (`health=degraded` on the
-    /// machine node). Call before applying the graph.
-    pub fn with_degraded(&mut self, machine_index: usize) {
-        let machine = self.machines[machine_index].machine;
-        if let Some(node) = self.nodes.iter_mut().find(|node| node.id == machine) {
-            node.attrs.insert("health".into(), "degraded".into());
-        }
-    }
-
     /// Append a DataObject cached on machine `machine_index`'s NUMA node and
     /// return its id. Call before applying the graph.
     pub fn with_dataset(&mut self, machine_index: usize, id: u64) -> NodeId {
