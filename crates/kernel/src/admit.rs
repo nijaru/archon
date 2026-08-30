@@ -39,6 +39,16 @@ pub fn admit(
 /// independently so callers can apply explicit ceilings to selected classes.
 pub type ClassUsage = BTreeMap<ResourceClass, Quantity>;
 
+/// Optional weighted fair-share policy over current authoritative resource usage.
+/// `OwnerId` is the proof-stage scheduling identity; the product-level Project/Queue
+/// model remains above the resource kernel. Missing or zero weights are treated as 1.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdmissionPolicy {
+    pub owner_ceiling: ClassUsage,
+    pub fair_share: bool,
+    pub owner_weights: BTreeMap<OwnerId, u32>,
+}
+
 /// Per-request hard node exclusions supplied by an execution/provider layer.
 /// These differ from quarantine: excluded nodes are not expected to become
 /// usable merely because time advances or another Lease releases capacity.
@@ -57,13 +67,39 @@ pub fn admit_with_ceiling(
     queue: &[Queued],
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
 ) -> Option<Admission> {
+    admit_with_policy(
+        graph,
+        occupancy,
+        quarantine,
+        &AdmissionPolicy {
+            owner_ceiling: owner_ceiling.clone(),
+            ..AdmissionPolicy::default()
+        },
+        queue,
+        leases,
+    )
+}
+
+/// Admission with hard ceilings plus optional weighted dominant-share ordering.
+/// Priority remains the first ordering key; fair share only orders requests
+/// within the same priority class. With `fair_share=false`, ordering is exactly
+/// the legacy priority/submit-time/request-id order.
+pub fn admit_with_policy(
+    graph: &Graph,
+    occupancy: &Occupancy,
+    quarantine: &std::collections::BTreeSet<crate::ids::NodeId>,
+    policy: &AdmissionPolicy,
+    queue: &[Queued],
+    leases: &BTreeMap<LeaseId, crate::types::Lease>,
+) -> Option<Admission> {
     let usage = owner_usage(graph, leases);
-    for index in order_queue(queue) {
+    let capacity = claimable_capacity(graph);
+    for index in order_queue_with_policy(queue, &usage, &capacity, policy) {
         let queued = &queue[index];
         if !within_budget(
             usage.get(&queued.owner).cloned().unwrap_or_default(),
             &queued.request,
-            owner_ceiling,
+            &policy.owner_ceiling,
         ) {
             continue;
         }
@@ -120,6 +156,77 @@ fn order_queue(queue: &[Queued]) -> Vec<usize> {
             .priority
             .cmp(&left_request.priority)
             .then(queue[left].submitted_at.cmp(&queue[right].submitted_at))
+            .then(left_request.id.cmp(&right_request.id))
+    });
+    order
+}
+
+fn claimable_capacity(graph: &Graph) -> ClassUsage {
+    let mut capacity = ClassUsage::new();
+    for node in graph.nodes() {
+        for (dimension, amount) in &node.capacity {
+            if *amount == 0 || graph.claim_binding(node.id, *dimension).is_none() {
+                continue;
+            }
+            let total = capacity
+                .entry(node.kind)
+                .or_default()
+                .entry(*dimension)
+                .or_insert(0);
+            *total = total.saturating_add(*amount);
+        }
+    }
+    capacity
+}
+
+fn weighted_dominant_share(usage: &ClassUsage, capacity: &ClassUsage, weight: u32) -> u128 {
+    const SCALE: u128 = 1_000_000_000_000_000_000;
+    let weight = u128::from(weight.max(1));
+    let mut dominant = 0u128;
+    for (kind, quantities) in usage {
+        let Some(total) = capacity.get(kind) else {
+            continue;
+        };
+        for (dimension, used) in quantities {
+            let available = quantity_get(total, *dimension);
+            if available == 0 {
+                continue;
+            }
+            let denominator = u128::from(available) * weight;
+            let share = u128::from(*used) * SCALE / denominator;
+            dominant = dominant.max(share);
+        }
+    }
+    dominant
+}
+
+fn order_queue_with_policy(
+    queue: &[Queued],
+    usage: &BTreeMap<OwnerId, ClassUsage>,
+    capacity: &ClassUsage,
+    policy: &AdmissionPolicy,
+) -> Vec<usize> {
+    if !policy.fair_share {
+        return order_queue(queue);
+    }
+    let mut order: Vec<usize> = (0..queue.len()).collect();
+    order.sort_by(|&left, &right| {
+        let left_queued = &queue[left];
+        let right_queued = &queue[right];
+        let left_request = &left_queued.request;
+        let right_request = &right_queued.request;
+        let score = |owner: OwnerId| {
+            weighted_dominant_share(
+                usage.get(&owner).unwrap_or(&ClassUsage::new()),
+                capacity,
+                policy.owner_weights.get(&owner).copied().unwrap_or(1),
+            )
+        };
+        right_request
+            .priority
+            .cmp(&left_request.priority)
+            .then(score(left_queued.owner).cmp(&score(right_queued.owner)))
+            .then(left_queued.submitted_at.cmp(&right_queued.submitted_at))
             .then(left_request.id.cmp(&right_request.id))
     });
     order
@@ -182,19 +289,46 @@ pub fn admit_backfill_with_exclusions(
     queue: &[Queued],
     ctx: &BackfillCtx<'_>,
 ) -> Option<Admission> {
+    admit_backfill_with_policy(
+        graph,
+        occupancy,
+        quarantine,
+        exclusions,
+        &AdmissionPolicy {
+            owner_ceiling: owner_ceiling.clone(),
+            ..AdmissionPolicy::default()
+        },
+        queue,
+        ctx,
+    )
+}
+
+/// EASY-style backfill with hard exclusions, hard ceilings, and optional
+/// weighted fair-share ordering. Fair share changes scheduler ordering only;
+/// the existing shadow model and Lease authority path remain unchanged.
+pub fn admit_backfill_with_policy(
+    graph: &Graph,
+    occupancy: &Occupancy,
+    quarantine: &std::collections::BTreeSet<NodeId>,
+    exclusions: &RequestExclusions,
+    policy: &AdmissionPolicy,
+    queue: &[Queued],
+    ctx: &BackfillCtx<'_>,
+) -> Option<Admission> {
     let BackfillCtx {
         now,
         leases,
         open_bindings,
     } = ctx;
     let usage = owner_usage(graph, leases);
+    let capacity = claimable_capacity(graph);
     let mut blocked: Vec<BlockedHead> = Vec::new();
-    for index in order_queue(queue) {
+    for index in order_queue_with_policy(queue, &usage, &capacity, policy) {
         let queued = &queue[index];
         if !within_budget(
             usage.get(&queued.owner).cloned().unwrap_or_default(),
             &queued.request,
-            owner_ceiling,
+            &policy.owner_ceiling,
         ) {
             continue;
         }
