@@ -19,7 +19,9 @@ jobs:
         with:
           tool: cargo-deny
       - name: Apply staged capability proof
-        run: python .github/scripts/probe_process_capabilities.py
+        run: |
+          python .github/scripts/probe_process_capabilities.py
+          python .github/scripts/probe_process_entry.py
       - run: cargo fmt --all
       - run: cargo fmt --all -- --check
       - run: cargo test -p archon-node --test execution_capabilities
@@ -38,7 +40,7 @@ jobs:
           sudo --preserve-env=ARCHON_REQUIRE_PRIVILEGED_CGROUP env ARCHON_LOG_DIR="$RUNNER_TEMP/archon-capability-logs" "$test_bin" --nocapture
       - name: Publish validated source commit
         run: |
-          git add crates/node/src/cgroup.rs crates/node/src/device_filter.rs crates/node/src/runtime.rs crates/node/tests/execution_capabilities.rs crates/node/tests/cgroup_linux.rs
+          git add crates/node/src/cgroup.rs crates/node/src/device_filter.rs crates/node/src/linux_process.rs crates/node/src/runtime.rs crates/node/tests/execution_capabilities.rs crates/node/tests/cgroup_linux.rs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "fix(node): prove process enforcement capabilities"
