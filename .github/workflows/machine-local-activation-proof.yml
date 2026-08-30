@@ -1,0 +1,40 @@
+name: Machine-local activation proof
+
+on:
+  push:
+    branches: [tmp/machine-local-activation-context]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Apply staged source patch
+        run: python .github/scripts/patch_machine_activation_context.py
+      - run: cargo fmt --all
+      - run: cargo fmt --all -- --check
+      - run: cargo test -p archon-node --test distributed_activation
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p archon-sim
+      - run: cargo deny check advisories bans licenses sources
+      - name: Publish validated source tree
+        run: |
+          rm .github/scripts/patch_machine_activation_context.py
+          rm .github/workflows/machine-local-activation-proof.yml
+          git config user.name "Nick"
+          git config user.email "nijaru7@gmail.com"
+          git add -A
+          git commit -m "fix(node): scope distributed activation per machine"
+          git push origin HEAD:tmp/machine-local-activation-context
