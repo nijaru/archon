@@ -116,12 +116,32 @@ impl ProcessRuntime {
     pub fn capabilities(&self) -> crate::protocol::RuntimeCapabilities {
         #[cfg(target_os = "linux")]
         {
-            let cgroup = self.cgroup_root.is_some();
+            let Some(root) = self.cgroup_root.as_deref() else {
+                return crate::protocol::RuntimeCapabilities {
+                    available: true,
+                    ..Default::default()
+                };
+            };
+            let cpu_limit = probe_process_limit(
+                root,
+                &LeaseLimits {
+                    cpu_count: 1,
+                    memory_bytes: 0,
+                },
+            );
+            let memory_limit = probe_process_limit(
+                root,
+                &LeaseLimits {
+                    cpu_count: 0,
+                    memory_bytes: 1 << 20,
+                },
+            );
+            let device_isolation = probe_device_isolation(root);
             crate::protocol::RuntimeCapabilities {
                 available: true,
-                cpu_limit: cgroup,
-                memory_limit: cgroup,
-                device_isolation: cgroup,
+                cpu_limit,
+                memory_limit,
+                device_isolation,
                 physical_cpu_placement: false,
                 numa_memory_placement: false,
             }
@@ -363,6 +383,30 @@ impl ProcessRuntime {
             .map_err(|err| format!("reap lease {lease}: {err}"))?;
         Ok(was_live)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn probe_process_limit(root: &str, limits: &LeaseLimits) -> bool {
+    let Ok(group) = CgroupGroup::create_probe(root, limits) else {
+        return false;
+    };
+    let proof = linux_process::probe(&group);
+    let cleanup = group.destroy();
+    proof.is_ok() && cleanup.is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn probe_device_isolation(root: &str) -> bool {
+    let Ok(group) = CgroupGroup::create_probe(root, &LeaseLimits::default()) else {
+        return false;
+    };
+    let filter = crate::device_filter::probe(group.path());
+    let process = filter
+        .as_ref()
+        .map(|_| linux_process::probe(&group))
+        .unwrap_or_else(|_| Ok(()));
+    let cleanup = group.destroy();
+    filter.is_ok() && process.is_ok() && cleanup.is_ok()
 }
 
 /// Poll `check` every 100 ms until it returns true or `budget` elapses.

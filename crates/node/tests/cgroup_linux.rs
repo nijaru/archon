@@ -131,6 +131,28 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 }
 
 #[test]
+fn configured_cgroup_capabilities_are_proven_against_the_kernel() {
+    let root = root("capabilities");
+    if !require_cgroup_writable("capabilities") {
+        return;
+    }
+    cleanup_root(&root);
+    let runtime = ProcessRuntime::new().with_cgroup_root(root.clone());
+    let capabilities = runtime.capabilities();
+    assert!(capabilities.available);
+    assert!(capabilities.cpu_limit, "cpu controller probe must succeed");
+    assert!(
+        capabilities.memory_limit,
+        "memory controller probe must succeed"
+    );
+    assert!(
+        capabilities.device_isolation,
+        "cgroup-device BPF load/attach probe must succeed"
+    );
+    cleanup_root(&root);
+}
+
+#[test]
 fn device_claims_without_cgroup_fail_closed() {
     let mut runtime = ProcessRuntime::new();
     let lease = LeaseId::from_u64(99);
