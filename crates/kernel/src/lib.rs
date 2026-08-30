@@ -24,16 +24,16 @@ pub use command::{Command, Effect};
 pub use endpoint::{EndpointError, EndpointOp};
 pub use error::Error;
 pub use graph::Graph;
-pub use ids::{BindingId, LeaseId, NodeId, OwnerId, ProviderId, RequestId};
+pub use ids::{BindingId, FactWriterId, LeaseId, NodeId, OwnerId, ProviderId, RequestId};
 pub use occupancy::{Occupancy, occupancy_from_leases};
 pub use preempt::preempt_victims;
 pub use select::select;
 pub use types::{
     Allocation, Attrs, Binding, BindingScope, BindingState, CapacityDimension, Claim, ClaimBinding,
-    ClaimBindingUpdate, Edge, EdgeKind, Endpoint, EndpointPhase, Filter, IdentifierError, Lease,
-    LeaseState, Need, Node, NodeState, PortPublish, Preference, Quantity, Queued, Request,
-    RequestClass, ResourceClass, StorageMount, TopologyConstraint, TopologyRelation, qty,
-    quantity_get,
+    ClaimBindingUpdate, Edge, EdgeKind, Endpoint, EndpointPhase, FactEdge, FactWriterAssignment,
+    Filter, IdentifierError, Lease, LeaseState, Need, Node, NodeState, PortPublish, Preference,
+    ProviderFactBatch, Quantity, Queued, Request, RequestClass, ResourceClass, StorageMount,
+    TopologyConstraint, TopologyRelation, qty, quantity_get,
 };
 
 impl Cluster {

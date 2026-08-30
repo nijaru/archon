@@ -11,8 +11,9 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    Allocation, BindingId, CapacityDimension, Cluster, Command, Effect, Error, LeaseId, NodeId,
-    OwnerId, ProviderId, Queued, Request, RequestId, ResourceClass, quantity_get,
+    Allocation, BindingId, CapacityDimension, Cluster, Command, Effect, Error,
+    FactWriterAssignment, LeaseId, NodeId, OwnerId, ProviderFactBatch, ProviderId, Queued, Request,
+    RequestId, ResourceClass, quantity_get,
 };
 
 type CommandSink = Box<dyn FnMut(&Command) + Send>;
@@ -340,7 +341,15 @@ impl NodeService {
                         ),
                     });
                 }
+                if let Err(err) = self.preflight_fact_writers(machine, &description.devices) {
+                    self.mark_inventory_mismatch(machine)?;
+                    return Err(err);
+                }
                 if let Err(err) = self.preflight_claim_contracts(machine, &description.devices) {
+                    self.mark_inventory_mismatch(machine)?;
+                    return Err(err);
+                }
+                if let Err(err) = self.reconcile_fact_writers(machine, &description.devices) {
                     self.mark_inventory_mismatch(machine)?;
                     return Err(err);
                 }
@@ -364,9 +373,9 @@ impl NodeService {
                     .unwrap_or(0);
                 let (_local, nodes, edges) = crate::discover::build_graph(&description, base);
                 let claim_bindings = crate::discover::claim_bindings(&nodes);
-                self.commit(Command::ApplyResourceFacts {
-                    nodes,
-                    edges,
+                let batches = crate::discover::provider_fact_batches(nodes, edges);
+                self.commit(Command::ApplyProviderFacts {
+                    batches,
                     claim_bindings,
                 })?;
                 let machine =
@@ -418,6 +427,77 @@ impl NodeService {
             self.finish_machine_recovery(machine);
         }
         Ok(machine)
+    }
+
+    fn missing_fact_writer_assignments(
+        &self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Result<Vec<FactWriterAssignment>, Error> {
+        let expected =
+            crate::discover::current_fact_writer_assignments(&self.cluster.graph, machine, devices);
+        let mut missing = Vec::new();
+        for assignment in expected {
+            let mut nodes = Vec::new();
+            let mut edges = Vec::new();
+            for node in assignment.nodes {
+                match self.cluster.graph.node_fact_writer(node) {
+                    None => nodes.push(node),
+                    Some(writer) if writer == assignment.writer => {}
+                    Some(writer) => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "resource node {node} already belongs to discovery writer {writer}; returning agent expects {}",
+                                assignment.writer
+                            ),
+                        });
+                    }
+                }
+            }
+            for edge in assignment.edges {
+                match self.cluster.graph.edge_fact_writer(edge) {
+                    None => edges.push(edge),
+                    Some(writer) if writer == assignment.writer => {}
+                    Some(writer) => {
+                        return Err(Error::Refused {
+                            explanation: format!(
+                                "resource edge {} -> {} {:?} already belongs to discovery writer {writer}; returning agent expects {}",
+                                edge.from, edge.to, edge.kind, assignment.writer
+                            ),
+                        });
+                    }
+                }
+            }
+            if !nodes.is_empty() || !edges.is_empty() {
+                missing.push(FactWriterAssignment {
+                    writer: assignment.writer,
+                    nodes,
+                    edges,
+                });
+            }
+        }
+        Ok(missing)
+    }
+
+    fn preflight_fact_writers(
+        &self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Result<(), Error> {
+        self.missing_fact_writer_assignments(machine, devices)
+            .map(|_| ())
+    }
+
+    fn reconcile_fact_writers(
+        &mut self,
+        machine: NodeId,
+        devices: &[crate::discover::DeviceSpec],
+    ) -> Result<(), Error> {
+        let assignments = self.missing_fact_writer_assignments(machine, devices)?;
+        if !assignments.is_empty() {
+            self.commit(Command::AdoptFactWriters { assignments })?;
+        }
+        Ok(())
     }
 
     fn missing_claim_contracts(
@@ -501,9 +581,8 @@ impl NodeService {
         let nodes = self.current_claim_contract_nodes(machine, devices);
         let missing = self.missing_claim_contracts(&nodes)?;
         if !missing.is_empty() {
-            self.commit(Command::ApplyResourceFacts {
-                nodes: Vec::new(),
-                edges: Vec::new(),
+            self.commit(Command::ApplyProviderFacts {
+                batches: Vec::new(),
                 claim_bindings: missing,
             })?;
         }
@@ -708,9 +787,12 @@ impl NodeService {
             .collect();
         claim_bindings.extend(crate::discover::claim_bindings(&fresh_nodes));
         if !nodes.is_empty() || !edges.is_empty() || !claim_bindings.is_empty() {
-            self.commit(Command::ApplyResourceFacts {
-                nodes,
-                edges,
+            self.commit(Command::ApplyProviderFacts {
+                batches: vec![ProviderFactBatch {
+                    writer: crate::discover::DEVICE_FACT_WRITER,
+                    nodes,
+                    edges,
+                }],
                 claim_bindings,
             })?;
         }
