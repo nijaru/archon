@@ -55,7 +55,10 @@ impl LeaseExecutor for StatusExecutor {
                 handle: binding,
             }),
             AgentRequest::Activate { binding, .. } => {
-                self.events.lock().expect("event lock").push(Event::Activate);
+                self.events
+                    .lock()
+                    .expect("event lock")
+                    .push(Event::Activate);
                 Ok(AgentResponse::Activated { binding })
             }
             AgentRequest::Release { binding, .. } => {
@@ -199,7 +202,9 @@ fn active_service(
 }
 
 fn poll(service: &mut NodeService) {
-    service.collect_completions().expect("dispatch status polls");
+    service
+        .collect_completions()
+        .expect("dispatch status polls");
     service
         .drive(Duration::from_secs(2))
         .expect("absorb status polls");
@@ -305,8 +310,14 @@ fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
         LeaseState::Active
     );
     assert!(
-        !a_events.lock().expect("event lock").contains(&Event::Activate)
-            && !b_events.lock().expect("event lock").contains(&Event::Activate),
+        !a_events
+            .lock()
+            .expect("event lock")
+            .contains(&Event::Activate)
+            && !b_events
+                .lock()
+                .expect("event lock")
+                .contains(&Event::Activate),
         "recovery must adopt proven members rather than re-executing them"
     );
 }
