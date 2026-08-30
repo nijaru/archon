@@ -67,6 +67,7 @@ impl Cluster {
             owner_ceiling,
             queue,
             &self.leases,
+            &self.open_binding_leases(),
         )
     }
 
@@ -85,6 +86,7 @@ impl Cluster {
             policy,
             queue,
             &self.leases,
+            &self.open_binding_leases(),
         )
     }
 

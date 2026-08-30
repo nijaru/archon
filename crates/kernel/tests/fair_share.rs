@@ -162,6 +162,7 @@ fn weighted_fair_share_prefers_lower_dominant_share_within_priority() {
         &policy,
         &queue(5, 5),
         &leases,
+        &BTreeSet::new(),
     )
     .expect("one CPU remains available");
     assert_eq!(admission.owner, OwnerId::from_u64(2));
@@ -194,6 +195,7 @@ fn explicit_priority_still_precedes_fair_share() {
         &policy,
         &queue(10, 1),
         &leases,
+        &BTreeSet::new(),
     )
     .expect("one CPU remains available");
     assert_eq!(admission.owner, OwnerId::from_u64(1));
@@ -225,6 +227,7 @@ fn dominant_resource_share_compares_heterogeneous_usage() {
         &policy,
         &queue(5, 5),
         &leases,
+        &BTreeSet::new(),
     )
     .expect("CPU capacity remains");
     assert_eq!(admission.owner, OwnerId::from_u64(2));
@@ -253,7 +256,77 @@ fn disabled_fair_share_preserves_legacy_submit_order() {
         &policy,
         &queue(5, 5),
         &leases,
+        &BTreeSet::new(),
     )
     .expect("CPU capacity remains");
     assert_eq!(admission.owner, OwnerId::from_u64(1));
+}
+
+#[test]
+fn terminal_lease_with_open_binding_stays_charged_to_owner() {
+    let cluster = cluster();
+    let lease_id = LeaseId::from_u64(1);
+    let mut lease = active_lease(1, 1, 2, ResourceClass::Cpu);
+    lease.state = LeaseState::Failed;
+    let leases = BTreeMap::from([(lease_id, lease)]);
+
+    let charged = archon_kernel::owner_usage(&cluster.graph, &leases, &BTreeSet::from([lease_id]));
+    assert_eq!(
+        charged[&OwnerId::from_u64(1)][&ResourceClass::Cpu][&CapacityDimension::Count],
+        1
+    );
+
+    let fenced = archon_kernel::owner_usage(&cluster.graph, &leases, &BTreeSet::new());
+    assert!(!fenced.contains_key(&OwnerId::from_u64(1)));
+}
+
+#[test]
+fn fair_share_ordering_composes_with_backfill_shadow_safety() {
+    let cluster = cluster();
+    let running_id = LeaseId::from_u64(1);
+    let running = active_lease(1, 1, 2, ResourceClass::Cpu);
+    let leases = BTreeMap::from([(running_id, running)]);
+    let open_bindings = BTreeSet::new();
+    let occupancy =
+        archon_kernel::occupancy_from_leases(leases.values(), &open_bindings, &BTreeSet::new());
+
+    let mut head = request(20, 10);
+    head.needs[0].quantity = qty(CapacityDimension::Count, 4);
+    let queue = vec![
+        Queued {
+            request: head,
+            owner: OwnerId::from_u64(3),
+            submitted_at: 1,
+        },
+        Queued {
+            request: request(21, 5),
+            owner: OwnerId::from_u64(1),
+            submitted_at: 2,
+        },
+        Queued {
+            request: request(22, 5),
+            owner: OwnerId::from_u64(2),
+            submitted_at: 3,
+        },
+    ];
+    let policy = AdmissionPolicy {
+        fair_share: true,
+        ..AdmissionPolicy::default()
+    };
+    let admission = archon_kernel::admit_backfill_with_policy(
+        &cluster.graph,
+        &occupancy,
+        &BTreeSet::new(),
+        &Default::default(),
+        &policy,
+        &queue,
+        &archon_kernel::BackfillCtx {
+            now: 0,
+            leases: &leases,
+            open_bindings: &open_bindings,
+        },
+    )
+    .expect("short lower-share work can backfill before the protected head");
+    assert_eq!(admission.owner, OwnerId::from_u64(2));
+    assert_eq!(admission.request.id, RequestId::from_u64(22));
 }

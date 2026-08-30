@@ -32,6 +32,7 @@ pub fn admit(
         &ClassUsage::new(),
         queue,
         &BTreeMap::new(),
+        &BTreeSet::new(),
     )
 }
 
@@ -66,6 +67,7 @@ pub fn admit_with_ceiling(
     owner_ceiling: &ClassUsage,
     queue: &[Queued],
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
+    open_bindings: &BTreeSet<LeaseId>,
 ) -> Option<Admission> {
     admit_with_policy(
         graph,
@@ -77,6 +79,7 @@ pub fn admit_with_ceiling(
         },
         queue,
         leases,
+        open_bindings,
     )
 }
 
@@ -91,8 +94,9 @@ pub fn admit_with_policy(
     policy: &AdmissionPolicy,
     queue: &[Queued],
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
+    open_bindings: &BTreeSet<LeaseId>,
 ) -> Option<Admission> {
-    let usage = owner_usage(graph, leases);
+    let usage = owner_usage(graph, leases, open_bindings);
     let capacity = claimable_capacity(graph);
     for index in order_queue_with_policy(queue, &usage, &capacity, policy) {
         let queued = &queue[index];
@@ -114,23 +118,21 @@ pub fn admit_with_policy(
     None
 }
 
-/// Per-owner, per-kind consumption from active root leases. Only roots are
-/// counted so nested children are not double-charged against their owner.
+/// Per-owner, per-kind consumption from occupying root leases. Only roots are
+/// counted so nested children are not double-charged against their owner. A
+/// terminal root whose Binding is still open remains charged until fencing
+/// closes that authority, matching the Cluster occupancy contract.
 pub fn owner_usage(
     graph: &Graph,
     leases: &BTreeMap<LeaseId, crate::types::Lease>,
+    open_bindings: &BTreeSet<LeaseId>,
 ) -> BTreeMap<crate::ids::OwnerId, ClassUsage> {
     let mut usage: BTreeMap<crate::ids::OwnerId, ClassUsage> = BTreeMap::new();
     for lease in leases.values() {
         if lease.parent.is_some() {
             continue;
         }
-        if !matches!(
-            lease.state,
-            crate::types::LeaseState::Reserved
-                | crate::types::LeaseState::Preparing
-                | crate::types::LeaseState::Active
-        ) {
+        if !lease_occupies(lease, open_bindings.contains(&lease.id)) {
             continue;
         }
         let entry = usage.entry(lease.owner).or_default();
@@ -320,7 +322,7 @@ pub fn admit_backfill_with_policy(
         leases,
         open_bindings,
     } = ctx;
-    let usage = owner_usage(graph, leases);
+    let usage = owner_usage(graph, leases, open_bindings);
     let capacity = claimable_capacity(graph);
     let mut blocked: Vec<BlockedHead> = Vec::new();
     for index in order_queue_with_policy(queue, &usage, &capacity, policy) {

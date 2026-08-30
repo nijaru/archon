@@ -229,7 +229,15 @@ fn reservation_consumes_its_own_kind_budget() {
             1_000,
         )
         .unwrap();
-    let usage = archon_kernel::owner_usage(&world.cluster.graph, &world.cluster.leases);
+    let open_bindings: std::collections::BTreeSet<_> = world
+        .cluster
+        .bindings
+        .values()
+        .filter(|binding| !binding.state.is_closed())
+        .map(|binding| binding.lease)
+        .collect();
+    let usage =
+        archon_kernel::owner_usage(&world.cluster.graph, &world.cluster.leases, &open_bindings);
     let charged = usage
         .get(&OwnerId::from_u64(1))
         .and_then(|per_kind| per_kind.get(&ResourceClass::Cpu))

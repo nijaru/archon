@@ -1028,15 +1028,24 @@ impl NodeService {
         exclusions
     }
 
-    /// Admit one request and drive its lease to Active. Returns the admitted
-    /// request id, or None when nothing fits.
+    /// Admit one request using the default scheduler policy and drive its
+    /// lease to Active. Returns the admitted request id, or None when nothing fits.
     pub fn admit_one(&mut self) -> Result<Option<RequestId>, Error> {
+        self.admit_one_with_policy(&archon_kernel::AdmissionPolicy::default())
+    }
+
+    /// Admit one request under an explicit scheduler policy. Policy changes
+    /// queue ordering/admission only; the resulting Allocation still enters
+    /// the ordinary conflict-checked Lease/Binding authority path.
+    pub fn admit_one_with_policy(
+        &mut self,
+        policy: &archon_kernel::AdmissionPolicy,
+    ) -> Result<Option<RequestId>, Error> {
         let exclusions = self.execution_exclusions();
-        let Some(admission) = self.cluster.admit_backfill_with_exclusions(
-            &self.queue,
-            &Default::default(),
-            &exclusions,
-        ) else {
+        let Some(admission) =
+            self.cluster
+                .admit_backfill_with_policy(&self.queue, policy, &exclusions)
+        else {
             return Ok(None);
         };
         self.validate_allocation_bindings(&admission.allocation)?;
