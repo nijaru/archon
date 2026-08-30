@@ -16,8 +16,9 @@ mod select;
 mod types;
 
 pub use admit::{
-    Admission, BackfillCtx, ClassUsage, RequestExclusions, admit, admit_backfill,
-    admit_backfill_with_exclusions, admit_with_ceiling, owner_usage, refuse_reason,
+    Admission, AdmissionPolicy, BackfillCtx, ClassUsage, RequestExclusions, admit, admit_backfill,
+    admit_backfill_with_exclusions, admit_backfill_with_policy, admit_with_ceiling,
+    admit_with_policy, owner_usage, refuse_reason,
 };
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
 pub use command::{Command, Effect};
@@ -66,6 +67,26 @@ impl Cluster {
             owner_ceiling,
             queue,
             &self.leases,
+            &self.open_binding_leases(),
+        )
+    }
+
+    /// Admission under an explicit scheduler policy. Policy can enable
+    /// weighted dominant-share ordering without changing Lease authority.
+    pub fn admit_with_policy(
+        &self,
+        queue: &[Queued],
+        policy: &AdmissionPolicy,
+    ) -> Option<Admission> {
+        let blocked = self.placement_blocked();
+        admit_with_policy(
+            &self.graph,
+            &self.occupancy(),
+            &blocked,
+            policy,
+            queue,
+            &self.leases,
+            &self.open_binding_leases(),
         )
     }
 
@@ -95,6 +116,29 @@ impl Cluster {
             &blocked,
             exclusions,
             owner_ceiling,
+            queue,
+            &crate::admit::BackfillCtx {
+                now: self.now,
+                leases: &self.leases,
+                open_bindings: &self.open_binding_leases(),
+            },
+        )
+    }
+
+    /// EASY-style backfill under an explicit scheduler policy.
+    pub fn admit_backfill_with_policy(
+        &self,
+        queue: &[Queued],
+        policy: &AdmissionPolicy,
+        exclusions: &RequestExclusions,
+    ) -> Option<Admission> {
+        let blocked = self.placement_blocked();
+        admit_backfill_with_policy(
+            &self.graph,
+            &self.occupancy(),
+            &blocked,
+            exclusions,
+            policy,
             queue,
             &crate::admit::BackfillCtx {
                 now: self.now,
