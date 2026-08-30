@@ -1,0 +1,37 @@
+name: Preemption authority proof
+
+on:
+  push:
+    branches: [tmp/preemption-authority-proof]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo fmt --all
+      - run: cargo fmt --all -- --check
+      - run: cargo test -p archon-node --test preemption
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p archon-sim
+      - run: cargo deny check advisories bans licenses sources
+      - name: Publish validated source tree
+        run: |
+          rm .github/workflows/preemption-authority-proof.yml
+          git config user.name "Nick"
+          git config user.email "nijaru7@gmail.com"
+          git add -A
+          git commit -m "test(node): prove preemption waits for fencing"
+          git push origin HEAD:tmp/preemption-authority-proof
