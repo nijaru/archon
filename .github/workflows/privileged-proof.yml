@@ -1,0 +1,20 @@
+name: Privileged cgroup proof
+
+on:
+  push:
+    branches: [tmp/privileged-cgroup-proof]
+
+jobs:
+  cgroup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Show cgroup environment
+        run: |
+          mount | grep cgroup || true
+          ls -ld /sys/fs/cgroup
+          cat /proc/self/cgroup
+      - name: Run native cgroup/BPF enforcement tests as root
+        run: sudo env PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" cargo test -p archon-node --test cgroup_linux -- --nocapture
