@@ -48,6 +48,7 @@ jobs:
           sed -i 's/request\.id = restarts\[0\]\.0\.id;/request.resources.id = restarts[0].0.id;/' crates/node/tests/health_ops.rs
           sed -i 's/image: image,/image,/; s/grace_secs: grace_secs,/grace_secs,/; s/keep_alive: keep_alive,/keep_alive,/' crates/control/src/server.rs
           sed -i 's/archon_kernel::archon_node::workload::WorkloadSpec {/archon_node::workload::WorkloadSpec {/g; s/resources: Request {/resources: archon_kernel::Request {/g' crates/cli/src/main.rs
+          sed -i 's/command: command,/command,/g; s/storage: storage,/storage,/g; s/ports: ports,/ports,/g' crates/node/tests/containers.rs
       - name: Format
         run: cargo fmt --all
       - name: Format check
