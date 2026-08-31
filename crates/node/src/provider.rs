@@ -62,6 +62,12 @@ impl ResourceProvider {
         self.apply(EndpointOp::Activate, generation)
     }
 
+    /// Validate that an execution operation came from the current controller
+    /// generation. This does not grant resource authority or launch work.
+    pub(crate) fn authorize_execution(&mut self, session: u64, epoch: u64) -> Result<(), String> {
+        self.check_control_generation(session, epoch)
+    }
+
     pub(crate) fn release(&mut self, generation: EndpointGeneration) -> Result<(), String> {
         self.apply(EndpointOp::Release, generation)
     }

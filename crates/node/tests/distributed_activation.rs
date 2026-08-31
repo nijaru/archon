@@ -18,13 +18,17 @@ const GIB: u64 = 1 << 30;
 #[derive(Clone, Debug)]
 enum Event {
     Prepare,
-    Activate { machine: String },
+    Activate {
+        machine: String,
+    },
     StartExecution {
         machine: String,
         limits: LeaseLimits,
         devices: Vec<DeviceAccess>,
     },
-    Fence { machine: String },
+    Fence {
+        machine: String,
+    },
 }
 
 struct RecordingAgent {
@@ -77,12 +81,9 @@ impl AgentClient for RecordingAgent {
             }
             AgentRequest::Release { binding, .. } => Ok(AgentResponse::Released { binding }),
             AgentRequest::Fence { binding, .. } => {
-                self.events
-                    .lock()
-                    .expect("event lock")
-                    .push(Event::Fence {
-                        machine: self.machine.clone(),
-                    });
+                self.events.lock().expect("event lock").push(Event::Fence {
+                    machine: self.machine.clone(),
+                });
                 Ok(AgentResponse::Fenced { binding })
             }
             AgentRequest::Status { lease } => Ok(AgentResponse::Running {
@@ -277,9 +278,7 @@ fn distributed_activation_is_prepared_atomically_and_scoped_per_machine() {
     for member in ["a", "b"] {
         let activations = events
             .iter()
-            .filter(|event| {
-                matches!(event, Event::Activate { machine } if machine == member)
-            })
+            .filter(|event| matches!(event, Event::Activate { machine } if machine == member))
             .count();
         assert_eq!(activations, 3, "one Provider activation per binding");
 
@@ -343,10 +342,14 @@ fn execution_start_failure_fails_and_fences_the_rigid_root() {
         6,
         "all six resource bindings must fence after member execution fails to start"
     );
-    assert!(events.iter().any(|event| {
-        matches!(event, Event::Fence { machine } if machine == "a")
-    }));
-    assert!(events.iter().any(|event| {
-        matches!(event, Event::Fence { machine } if machine == "b")
-    }));
+    assert!(
+        events
+            .iter()
+            .any(|event| { matches!(event, Event::Fence { machine } if machine == "a") })
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| { matches!(event, Event::Fence { machine } if machine == "b") })
+    );
 }
