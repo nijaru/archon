@@ -371,7 +371,7 @@ impl ControlPlane {
                     host_nodes,
                     devices,
                 };
-                let mut executor = archon_node::service::RemoteExecutor::from_secure(stream);
+                let mut executor = archon_node::service::RemoteAgentClient::from_secure(stream);
                 let capabilities =
                     match archon_node::service::NodeService::query_execution_capabilities(
                         &mut executor,
@@ -407,7 +407,7 @@ impl ControlPlane {
 
     fn register_dial_in(
         &mut self,
-        executor: archon_node::service::RemoteExecutor,
+        executor: archon_node::service::RemoteAgentClient,
         description: archon_node::discover::MachineDescription,
         capabilities: archon_node::protocol::ExecutionCapabilities,
     ) -> Result<(), Box<dyn std::error::Error>> {

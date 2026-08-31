@@ -8,7 +8,7 @@ use archon_node::agent::LeaseAgent;
 use archon_node::discover::MachineDescription;
 use archon_node::protocol::{ExecutionCapabilities, RuntimeCapabilities};
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::{LocalExecutor, NodeService};
+use archon_node::service::{LocalAgentClient, NodeService};
 
 fn request(id: u64) -> Request {
     Request {
@@ -39,7 +39,7 @@ fn node_service_uses_fair_share_before_lease_commit() {
         host_nodes: vec![],
         devices: vec![],
     };
-    let executor = LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()));
+    let executor = LocalAgentClient::new(LeaseAgent::new(ProcessRuntime::new()));
     service
         .register_agent_with_capabilities(
             description,

@@ -13,7 +13,7 @@ use archon_node::protocol::{
     AgentRequest, AgentResponse, ExecutionCapabilities, LeaseLimits, RuntimeCapabilities,
 };
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
+use archon_node::service::{AgentClient, LocalAgentClient, NodeService};
 
 /// Hosted CI has no delegated cgroup subtree, but this suite is about the
 /// higher-level process lifecycle rather than proving kernel CPU isolation.
@@ -21,11 +21,11 @@ use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
 /// every lifecycle operation to the real ProcessRuntime. `cgroup_linux.rs`
 /// remains the proof that production CPU limits are actually enforced.
 struct LifecycleProcessExecutor {
-    inner: LocalExecutor,
+    inner: LocalAgentClient,
 }
 
-impl LeaseExecutor for LifecycleProcessExecutor {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for LifecycleProcessExecutor {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         if matches!(request, AgentRequest::Capabilities) {
             return Ok(AgentResponse::Capabilities {
                 capabilities: ExecutionCapabilities {
@@ -41,7 +41,7 @@ impl LeaseExecutor for LifecycleProcessExecutor {
                 },
             });
         }
-        self.inner.execute(request)
+        self.inner.call(request)
     }
 }
 
@@ -61,7 +61,7 @@ fn boot() -> NodeService {
         .register_agent(
             description,
             Box::new(LifecycleProcessExecutor {
-                inner: LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new())),
+                inner: LocalAgentClient::new(LeaseAgent::new(ProcessRuntime::new())),
             }),
         )
         .expect("register lifecycle test machine");

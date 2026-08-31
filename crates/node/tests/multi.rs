@@ -86,7 +86,8 @@ fn register_instance(
     name: &str,
     addr: &str,
 ) -> archon_kernel::NodeId {
-    let mut executor = archon_node::service::RemoteExecutor::connect(addr, None).expect("connect");
+    let mut executor =
+        archon_node::service::RemoteAgentClient::connect(addr, None).expect("connect");
     let mut description = NodeService::hello(&mut executor).expect("hello");
     description.instance_id = instance_id.to_string();
     description.name = name.to_string();

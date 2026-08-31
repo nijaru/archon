@@ -15,7 +15,7 @@ use archon_node::protocol::{
     AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities, read_greeting,
     read_request, write_response,
 };
-use archon_node::service::{NodeService, RemoteExecutor};
+use archon_node::service::{NodeService, RemoteAgentClient};
 
 fn recovery_capabilities() -> ExecutionCapabilities {
     ExecutionCapabilities {
@@ -135,7 +135,7 @@ impl FailedResponse for AgentRequest {
 }
 
 fn register(service: &mut NodeService, addr: &str, instance_id: &str) -> archon_kernel::NodeId {
-    let mut executor = RemoteExecutor::connect(addr, None).expect("connect");
+    let mut executor = RemoteAgentClient::connect(addr, None).expect("connect");
     let mut description = NodeService::hello(&mut executor).expect("hello");
     description.instance_id = instance_id.to_string();
     service

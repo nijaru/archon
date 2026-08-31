@@ -5,7 +5,7 @@ use archon_node::agent::LeaseAgent;
 use archon_node::discover::MachineDescription;
 use archon_node::protocol::{AgentRequest, AgentResponse};
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
+use archon_node::service::{AgentClient, LocalAgentClient, NodeService};
 
 fn machine(instance: &str) -> MachineDescription {
     MachineDescription {
@@ -82,7 +82,7 @@ fn unusable_cgroup_configuration_is_excluded_before_cpu_lease_authority() {
     service
         .register_agent(
             machine("unusable-cgroup"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(runtime))),
+            Box::new(LocalAgentClient::new(LeaseAgent::new(runtime))),
         )
         .expect("registration");
     service.submit(cpu_request(1), OwnerId::from_u64(1));
@@ -99,7 +99,9 @@ fn lifecycle_only_process_is_excluded_before_cpu_lease_authority() {
     service
         .register_agent(
             machine("lifecycle-only"),
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            Box::new(LocalAgentClient::new(
+                LeaseAgent::new(ProcessRuntime::new()),
+            )),
         )
         .expect("registration");
     service.submit(cpu_request(1), OwnerId::from_u64(1));
@@ -109,8 +111,8 @@ fn lifecycle_only_process_is_excluded_before_cpu_lease_authority() {
 
 struct LegacyExecutor;
 
-impl LeaseExecutor for LegacyExecutor {
-    fn execute(&mut self, _request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for LegacyExecutor {
+    fn call(&mut self, _request: AgentRequest) -> Result<AgentResponse, String> {
         Ok(AgentResponse::Welcome {
             instance_id: "legacy".into(),
             name: "legacy".into(),
