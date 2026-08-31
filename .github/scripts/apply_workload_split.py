@@ -3,27 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-ROOT = Path('.')
-WORKLOAD_FIELDS = {"class", "command", "image", "storage", "ports", "keep_alive", "grace_secs"}
+WORKLOAD_FIELDS = {"command", "image", "storage", "ports", "keep_alive", "grace_secs"}
 
 WORKLOAD_RS = r'''//! Workload desired-state and execution intent above the resource kernel.
 //!
-//! `archon_kernel::Request` describes only schedulable resource intent. This
-//! module carries the execution and supervision fields that do not participate
-//! in resource authority or placement.
+//! `archon_kernel::Request` describes schedulable resource intent. Execution
+//! payload and restart policy live here instead of participating in resource
+//! authority, placement, or the kernel command log.
 
 use std::ops::Deref;
 
 use archon_kernel::Request;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum WorkloadClass {
-    Service,
-    #[default]
-    Batch,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StorageMount {
     pub host_path: String,
     pub mount_path: String,
@@ -56,15 +48,13 @@ impl ExecutionSpec {
     }
 }
 
-/// One workload submission. Flattening deliberately preserves the legacy
-/// serialized Request shape: snapshots written before this split decode into
-/// this type while new kernel Requests remain free of execution payload.
+/// One workload submission. The flattened representation intentionally matches
+/// the legacy combined Request JSON shape, so old controller snapshots remain
+/// readable while the kernel Request itself no longer carries execution data.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkloadSpec {
     #[serde(flatten)]
     pub resources: Request,
-    #[serde(default)]
-    pub class: WorkloadClass,
     #[serde(flatten)]
     pub execution: ExecutionSpec,
     #[serde(default)]
@@ -75,7 +65,6 @@ impl WorkloadSpec {
     pub fn resource_only(resources: Request) -> Self {
         Self {
             resources,
-            class: WorkloadClass::Batch,
             execution: ExecutionSpec::default(),
             keep_alive: false,
         }
@@ -104,313 +93,551 @@ impl AsRef<Request> for WorkloadSpec {
 '''
 
 
-def write(path: str, text: str) -> None:
-    Path(path).write_text(text)
-
-
-def remove_enum_and_fields() -> None:
-    p = Path('crates/kernel/src/types.rs')
-    s = p.read_text()
-    s = re.sub(
-        r'\n#\[derive\(Clone, Copy, PartialEq, Eq, Debug\)\]\n#\[cfg_attr\(feature = "serde", derive\(serde::Serialize, serde::Deserialize\)\)\]\npub enum RequestClass \{\n    Service,\n    Batch,\n\}\n',
-        '\n', s, count=1,
-    )
-    for field in ('class', 'command', 'image', 'storage', 'ports', 'keep_alive', 'grace_secs'):
-        # Remove doc comments immediately attached to workload-only fields too.
-        s = re.sub(
-            rf'(?m)(?:^    ///.*\n)*^    pub {field}: [^\n]+\n',
-            '', s,
-        )
-    s = re.sub(
-        r'\n#\[derive\(Clone, Debug, PartialEq, Eq\)\]\n#\[cfg_attr\(feature = "serde", derive\(serde::Serialize, serde::Deserialize\)\)\]\npub struct StorageMount \{.*?\n\}\n\n/// A container port published to the host; None lets the host choose\.\n#\[cfg_attr\(feature = "serde", derive\(serde::Serialize, serde::Deserialize\)\)\]\n#\[derive\(Clone, Debug, PartialEq, Eq\)\]\npub struct PortPublish \{.*?\n\}\n',
-        '\n', s, count=1, flags=re.S,
-    )
-    p.write_text(s)
-
-    p = Path('crates/kernel/src/lib.rs')
-    s = p.read_text()
-    for token in ('PortPublish', 'RequestClass', 'StorageMount'):
-        s = re.sub(rf'\b{token},\s*', '', s)
-        s = re.sub(rf',\s*\b{token}\b', '', s)
-    p.write_text(s)
+def field_match(part: str):
+    match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", part, re.S)
+    if not match:
+        return None
+    return match.group(1), part[match.end():].strip()
 
 
 def scan_matching(text: str, open_pos: int) -> int:
     depth = 0
-    i = open_pos
-    quote = None
+    quote = False
     line_comment = False
     block_comment = 0
+    i = open_pos
     while i < len(text):
         ch = text[i]
-        nxt = text[i + 1] if i + 1 < len(text) else ''
+        nxt = text[i + 1] if i + 1 < len(text) else ""
         if line_comment:
-            if ch == '\n':
+            if ch == "\n":
                 line_comment = False
             i += 1
             continue
         if block_comment:
-            if ch == '/' and nxt == '*':
-                block_comment += 1; i += 2; continue
-            if ch == '*' and nxt == '/':
-                block_comment -= 1; i += 2; continue
-            i += 1; continue
+            if ch == "/" and nxt == "*":
+                block_comment += 1
+                i += 2
+                continue
+            if ch == "*" and nxt == "/":
+                block_comment -= 1
+                i += 2
+                continue
+            i += 1
+            continue
         if quote:
-            if ch == '\\':
-                i += 2; continue
-            if ch == quote:
-                quote = None
-            i += 1; continue
-        if ch == '/' and nxt == '/':
-            line_comment = True; i += 2; continue
-        if ch == '/' and nxt == '*':
-            block_comment = 1; i += 2; continue
-        if ch in ('"', "'"):
-            quote = ch; i += 1; continue
-        if ch == '{':
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                quote = False
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            line_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            block_comment = 1
+            i += 2
+            continue
+        if ch == '"':
+            quote = True
+            i += 1
+            continue
+        if ch == "{":
             depth += 1
-        elif ch == '}':
+        elif ch == "}":
             depth -= 1
             if depth == 0:
                 return i
         i += 1
-    raise RuntimeError('unmatched Request literal')
+    raise RuntimeError("unmatched brace")
 
 
 def split_fields(body: str) -> list[str]:
-    parts = []
+    parts: list[str] = []
     start = 0
     stack: list[str] = []
-    quote = None
+    angle_depth = 0
+    quote = False
     line_comment = False
     block_comment = 0
-    pairs = {')': '(', ']': '[', '}': '{'}
+    pairs = {")": "(", "]": "[", "}": "{"}
     i = 0
     while i < len(body):
         ch = body[i]
-        nxt = body[i + 1] if i + 1 < len(body) else ''
+        nxt = body[i + 1] if i + 1 < len(body) else ""
         if line_comment:
-            if ch == '\n': line_comment = False
-            i += 1; continue
+            if ch == "\n":
+                line_comment = False
+            i += 1
+            continue
         if block_comment:
-            if ch == '/' and nxt == '*': block_comment += 1; i += 2; continue
-            if ch == '*' and nxt == '/': block_comment -= 1; i += 2; continue
-            i += 1; continue
+            if ch == "/" and nxt == "*":
+                block_comment += 1
+                i += 2
+                continue
+            if ch == "*" and nxt == "/":
+                block_comment -= 1
+                i += 2
+                continue
+            i += 1
+            continue
         if quote:
-            if ch == '\\': i += 2; continue
-            if ch == quote: quote = None
-            i += 1; continue
-        if ch == '/' and nxt == '/': line_comment = True; i += 2; continue
-        if ch == '/' and nxt == '*': block_comment = 1; i += 2; continue
-        if ch in ('"', "'"): quote = ch; i += 1; continue
-        if ch in '([{': stack.append(ch)
-        elif ch in ')]}':
-            if stack and stack[-1] == pairs[ch]: stack.pop()
-        elif ch == ',' and not stack:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                quote = False
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            line_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            block_comment = 1
+            i += 2
+            continue
+        if ch == '"':
+            quote = True
+            i += 1
+            continue
+        if ch in "([{":
+            stack.append(ch)
+        elif ch in ")]}":
+            if stack and stack[-1] == pairs[ch]:
+                stack.pop()
+        elif ch == "<" and (angle_depth > 0 or body[max(0, i - 2):i] == "::"):
+            angle_depth += 1
+        elif ch == ">" and angle_depth > 0:
+            angle_depth -= 1
+        elif ch == "," and not stack and angle_depth == 0:
             parts.append(body[start:i])
             start = i + 1
         i += 1
-    if body[start:].strip(): parts.append(body[start:])
+    if body[start:].strip():
+        parts.append(body[start:])
     return parts
 
 
-def field_name(part: str) -> str | None:
-    m = re.match(r'\s*([A-Za-z_][A-Za-z0-9_]*)\s*:', part, re.S)
-    return m.group(1) if m else None
+def normalized(expr: str) -> str:
+    return re.sub(r"\s+", "", expr)
 
 
-def field_expr(part: str) -> str:
-    return part.split(':', 1)[1].strip()
+def payload_is_meaningful(fields: dict[str, str]) -> bool:
+    defaults = {
+        "command": {"vec![]", "Vec::new()", "Default::default()"},
+        "image": {"None"},
+        "storage": {"vec![]", "Vec::new()", "Default::default()"},
+        "ports": {"vec![]", "Vec::new()", "Default::default()"},
+        "keep_alive": {"false"},
+        "grace_secs": {"0"},
+    }
+    for name, allowed in defaults.items():
+        expr = normalized(fields.get(name, next(iter(allowed))))
+        if expr not in {normalized(value) for value in allowed}:
+            return True
+    return False
 
 
-def transform_request_literals(path: Path, wrap: bool) -> None:
+def transform_request_literals(path: Path, can_wrap: bool) -> None:
     text = path.read_text()
-    out = []
+    out: list[str] = []
     cursor = 0
-    pattern = re.compile(r'\bRequest\s*\{')
+    pattern = re.compile(r"\bRequest\s*\{")
     while True:
-        m = pattern.search(text, cursor)
-        if not m:
-            out.append(text[cursor:]); break
-        open_pos = text.find('{', m.start())
+        match = pattern.search(text, cursor)
+        if not match:
+            out.append(text[cursor:])
+            break
+        open_pos = text.find("{", match.start())
         close_pos = scan_matching(text, open_pos)
         body = text[open_pos + 1:close_pos]
         parts = split_fields(body)
-        fields = {field_name(p): p for p in parts if field_name(p)}
-        kept = [p for p in parts if field_name(p) not in WORKLOAD_FIELDS]
-        pure = 'Request {' + ','.join(kept) + '}'
-        if wrap:
-            cls = field_expr(fields['class']) if 'class' in fields else 'RequestClass::Batch'
-            cls = cls.replace('RequestClass::', 'archon_node::workload::WorkloadClass::')
+        parsed = [field_match(part) for part in parts]
+        fields = {item[0]: item[1] for item in parsed if item is not None}
+        kept = [part for part, item in zip(parts, parsed) if item is None or item[0] not in WORKLOAD_FIELDS]
+        pure = "Request {" + ",".join(kept) + "}"
+        if can_wrap and payload_is_meaningful(fields):
             def expr(name: str, default: str) -> str:
-                return field_expr(fields[name]) if name in fields else default
+                return fields.get(name, default)
+
             replacement = (
-                'archon_node::workload::WorkloadSpec {'
-                f'resources: {pure},'
-                f'class: {cls},'
-                'execution: archon_node::workload::ExecutionSpec {'
-                f'command: {expr("command", "Vec::new()")},'
-                f'image: {expr("image", "None")},'
-                f'storage: {expr("storage", "Vec::new()")},'
-                f'ports: {expr("ports", "Vec::new()")},'
-                f'grace_secs: {expr("grace_secs", "0")},'
-                '},'
-                f'keep_alive: {expr("keep_alive", "false")},'
-                '}'
+                "archon_node::workload::WorkloadSpec {"
+                f"resources: {pure},"
+                "execution: archon_node::workload::ExecutionSpec {"
+                f"command: {expr('command', 'Vec::new()')},"
+                f"image: {expr('image', 'None')},"
+                f"storage: {expr('storage', 'Vec::new()')},"
+                f"ports: {expr('ports', 'Vec::new()')},"
+                f"grace_secs: {expr('grace_secs', '0')},"
+                "},"
+                f"keep_alive: {expr('keep_alive', 'false')},"
+                "}"
             )
         else:
             replacement = pure
-        out.append(text[cursor:m.start()])
+        out.append(text[cursor:match.start()])
         out.append(replacement)
         cursor = close_pos + 1
-    path.write_text(''.join(out))
+    path.write_text("".join(out))
 
 
-def migrate_literals() -> None:
-    for p in Path('crates').rglob('*.rs'):
-        if p.as_posix() in {'crates/kernel/src/types.rs'}:
+def update_wrapped_return_types(path: Path) -> None:
+    text = path.read_text()
+    replacements: list[tuple[int, int]] = []
+    for match in re.finditer(r"->\s*Request\b", text):
+        open_pos = text.find("{", match.end())
+        if open_pos < 0:
             continue
-        wrap = p.as_posix().startswith(('crates/node/tests/', 'crates/control/', 'crates/cli/'))
-        transform_request_literals(p, wrap)
-        s = p.read_text()
-        # Kernel RequestClass no longer exists. Pure-resource fixtures simply
-        # drop the now-irrelevant class import/use.
-        if not wrap:
-            s = re.sub(r'\bRequestClass,\s*', '', s)
-            s = re.sub(r',\s*RequestClass\b', '', s)
-            s = re.sub(r'\bRequestClass\s*,', '', s)
-        # Workload attachment types now live with execution intent.
-        s = s.replace('archon_kernel::StorageMount', 'archon_node::workload::StorageMount')
-        s = s.replace('archon_kernel::PortPublish', 'archon_node::workload::PortPublish')
-        if wrap:
-            # Helpers that used to return the combined Request now return the
-            # workload wrapper; submit accepts either wrapper or pure Request.
-            s = re.sub(r'->\s*Request\s*\{', '-> archon_node::workload::WorkloadSpec {', s)
-        p.write_text(s)
+        try:
+            close_pos = scan_matching(text, open_pos)
+        except RuntimeError:
+            continue
+        body = text[open_pos + 1:close_pos]
+        if "archon_node::workload::WorkloadSpec {" in body:
+            replacements.append((match.start(), match.end()))
+    for start, end in reversed(replacements):
+        text = text[:start] + "-> archon_node::workload::WorkloadSpec" + text[end:]
+    path.write_text(text)
 
 
-def patch_node_modules() -> None:
-    p = Path('crates/node/src/lib.rs')
-    s = p.read_text()
-    if 'pub mod workload;' not in s:
-        s += 'pub mod workload;\n'
-    p.write_text(s)
-    write('crates/node/src/workload.rs', WORKLOAD_RS)
-
-    p = Path('crates/node/src/protocol.rs')
-    s = p.read_text().replace(
-        'use archon_kernel::{BindingScope, PortPublish, StorageMount};',
-        'use archon_kernel::BindingScope;\nuse crate::workload::{PortPublish, StorageMount};'
+def remove_kernel_execution_fields() -> None:
+    path = Path("crates/kernel/src/types.rs")
+    text = path.read_text()
+    for field in ("command", "image", "storage", "ports", "keep_alive", "grace_secs"):
+        text = re.sub(rf"(?m)(?:^    ///.*\n)*^    pub {field}: [^\n]+\n", "", text)
+    text = re.sub(
+        r"\n#\[derive\(Clone, Debug, PartialEq, Eq\)\]\n#\[cfg_attr\(feature = \"serde\", derive\(serde::Serialize, serde::Deserialize\)\)\]\npub struct StorageMount \{.*?\n\}\n\n/// A container port published to the host; None lets the host choose\.\n#\[cfg_attr\(feature = \"serde\", derive\(serde::Serialize, serde::Deserialize\)\)\]\n#\[derive\(Clone, Debug, PartialEq, Eq\)\]\npub struct PortPublish \{.*?\n\}\n",
+        "\n",
+        text,
+        count=1,
+        flags=re.S,
     )
-    p.write_text(s)
+    path.write_text(text)
 
-    p = Path('crates/node/src/container.rs')
-    s = p.read_text()
-    s = s.replace('use archon_kernel::{PortPublish, StorageMount};', 'use crate::workload::{PortPublish, StorageMount};')
-    p.write_text(s)
+    path = Path("crates/kernel/src/lib.rs")
+    text = path.read_text()
+    for token in ("PortPublish", "StorageMount"):
+        text = re.sub(rf"\b{token},\s*", "", text)
+        text = re.sub(rf",\s*\b{token}\b", "", text)
+    path.write_text(text)
+
+
+def add_workload_module() -> None:
+    Path("crates/node/src/workload.rs").write_text(WORKLOAD_RS)
+    path = Path("crates/node/src/lib.rs")
+    text = path.read_text()
+    if "pub mod workload;" not in text:
+        text += "pub mod workload;\n"
+    path.write_text(text)
+
+    path = Path("crates/node/src/protocol.rs")
+    text = path.read_text().replace(
+        "use archon_kernel::{BindingScope, PortPublish, StorageMount};",
+        "use archon_kernel::BindingScope;\nuse crate::workload::{PortPublish, StorageMount};",
+    )
+    path.write_text(text)
+
+    path = Path("crates/node/src/container.rs")
+    text = path.read_text().replace(
+        "use archon_kernel::{LeaseId, PortPublish, StorageMount};",
+        "use archon_kernel::LeaseId;\n\nuse crate::workload::{PortPublish, StorageMount};",
+    )
+    path.write_text(text)
+
+
+def migrate_request_literals() -> None:
+    for path in Path("crates").rglob("*.rs"):
+        if path.as_posix() == "crates/kernel/src/types.rs":
+            continue
+        can_wrap = path.as_posix().startswith(("crates/node/", "crates/control/", "crates/cli/"))
+        transform_request_literals(path, can_wrap)
+        if can_wrap:
+            update_wrapped_return_types(path)
+        text = path.read_text()
+        text = text.replace("archon_kernel::StorageMount", "archon_node::workload::StorageMount")
+        text = text.replace("archon_kernel::PortPublish", "archon_node::workload::PortPublish")
+        path.write_text(text)
+
+    # Node integration tests historically imported attachment types from the
+    # kernel. Remove those import-list entries and qualify remaining uses.
+    for path in Path("crates/node/tests").glob("*.rs"):
+        text = path.read_text()
+        if "StorageMount" in text:
+            text = re.sub(r"\bStorageMount,\s*", "", text)
+            text = re.sub(r",\s*StorageMount\b", "", text)
+            text = re.sub(r"(?<!::)\bStorageMount\b", "archon_node::workload::StorageMount", text)
+        if "PortPublish" in text:
+            text = re.sub(r"\bPortPublish,\s*", "", text)
+            text = re.sub(r",\s*PortPublish\b", "", text)
+            text = re.sub(r"(?<!::)\bPortPublish\b", "archon_node::workload::PortPublish", text)
+        path.write_text(text)
 
 
 def patch_service() -> None:
-    p = Path('crates/node/src/service.rs')
-    s = p.read_text()
-    s = s.replace('use crate::runtime::ProcessRuntime;\n', 'use crate::runtime::ProcessRuntime;\nuse crate::workload::WorkloadSpec;\n')
-    s = re.sub(
-        r'    /// Workload payload per queued request, kept outside the kernel log:\n    /// resource decisions never need it, only execution does\.\n    commands: BTreeMap<RequestId, Vec<String>>,\n    /// Command per active lease, recorded when its request is admitted\.\n    lease_commands: BTreeMap<LeaseId, Vec<String>>,\n    /// Container image per active lease; None runs a bare process\.\n    lease_images: BTreeMap<LeaseId, Option<String>>,\n    /// Original request per admitted lease, for keep-alive restarts\.\n    requests: BTreeMap<LeaseId, \(Request, OwnerId\)>,',
-        '    /// Desired-state/execution intent for queued requests. Resource ordering\n    /// still uses only `queue`; this map never enters kernel authority.\n    queued_workloads: BTreeMap<RequestId, WorkloadSpec>,\n    /// Workload intent per admitted root Lease, retained for execution and restart.\n    requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,', s,
+    path = Path("crates/node/src/service.rs")
+    text = path.read_text()
+    text = text.replace(
+        "use crate::runtime::ProcessRuntime;\n",
+        "use crate::runtime::ProcessRuntime;\nuse crate::workload::WorkloadSpec;\n",
     )
-    s = s.replace(
-        '    pub lease_commands: BTreeMap<LeaseId, Vec<String>>,\n    pub lease_images: BTreeMap<LeaseId, Option<String>>,\n    pub requests: BTreeMap<LeaseId, (Request, OwnerId)>,',
-        '    pub requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,'
+    text = text.replace(
+        "    /// Workload payload per queued request, kept outside the kernel log:\n"
+        "    /// resource decisions never need it, only execution does.\n"
+        "    commands: BTreeMap<RequestId, Vec<String>>,\n"
+        "    /// Command per active lease, recorded when its request is admitted.\n"
+        "    lease_commands: BTreeMap<LeaseId, Vec<String>>,\n"
+        "    /// Container image per active lease; None runs a bare process.\n"
+        "    lease_images: BTreeMap<LeaseId, Option<String>>,\n"
+        "    /// Original request per admitted lease, for keep-alive restarts.\n"
+        "    requests: BTreeMap<LeaseId, (Request, OwnerId)>,",
+        "    /// Desired-state/execution intent for queued requests. Resource ordering\n"
+        "    /// still uses only `queue`; this map never enters kernel authority.\n"
+        "    queued_workloads: BTreeMap<RequestId, WorkloadSpec>,\n"
+        "    /// Workload intent per admitted root Lease, retained for execution and restart.\n"
+        "    requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,",
     )
-    s = s.replace(
-        '            commands: BTreeMap::new(),\n            lease_commands: BTreeMap::new(),\n            lease_images: BTreeMap::new(),\n            requests: BTreeMap::new(),',
-        '            queued_workloads: BTreeMap::new(),\n            requests: BTreeMap::new(),'
+    text = text.replace(
+        "    pub lease_commands: BTreeMap<LeaseId, Vec<String>>,\n"
+        "    pub lease_images: BTreeMap<LeaseId, Option<String>>,\n"
+        "    pub requests: BTreeMap<LeaseId, (Request, OwnerId)>,",
+        "    pub requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,",
     )
-    # submit
-    s = re.sub(
-        r'    /// Submit a workload: queued for admission; its command runs when the\n    /// lease activates\.\n    pub fn submit\(&mut self, request: Request, owner: OwnerId\) \{\n        self\.commands\.remove\(&request\.id\);\n        self\.next_request_id = self\.next_request_id\.max\(request\.id\.as_u64\(\) \+ 1\);\n        self\.queue\.push\(Queued \{\n            request,\n            owner,\n            submitted_at: self\.cluster\.now,\n        \}\);\n    \}',
-        '''    /// Submit workload intent. Only the nested resource Request enters the\n    /// scheduler; execution and desired-state policy stay controller-local.\n    pub fn submit(&mut self, workload: impl Into<WorkloadSpec>, owner: OwnerId) {\n        let workload = workload.into();\n        let request = workload.resources.clone();\n        self.next_request_id = self.next_request_id.max(request.id.as_u64() + 1);\n        self.queued_workloads.insert(request.id, workload);\n        self.queue.push(Queued {\n            request,\n            owner,\n            submitted_at: self.cluster.now,\n        });\n    }''', s,
+    text = text.replace(
+        "            commands: BTreeMap::new(),\n"
+        "            lease_commands: BTreeMap::new(),\n"
+        "            lease_images: BTreeMap::new(),\n"
+        "            requests: BTreeMap::new(),",
+        "            queued_workloads: BTreeMap::new(),\n"
+        "            requests: BTreeMap::new(),",
     )
-    # execution exclusions uses workload metadata
-    s = s.replace(
-        '            let request = &queued.request;\n            if request.command.is_empty() && request.image.is_none() {\n                continue;\n            }',
-        '            let request = &queued.request;\n            let Some(workload) = self.queued_workloads.get(&request.id) else {\n                continue;\n            };\n            if !workload.execution.has_program() {\n                continue;\n            }'
+    text = text.replace(
+        "    /// Submit a workload: queued for admission; its command runs when the\n"
+        "    /// lease activates.\n"
+        "    pub fn submit(&mut self, request: Request, owner: OwnerId) {\n"
+        "        self.commands.remove(&request.id);\n"
+        "        self.next_request_id = self.next_request_id.max(request.id.as_u64() + 1);\n"
+        "        self.queue.push(Queued {\n"
+        "            request,\n"
+        "            owner,\n"
+        "            submitted_at: self.cluster.now,\n"
+        "        });\n"
+        "    }",
+        "    /// Submit workload intent. Only the nested resource Request enters the\n"
+        "    /// scheduler; execution and desired-state policy stay controller-local.\n"
+        "    pub fn submit(&mut self, workload: impl Into<WorkloadSpec>, owner: OwnerId) {\n"
+        "        let workload = workload.into();\n"
+        "        let request = workload.resources.clone();\n"
+        "        self.next_request_id = self.next_request_id.max(request.id.as_u64() + 1);\n"
+        "        self.queued_workloads.insert(request.id, workload);\n"
+        "        self.queue.push(Queued {\n"
+        "            request,\n"
+        "            owner,\n"
+        "            submitted_at: self.cluster.now,\n"
+        "        });\n"
+        "    }",
     )
-    s = s.replace(
-        '            let container = request\n                .image\n                .as_deref()\n                .is_some_and(|image| !image.is_empty());',
-        '            let container = workload\n                .execution\n                .image\n                .as_deref()\n                .is_some_and(|image| !image.is_empty());'
+    text = text.replace(
+        "            let request = &queued.request;\n"
+        "            if request.command.is_empty() && request.image.is_none() {\n"
+        "                continue;\n"
+        "            }",
+        "            let request = &queued.request;\n"
+        "            let Some(workload) = self.queued_workloads.get(&request.id) else {\n"
+        "                continue;\n"
+        "            };\n"
+        "            if !workload.execution.has_program() {\n"
+        "                continue;\n"
+        "            }",
     )
-    # admission promotion
-    s = s.replace(
-        '        self.commands.remove(&request_id);\n        let command = admission.request.command.clone();\n        self.lease_commands.insert(lease, command);\n        self.lease_images\n            .insert(lease, admission.request.image.clone());\n        self.requests\n            .insert(lease, (admission.request.clone(), admission.owner));',
-        '        let workload = self\n            .queued_workloads\n            .remove(&request_id)\n            .unwrap_or_else(|| WorkloadSpec::resource_only(admission.request.clone()));\n        self.requests.insert(lease, (workload, admission.owner));'
+    text = text.replace(
+        "            let container = request\n"
+        "                .image\n"
+        "                .as_deref()\n"
+        "                .is_some_and(|image| !image.is_empty());",
+        "            let container = workload\n"
+        "                .execution\n"
+        "                .image\n"
+        "                .as_deref()\n"
+        "                .is_some_and(|image| !image.is_empty());",
     )
-    # snapshots
-    s = s.replace(
-        '            lease_commands: self.lease_commands.clone(),\n            lease_images: self.lease_images.clone(),\n            requests: self.requests.clone(),',
-        '            requests: self.requests.clone(),'
+    text = text.replace(
+        "        self.commands.remove(&request_id);\n"
+        "        let command = admission.request.command.clone();\n"
+        "        self.lease_commands.insert(lease, command);\n"
+        "        self.lease_images\n"
+        "            .insert(lease, admission.request.image.clone());\n"
+        "        self.requests\n"
+        "            .insert(lease, (admission.request.clone(), admission.owner));",
+        "        let workload = self\n"
+        "            .queued_workloads\n"
+        "            .remove(&request_id)\n"
+        "            .unwrap_or_else(|| WorkloadSpec::resource_only(admission.request.clone()));\n"
+        "        self.requests.insert(lease, (workload, admission.owner));",
     )
-    s = s.replace(
-        '        self.lease_commands = state.lease_commands;\n        self.lease_images = state.lease_images;\n        self.requests = state.requests;',
-        '        self.requests = state.requests;'
+    text = text.replace(
+        "            lease_commands: self.lease_commands.clone(),\n"
+        "            lease_images: self.lease_images.clone(),\n"
+        "            requests: self.requests.clone(),",
+        "            requests: self.requests.clone(),",
     )
-    # active execution tracking and command reporting
-    s = s.replace(
-        '                    && self.lease_commands.contains_key(&lease.id)',
-        '                    && self.requests.get(&lease.id).is_some_and(|(workload, _)| workload.execution.has_program())'
+    text = text.replace(
+        "        self.lease_commands = state.lease_commands;\n"
+        "        self.lease_images = state.lease_images;\n"
+        "        self.requests = state.requests;",
+        "        self.requests = state.requests;",
     )
-    s = s.replace(
-        '        self.lease_commands.get(&lease).cloned()',
-        '        self.requests\n            .get(&lease)\n            .map(|(workload, _)| workload.execution.command.clone())'
+    text = text.replace(
+        "    pub fn take_restarts(&mut self) -> Vec<(Request, OwnerId)> {",
+        "    pub fn take_restarts(&mut self) -> Vec<(WorkloadSpec, OwnerId)> {",
     )
-    # Activate payload block
-    s = s.replace(
-        '                command: self.lease_commands.get(&lease).cloned().unwrap_or_default(),',
-        '                command: self.requests.get(&lease).map(|(workload, _)| workload.execution.command.clone()).unwrap_or_default(),'
+    text = text.replace(".get(&request.id)\n                .copied()\n                .unwrap_or(request.id);", ".get(&request.resources.id)\n                .copied()\n                .unwrap_or(request.resources.id);")
+    text = text.replace(
+        "            let mut fresh = request.clone();\n"
+        "            fresh.id = RequestId::from_u64(self.next_request_id);\n"
+        "            self.next_request_id += 1;\n"
+        "            self.restart_root.insert(fresh.id, root);",
+        "            let mut fresh = request.clone();\n"
+        "            fresh.resources.id = RequestId::from_u64(self.next_request_id);\n"
+        "            self.next_request_id += 1;\n"
+        "            self.restart_root.insert(fresh.resources.id, root);",
     )
-    s = re.sub(
-        r'                image: self\n                    \.lease_images\n                    \.get\(&lease\)\n                    \.cloned\(\)\n                    \.flatten\(\)\n                    \.unwrap_or_default\(\),\n                storage: self\n                    \.requests\n                    \.get\(&lease\)\n                    \.map\(\|\(request, _\)\| request\.storage\.clone\(\)\)\n                    \.unwrap_or_default\(\),\n                ports: self\n                    \.requests\n                    \.get\(&lease\)\n                    \.map\(\|\(request, _\)\| request\.ports\.clone\(\)\)\n                    \.unwrap_or_default\(\),\n                grace_secs: self\n                    \.requests\n                    \.get\(&lease\)\n                    \.map\(\|\(request, _\)\| request\.grace_secs\)\n                    \.unwrap_or\(0\),',
-        '''                image: self.requests.get(&lease)\n                    .and_then(|(workload, _)| workload.execution.image.clone())\n                    .unwrap_or_default(),\n                storage: self.requests.get(&lease)\n                    .map(|(workload, _)| workload.execution.storage.clone())\n                    .unwrap_or_default(),\n                ports: self.requests.get(&lease)\n                    .map(|(workload, _)| workload.execution.ports.clone())\n                    .unwrap_or_default(),\n                grace_secs: self.requests.get(&lease)\n                    .map(|(workload, _)| workload.execution.grace_secs)\n                    .unwrap_or(0),''', s,
+    text = text.replace(
+        "                    && self.lease_commands.contains_key(&lease.id)",
+        "                    && self\n"
+        "                        .requests\n"
+        "                        .get(&lease.id)\n"
+        "                        .is_some_and(|(workload, _)| workload.execution.has_program())",
     )
-    # restart API now carries workload intent and mutates nested request id.
-    s = s.replace('pub fn take_restarts(&mut self) -> Vec<(Request, OwnerId)> {', 'pub fn take_restarts(&mut self) -> Vec<(WorkloadSpec, OwnerId)> {')
-    s = s.replace('            if !request.keep_alive {', '            if !request.keep_alive {')
-    s = s.replace('                .get(&request.id)', '.get(&request.resources.id)')
-    s = s.replace('                .unwrap_or(request.id);', '.unwrap_or(request.resources.id);')
-    s = s.replace('            let mut retry = request.clone();\n            retry.id = RequestId::from_u64(self.next_request_id);', '            let mut retry = request.clone();\n            retry.resources.id = RequestId::from_u64(self.next_request_id);')
-    s = s.replace('            self.restart_root.insert(retry.id, root);', '            self.restart_root.insert(retry.resources.id, root);')
-    p.write_text(s)
+    text = text.replace(
+        "        self.lease_commands.get(&lease).cloned()",
+        "        self.requests\n"
+        "            .get(&lease)\n"
+        "            .map(|(workload, _)| workload.execution.command.clone())",
+    )
+    text = text.replace(
+        "                command: self.lease_commands.get(&lease).cloned().unwrap_or_default(),",
+        "                command: self\n"
+        "                    .requests\n"
+        "                    .get(&lease)\n"
+        "                    .map(|(workload, _)| workload.execution.command.clone())\n"
+        "                    .unwrap_or_default(),",
+    )
+    old = """                image: self
+                    .lease_images
+                    .get(&lease)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_default(),
+                storage: self
+                    .requests
+                    .get(&lease)
+                    .map(|(request, _)| request.storage.clone())
+                    .unwrap_or_default(),
+                ports: self
+                    .requests
+                    .get(&lease)
+                    .map(|(request, _)| request.ports.clone())
+                    .unwrap_or_default(),
+                grace_secs: self
+                    .requests
+                    .get(&lease)
+                    .map(|(request, _)| request.grace_secs)
+                    .unwrap_or(0),"""
+    new = """                image: self
+                    .requests
+                    .get(&lease)
+                    .and_then(|(workload, _)| workload.execution.image.clone())
+                    .unwrap_or_default(),
+                storage: self
+                    .requests
+                    .get(&lease)
+                    .map(|(workload, _)| workload.execution.storage.clone())
+                    .unwrap_or_default(),
+                ports: self
+                    .requests
+                    .get(&lease)
+                    .map(|(workload, _)| workload.execution.ports.clone())
+                    .unwrap_or_default(),
+                grace_secs: self
+                    .requests
+                    .get(&lease)
+                    .map(|(workload, _)| workload.execution.grace_secs)
+                    .unwrap_or(0),"""
+    text = text.replace(old, new)
+    path.write_text(text)
 
 
-def patch_control() -> None:
-    p = Path('crates/control/src/server.rs')
-    s = p.read_text()
-    s = s.replace('RequestClass, ', '')
-    s = s.replace('Request, RequestClass, ', 'Request, ')
-    # maintain restart log uses Deref for id but be explicit.
-    s = s.replace('request {}", request.id', 'request {}", request.resources.id')
-    p.write_text(s)
+def add_legacy_shape_test() -> None:
+    Path("crates/node/tests/workload_spec.rs").write_text(r'''use archon_kernel::{CapacityDimension, Need, Request, RequestClass, RequestId, ResourceClass, qty};
+use archon_node::workload::WorkloadSpec;
+
+#[test]
+fn legacy_flat_request_json_decodes_as_workload_spec() {
+    let legacy = serde_json::json!({
+        "id": 7,
+        "class": "Service",
+        "needs": [{"kind":"cpu","quantity":{"count":1},"filters":[]}],
+        "topology": [],
+        "preferences": [],
+        "data": [],
+        "command": ["sleep", "30"],
+        "image": "busybox:latest",
+        "storage": [{"host_path":"/tmp/input","mount_path":"/input"}],
+        "ports": [{"container_port":8080,"host_port":18080}],
+        "lifetime": 60,
+        "priority": 4,
+        "keep_alive": true,
+        "machine_local": true,
+        "grace_secs": 5
+    });
+    let workload: WorkloadSpec = serde_json::from_value(legacy).expect("legacy workload shape");
+    assert_eq!(workload.resources.id, RequestId::from_u64(7));
+    assert_eq!(workload.resources.class, RequestClass::Service);
+    assert_eq!(workload.resources.needs, vec![Need {
+        kind: ResourceClass::Cpu,
+        quantity: qty(CapacityDimension::Count, 1),
+        filters: Vec::new(),
+    }]);
+    assert_eq!(workload.execution.command, vec!["sleep", "30"]);
+    assert_eq!(workload.execution.image.as_deref(), Some("busybox:latest"));
+    assert_eq!(workload.execution.storage.len(), 1);
+    assert_eq!(workload.execution.ports.len(), 1);
+    assert_eq!(workload.execution.grace_secs, 5);
+    assert!(workload.keep_alive);
+
+    let encoded = serde_json::to_value(&workload).expect("new workload shape");
+    assert_eq!(encoded["id"], 7);
+    assert_eq!(encoded["command"], serde_json::json!(["sleep", "30"]));
+    assert!(encoded.get("resources").is_none(), "resource request remains flattened");
+}
+
+#[test]
+fn pure_resource_request_promotes_without_execution_intent() {
+    let request = Request {
+        id: RequestId::from_u64(8),
+        class: RequestClass::Batch,
+        needs: Vec::new(),
+        topology: Vec::new(),
+        preferences: Vec::new(),
+        data: Vec::new(),
+        lifetime: 10,
+        priority: 1,
+        machine_local: true,
+    };
+    let workload = WorkloadSpec::resource_only(request.clone());
+    assert_eq!(workload.resources, request);
+    assert!(!workload.execution.has_program());
+    assert!(!workload.keep_alive);
+}
+''')
 
 
-def cleanup_imports() -> None:
-    for p in Path('crates').rglob('*.rs'):
-        s = p.read_text()
-        # Kernel types moved to node workload module in execution code/tests.
-        if p.as_posix().startswith('crates/node/'):
-            s = re.sub(r'\bPortPublish,\s*', '', s)
-            s = re.sub(r'\bStorageMount,\s*', '', s)
-            s = re.sub(r',\s*PortPublish\b', '', s)
-            s = re.sub(r',\s*StorageMount\b', '', s)
-        # Remove the dead kernel RequestClass import everywhere; wrapped code
-        # uses a fully-qualified WorkloadClass.
-        s = re.sub(r'\bRequestClass,\s*', '', s)
-        s = re.sub(r',\s*RequestClass\b', '', s)
-        p.write_text(s)
-
-
-remove_enum_and_fields()
-patch_node_modules()
-migrate_literals()
+remove_kernel_execution_fields()
+add_workload_module()
+migrate_request_literals()
 patch_service()
-patch_control()
-cleanup_imports()
+add_legacy_shape_test()
