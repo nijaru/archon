@@ -6,7 +6,9 @@ use archon_kernel::{
     RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::discover::{DeviceSpec, HostNodeSpec, MachineDescription};
-use archon_node::protocol::{AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities};
+use archon_node::protocol::{
+    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities,
+};
 use archon_node::service::{LeaseExecutor, NodeService};
 
 const GIB: u64 = 1 << 30;
@@ -167,7 +169,10 @@ fn mixed_service_batch_and_accelerator_contention_preserves_authority_boundaries
     service.drive(Duration::from_secs(2)).unwrap();
     let service_lease = LeaseId::from_u64(1);
     assert_eq!(lease_machine(&service, service_lease), alpha);
-    assert_eq!(service.cluster.leases[&service_lease].state, LeaseState::Active);
+    assert_eq!(
+        service.cluster.leases[&service_lease].state,
+        LeaseState::Active
+    );
 
     // Equal-priority batch contenders share the remaining CPU. Owner 1 is
     // already consuming half of cluster CPU capacity, so fair-share selects
@@ -187,7 +192,10 @@ fn mixed_service_batch_and_accelerator_contention_preserves_authority_boundaries
     service.drive(Duration::from_secs(2)).unwrap();
     let batch_lease = LeaseId::from_u64(2);
     assert_eq!(lease_machine(&service, batch_lease), beta);
-    assert_eq!(service.cluster.leases[&batch_lease].state, LeaseState::Active);
+    assert_eq!(
+        service.cluster.leases[&batch_lease].state,
+        LeaseState::Active
+    );
 
     // A higher-priority accelerator job needs alpha's CPU and GPU together.
     // No allocation is legal while both CPUs are occupied.
@@ -222,7 +230,10 @@ fn mixed_service_batch_and_accelerator_contention_preserves_authority_boundaries
         service.cluster.leases[&accelerator_lease].state,
         LeaseState::Active
     );
-    assert_eq!(service.cluster.leases[&batch_lease].state, LeaseState::Active);
+    assert_eq!(
+        service.cluster.leases[&batch_lease].state,
+        LeaseState::Active
+    );
 
     let kinds: BTreeSet<_> = service.cluster.leases[&accelerator_lease]
         .allocation
