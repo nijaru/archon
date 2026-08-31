@@ -14,7 +14,18 @@ jobs:
         with:
           tool: cargo-deny
       - name: Apply workload split
-        run: python3 .github/scripts/apply_workload_split.py
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/apply_workload_split.py')
+          text = path.read_text()
+          text = text.replace("expr('command', 'Vec::new())", "expr('command', 'Vec::new()')")
+          text = text.replace("expr('storage', 'Vec::new())", "expr('storage', 'Vec::new()')")
+          text = text.replace("expr('ports', 'Vec::new())", "expr('ports', 'Vec::new()')")
+          path.write_text(text)
+          PY
+          python3 .github/scripts/apply_workload_split.py
       - name: Format
         run: cargo fmt --all
       - name: Format check
