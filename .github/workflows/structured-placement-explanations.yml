@@ -21,6 +21,18 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
+      - name: Fix temporary patcher multiplicity
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/patch_structured_explanations.py')
+          text = path.read_text()
+          old = '''    count = text.count(old)\n    if count != 1:\n        raise SystemExit(f"{label}: expected exactly one match, found {count}")\n    return text.replace(old, new, 1)\n'''
+          new = '''    count = text.count(old)\n    expected = 2 if label == "greedy machine allocation call" else 1\n    if count != expected:\n        raise SystemExit(f"{label}: expected exactly {expected} match(es), found {count}")\n    return text.replace(old, new, 1)\n'''
+          if text.count(old) != 1:
+              raise SystemExit('replace_once helper changed unexpectedly')
+          path.write_text(text.replace(old, new, 1))
+          PY
       - name: Apply structured explanation patch
         run: python3 .github/scripts/patch_structured_explanations.py
       - name: Format
