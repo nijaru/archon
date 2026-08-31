@@ -5,8 +5,8 @@ use crate::graph::Graph;
 use crate::ids::NodeId;
 use crate::occupancy::Occupancy;
 use crate::types::{
-    Allocation, CapacityDimension, Claim, Need, Preference, Request, RequestClass, ResourceClass,
-    TopologyRelation, qty, quantity_get,
+    Allocation, CapacityDimension, Claim, Need, PlacementExplanation, PlacementReason, Preference,
+    Request, RequestClass, ResourceClass, TopologyRelation, qty, quantity_get,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,19 +89,23 @@ pub fn select(
         });
     }
     notes.extend(topology_notes(graph, &picked, request, &topology_trace));
+    let reasons = placement_reasons(graph, occupancy, request, mode, &picked, &topology_trace)?;
     let claim_count = claims.len();
     Ok(Allocation {
         claims,
         graph_revision: graph.revision,
-        explanation: format!(
-            "{:?} {:?} selected {claim_count} claims{}",
-            request.class,
-            mode,
-            if notes.is_empty() {
-                String::new()
-            } else {
-                format!("; {}", notes.join("; "))
-            }
+        explanation: PlacementExplanation::new(
+            format!(
+                "{:?} {:?} selected {claim_count} claims{}",
+                request.class,
+                mode,
+                if notes.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", notes.join("; "))
+                }
+            ),
+            reasons,
         ),
     })
 }
@@ -159,8 +163,10 @@ fn select_one_machine(
                 claims.extend(group.iter().cloned());
             }
             notes.extend(topology_notes(graph, &picked, request, &topology_trace));
+            let reasons =
+                placement_reasons(graph, occupancy, request, mode, &picked, &topology_trace)?;
             return Ok(machine_allocation(
-                graph, request, mode, machine, claims, notes,
+                graph, request, mode, machine, claims, notes, reasons,
             ));
         }
 
@@ -190,8 +196,10 @@ fn select_one_machine(
                 .collect();
             let mut notes = selection_notes(graph, occupancy, request, mode, &fallback)?;
             notes.extend(topology_notes(graph, &fallback, request, &topology_trace));
+            let reasons =
+                placement_reasons(graph, occupancy, request, mode, &fallback, &topology_trace)?;
             return Ok(machine_allocation(
-                graph, request, mode, machine, claims, notes,
+                graph, request, mode, machine, claims, notes, reasons,
             ));
         }
     }
@@ -341,20 +349,25 @@ fn machine_allocation(
     machine: NodeId,
     claims: Vec<Claim>,
     notes: Vec<String>,
+    mut reasons: Vec<PlacementReason>,
 ) -> Allocation {
+    reasons.insert(0, PlacementReason::MachineSelected { machine });
     let claim_count = claims.len();
     Allocation {
         claims,
         graph_revision: graph.revision,
-        explanation: format!(
-            "{:?} {:?} selected {claim_count} claims on {machine}{}",
-            request.class,
-            mode,
-            if notes.is_empty() {
-                String::new()
-            } else {
-                format!("; {}", notes.join("; "))
-            }
+        explanation: PlacementExplanation::new(
+            format!(
+                "{:?} {:?} selected {claim_count} claims on {machine}{}",
+                request.class,
+                mode,
+                if notes.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", notes.join("; "))
+                }
+            ),
+            reasons,
         ),
     }
 }
@@ -877,6 +890,65 @@ fn ancestor_nodes(graph: &Graph, claims: &[Claim], class: ResourceClass) -> Stri
         .map(|node| node.to_string())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn placement_reasons(
+    graph: &Graph,
+    occupancy: &Occupancy,
+    request: &Request,
+    mode: PackMode,
+    picked: &[Vec<Claim>],
+    trace: &TopologyTrace,
+) -> Result<Vec<PlacementReason>, Error> {
+    let mut reasons = Vec::new();
+    for (index, group) in picked.iter().enumerate() {
+        let need = &request.needs[index];
+        let ctx = ScoreCtx {
+            graph,
+            occupancy,
+            request,
+            already: &picked[..index],
+            mode,
+            memory_want: quantity_get(&consumable_quantity(need), CapacityDimension::Bytes),
+        };
+        let mut chosen = Vec::new();
+        for claim in group {
+            let data_local = request
+                .data
+                .iter()
+                .copied()
+                .filter(|data| graph.caches(claim.node, *data))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            reasons.push(PlacementReason::CandidateScore {
+                node: claim.node,
+                score: score_node(&ctx, &chosen, claim.node)?,
+                data_local,
+                degraded_ancestor: graph.degraded_ancestor(claim.node),
+            });
+            chosen.push(claim.clone());
+        }
+    }
+    for (index, failure) in &trace.failures {
+        let Some(constraint) = request.topology.get(*index) else {
+            continue;
+        };
+        let Some(left) = picked.get(constraint.left) else {
+            continue;
+        };
+        let Some(right) = picked.get(constraint.right) else {
+            continue;
+        };
+        reasons.push(PlacementReason::TopologyConstraint {
+            index: *index,
+            relation: constraint.relation,
+            selected_left: left.iter().map(|claim| claim.node).collect(),
+            selected_right: right.iter().map(|claim| claim.node).collect(),
+            rejected: Some((failure.left, failure.right)),
+        });
+    }
+    Ok(reasons)
 }
 
 fn topology_notes(

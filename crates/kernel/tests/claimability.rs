@@ -181,7 +181,7 @@ fn withdrawing_claimability_invalidates_old_allocations_and_fresh_claims() {
             quantity: qty(CapacityDimension::Count, 1),
         }],
         graph_revision: cluster.graph.revision,
-        explanation: String::new(),
+        explanation: String::new().into(),
     };
     let error = cluster
         .apply(Command::ReserveLease {

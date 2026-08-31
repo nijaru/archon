@@ -1,6 +1,4 @@
-use archon_kernel::{
-    Allocation, NodeId, PlacementExplanation, PlacementReason,
-};
+use archon_kernel::{Allocation, NodeId, PlacementExplanation, PlacementReason};
 
 #[test]
 fn legacy_string_explanation_deserializes_without_typed_reasons() {
@@ -26,7 +24,8 @@ fn structured_explanation_round_trips_typed_reasons() {
     };
 
     let json = serde_json::to_string(&allocation).expect("serialize structured allocation");
-    let restored: Allocation = serde_json::from_str(&json).expect("deserialize structured allocation");
+    let restored: Allocation =
+        serde_json::from_str(&json).expect("deserialize structured allocation");
 
     assert_eq!(restored, allocation);
     assert!(json.contains("MachineSelected"));
