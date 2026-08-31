@@ -144,35 +144,39 @@ fn same_machine(left: usize, right: usize) -> TopologyConstraint {
     }
 }
 
-fn distributed_request() -> Request {
-    Request {
-        id: RequestId::from_u64(1),
-        class: RequestClass::Batch,
-        needs: vec![
-            need(ResourceClass::Cpu, CapacityDimension::Count, 1, "a"),
-            need(ResourceClass::Memory, CapacityDimension::Bytes, GIB, "a"),
-            need(ResourceClass::Gpu, CapacityDimension::Count, 1, "a"),
-            need(ResourceClass::Cpu, CapacityDimension::Count, 1, "b"),
-            need(ResourceClass::Memory, CapacityDimension::Bytes, GIB, "b"),
-            need(ResourceClass::Gpu, CapacityDimension::Count, 1, "b"),
-        ],
-        topology: vec![
-            same_machine(0, 1),
-            same_machine(0, 2),
-            same_machine(3, 4),
-            same_machine(3, 5),
-        ],
-        preferences: Vec::new(),
-        data: Vec::new(),
-        command: vec!["distributed-worker".into()],
-        image: None,
-        storage: Vec::new(),
-        ports: Vec::new(),
-        lifetime: 60,
-        priority: 1,
+fn distributed_request() -> archon_node::workload::WorkloadSpec {
+    archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(1),
+            class: RequestClass::Batch,
+            needs: vec![
+                need(ResourceClass::Cpu, CapacityDimension::Count, 1, "a"),
+                need(ResourceClass::Memory, CapacityDimension::Bytes, GIB, "a"),
+                need(ResourceClass::Gpu, CapacityDimension::Count, 1, "a"),
+                need(ResourceClass::Cpu, CapacityDimension::Count, 1, "b"),
+                need(ResourceClass::Memory, CapacityDimension::Bytes, GIB, "b"),
+                need(ResourceClass::Gpu, CapacityDimension::Count, 1, "b"),
+            ],
+            topology: vec![
+                same_machine(0, 1),
+                same_machine(0, 2),
+                same_machine(3, 4),
+                same_machine(3, 5),
+            ],
+            preferences: Vec::new(),
+            data: Vec::new(),
+            lifetime: 60,
+            priority: 1,
+            machine_local: false,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["distributed-worker".into()],
+            image: None,
+            storage: Vec::new(),
+            ports: Vec::new(),
+            grace_secs: 0,
+        },
         keep_alive: false,
-        machine_local: false,
-        grace_secs: 0,
     }
 }
 

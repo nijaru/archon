@@ -22,15 +22,9 @@ fn request(id: u64) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 100,
         priority: 5,
-        keep_alive: false,
         machine_local: true,
-        grace_secs: 0,
     }
 }
 

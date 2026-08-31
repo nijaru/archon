@@ -30,15 +30,9 @@ fn gpu_request(id: u64, count: u64, priority: u32) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
         lifetime: 100,
-        keep_alive: false,
         priority,
-        image: None,
-        storage: vec![],
-        ports: vec![],
         machine_local,
-        grace_secs: 0,
     }
 }
 
@@ -54,15 +48,9 @@ fn cpu_request(id: u64, priority: u32) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
         lifetime: 100,
-        keep_alive: false,
         priority,
-        image: None,
-        storage: vec![],
-        ports: vec![],
         machine_local: true,
-        grace_secs: 0,
     }
 }
 

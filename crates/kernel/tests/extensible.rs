@@ -16,15 +16,9 @@ fn request(kind: ResourceClass, dimension: CapacityDimension, amount: u64) -> Re
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 10,
         priority: 1,
-        keep_alive: false,
         machine_local: true,
-        grace_secs: 0,
     }
 }
 

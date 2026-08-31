@@ -6,7 +6,9 @@
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 
-use archon_kernel::{LeaseId, PortPublish, StorageMount};
+use archon_kernel::LeaseId;
+
+use crate::workload::{PortPublish, StorageMount};
 
 use crate::protocol::LeaseLimits;
 

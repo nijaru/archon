@@ -71,14 +71,8 @@ fn request(class: RequestClass, needs: Vec<Need>) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
         machine_local: true,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 10,
-        keep_alive: false,
         priority: 1,
     }
 }
@@ -298,15 +292,9 @@ fn machine_local_multi_need_stays_on_one_machine() {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec!["sleep".into(), "5".into()],
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 100,
         priority: 1,
         machine_local: true,
-        grace_secs: 0,
-        keep_alive: false,
     };
     let allocation = archon_kernel::select(
         &cluster.graph,

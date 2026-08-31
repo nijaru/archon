@@ -37,14 +37,8 @@ fn multi_member(id: u64, priority: u32) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
         machine_local: false,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 100,
-        keep_alive: false,
         priority,
     }
 }
@@ -61,14 +55,8 @@ fn gpu_hold(world: &mut World, lease: u64, expires_at: u64) {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
         machine_local: true,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 100,
-        keep_alive: false,
         priority: 50,
     };
     world
@@ -118,14 +106,8 @@ fn multi_member_request_places_atomically_or_not_at_all() {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
         machine_local: true,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 5,
-        keep_alive: false,
         priority: 1,
     };
     world.enqueue(short, OwnerId::from_u64(3));

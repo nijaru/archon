@@ -9,8 +9,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use archon_kernel::{
-    CapacityDimension, LeaseId, Need, OwnerId, PortPublish, Request, RequestClass, RequestId,
-    ResourceClass, StorageMount, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::agent::LeaseAgent;
 use archon_node::protocol::{read_request, write_response};
@@ -82,30 +81,34 @@ fn submit_container(
     service: &mut NodeService,
     id: u64,
     image: &str,
-    storage: Vec<StorageMount>,
-    ports: Vec<PortPublish>,
+    storage: Vec<archon_node::workload::StorageMount>,
+    ports: Vec<archon_node::workload::PortPublish>,
     command: Vec<String>,
 ) -> Option<RequestId> {
-    let request = Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command,
-        image: Some(image.into()),
-        lifetime: 3_600,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
+    let request = archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command,
+            image: Some(image.into()),
+            storage,
+            ports,
+            grace_secs: 0,
+        },
         keep_alive: false,
-        storage,
-        ports,
     };
     service.submit(request, OwnerId::from_u64(1));
     service.cluster.set_now(1);
@@ -228,11 +231,11 @@ fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
             &mut service,
             2,
             "busybox:latest",
-            vec![StorageMount {
+            vec![archon_node::workload::StorageMount {
                 host_path: host_dir.display().to_string(),
                 mount_path: "/data".into(),
             }],
-            vec![PortPublish {
+            vec![archon_node::workload::PortPublish {
                 container_port: 8080,
                 host_port: None,
             }],
@@ -280,30 +283,38 @@ fn busybox_drain_command() -> Vec<String> {
 }
 
 /// A container submission template with storage mounted at /marker.
-fn submit_request_template(id: u64, command: Vec<String>, dir: &std::path::Path) -> Request {
-    Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command,
-        image: Some("busybox:latest".into()),
-        lifetime: 3_600,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
+fn submit_request_template(
+    id: u64,
+    command: Vec<String>,
+    dir: &std::path::Path,
+) -> archon_node::workload::WorkloadSpec {
+    archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command,
+            image: Some("busybox:latest".into()),
+            storage: vec![archon_node::workload::StorageMount {
+                host_path: dir.display().to_string(),
+                mount_path: "/marker".into(),
+            }],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
-        storage: vec![StorageMount {
-            host_path: dir.display().to_string(),
-            mount_path: "/marker".into(),
-        }],
-        ports: vec![],
     }
 }
 
@@ -325,10 +336,8 @@ fn container_revoke_drains_within_grace() {
     let dir = std::env::temp_dir().join(format!("archon-drain-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
-    let request = Request {
-        grace_secs: 10,
-        ..submit_request_template(1, busybox_drain_command(), &dir)
-    };
+    let mut request = submit_request_template(1, busybox_drain_command(), &dir);
+    request.execution.grace_secs = 10;
     service.submit(request, OwnerId::from_u64(1));
     service.cluster.set_now(1);
     service.admit_one().expect("admit");

@@ -16,38 +16,42 @@ use archon_node::service::NodeService;
 
 static GPU_LOCK: Mutex<()> = Mutex::new(());
 
-fn gpu_request(id: u64) -> Request {
+fn gpu_request(id: u64) -> archon_node::workload::WorkloadSpec {
     let command = if std::env::var_os("ARCHON_CUDA_SMOKE").is_some() {
         "set -e; nvidia-smi --query-gpu=uuid --format=csv,noheader; LD_LIBRARY_PATH=/usr/local/lib/ollama/cuda_v13 \"$ARCHON_CUDA_SMOKE\"; sleep 30"
     } else {
         "nvidia-smi --query-gpu=uuid --format=csv,noheader; sleep 30"
     };
-    Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![
-            Need {
-                kind: ResourceClass::Cpu,
-                quantity: qty(CapacityDimension::Count, 1),
-                filters: vec![],
-            },
-            Need {
-                kind: ResourceClass::Gpu,
-                quantity: qty(CapacityDimension::Count, 1),
-                filters: vec![],
-            },
-        ],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sh".into(), "-c".into(), command.into()],
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 3_600,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
+    archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![
+                Need {
+                    kind: ResourceClass::Cpu,
+                    quantity: qty(CapacityDimension::Count, 1),
+                    filters: vec![],
+                },
+                Need {
+                    kind: ResourceClass::Gpu,
+                    quantity: qty(CapacityDimension::Count, 1),
+                    filters: vec![],
+                },
+            ],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sh".into(), "-c".into(), command.into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
     }
 }
@@ -189,36 +193,40 @@ fn auto_discovered_nvidia_device_attaches_through_cdi_container() {
     let uuid = gpu.attrs.get("uuid").cloned().expect("stable NVIDIA UUID");
 
     service.submit(
-        Request {
-            id: RequestId::from_u64(1),
-            class: RequestClass::Batch,
-            needs: vec![
-                Need {
-                    kind: ResourceClass::Cpu,
-                    quantity: qty(CapacityDimension::Count, 1),
-                    filters: vec![],
-                },
-                Need {
-                    kind: ResourceClass::Gpu,
-                    quantity: qty(CapacityDimension::Count, 1),
-                    filters: vec![],
-                },
-            ],
-            topology: vec![],
-            preferences: vec![],
-            data: vec![],
-            command: vec![
-                "sh".into(),
-                "-c".into(),
-                "nvidia-smi --query-gpu=uuid --format=csv,noheader; sleep 30".into(),
-            ],
-            image: Some("docker.io/nvidia/cuda:12.8.1-base-ubuntu24.04".into()),
-            storage: vec![],
-            ports: vec![],
-            lifetime: 3_600,
-            priority: 1,
-            machine_local: true,
-            grace_secs: 0,
+        archon_node::workload::WorkloadSpec {
+            resources: Request {
+                id: RequestId::from_u64(1),
+                class: RequestClass::Batch,
+                needs: vec![
+                    Need {
+                        kind: ResourceClass::Cpu,
+                        quantity: qty(CapacityDimension::Count, 1),
+                        filters: vec![],
+                    },
+                    Need {
+                        kind: ResourceClass::Gpu,
+                        quantity: qty(CapacityDimension::Count, 1),
+                        filters: vec![],
+                    },
+                ],
+                topology: vec![],
+                preferences: vec![],
+                data: vec![],
+                lifetime: 3_600,
+                priority: 1,
+                machine_local: true,
+            },
+            execution: archon_node::workload::ExecutionSpec {
+                command: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "nvidia-smi --query-gpu=uuid --format=csv,noheader; sleep 30".into(),
+                ],
+                image: Some("docker.io/nvidia/cuda:12.8.1-base-ubuntu24.04".into()),
+                storage: vec![],
+                ports: vec![],
+                grace_secs: 0,
+            },
             keep_alive: false,
         },
         OwnerId::from_u64(1),

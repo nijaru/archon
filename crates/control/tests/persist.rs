@@ -153,25 +153,29 @@ fn logged_service(path: &Path) -> NodeService {
 }
 
 fn submit_sleep(service: &mut NodeService, id: u64, lifetime: u64) {
-    let request = Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sleep".into(), "30".into()],
-        lifetime,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
+    let request = archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sleep".into(), "30".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
     };
     service.submit(request, OwnerId::from_u64(1));

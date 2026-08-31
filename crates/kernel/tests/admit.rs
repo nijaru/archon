@@ -78,14 +78,8 @@ fn cpu_request(id: u64, count: u64, priority: u32) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
         machine_local: true,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 10,
-        keep_alive: false,
         priority,
     }
 }

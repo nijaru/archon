@@ -402,26 +402,30 @@ fn demo(remote: Option<String>) {
     print_machine(&service);
 
     // Submit a real workload: sleep 5 under a 30-second lease.
-    let request = archon_kernel::Request {
-        id: archon_kernel::RequestId::from_u64(1),
-        class: archon_kernel::RequestClass::Batch,
-        needs: vec![archon_kernel::Need {
-            kind: archon_kernel::ResourceClass::Cpu,
-            quantity: archon_kernel::qty(archon_kernel::CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sleep".into(), "5".into()],
-        machine_local: true,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 30,
+    let request = archon_node::workload::WorkloadSpec {
+        resources: archon_kernel::Request {
+            id: archon_kernel::RequestId::from_u64(1),
+            class: archon_kernel::RequestClass::Batch,
+            needs: vec![archon_kernel::Need {
+                kind: archon_kernel::ResourceClass::Cpu,
+                quantity: archon_kernel::qty(archon_kernel::CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            machine_local: true,
+            lifetime: 30,
+            priority: 1,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sleep".into(), "5".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
-        priority: 1,
     };
     service.submit(request, archon_kernel::OwnerId::from_u64(1));
     service.tick().expect("tick");

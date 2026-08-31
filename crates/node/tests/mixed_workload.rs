@@ -90,7 +90,12 @@ fn description(name: &str, gpu: bool) -> MachineDescription {
     }
 }
 
-fn request(id: u64, class: RequestClass, priority: u32, gpu: bool) -> Request {
+fn request(
+    id: u64,
+    class: RequestClass,
+    priority: u32,
+    gpu: bool,
+) -> archon_node::workload::WorkloadSpec {
     let mut needs = vec![Need {
         kind: ResourceClass::Cpu,
         quantity: qty(CapacityDimension::Count, 1),
@@ -103,22 +108,26 @@ fn request(id: u64, class: RequestClass, priority: u32, gpu: bool) -> Request {
             filters: Vec::new(),
         });
     }
-    Request {
-        id: RequestId::from_u64(id),
-        class,
-        needs,
-        topology: Vec::new(),
-        preferences: Vec::new(),
-        data: Vec::new(),
-        command: Vec::new(),
-        image: None,
-        storage: Vec::new(),
-        ports: Vec::new(),
-        lifetime: 3_600,
-        priority,
+    archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class,
+            needs,
+            topology: Vec::new(),
+            preferences: Vec::new(),
+            data: Vec::new(),
+            lifetime: 3_600,
+            priority,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: Vec::new(),
+            image: None,
+            storage: Vec::new(),
+            ports: Vec::new(),
+            grace_secs: 0,
+        },
         keep_alive: class == RequestClass::Service,
-        machine_local: true,
-        grace_secs: 0,
     }
 }
 

@@ -111,27 +111,31 @@ fn register(service: &mut NodeService, name: &str) -> (NodeId, Arc<Mutex<Vec<Eve
     (machine, events)
 }
 
-fn replica(id: u64) -> Request {
-    Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Service,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: Vec::new(),
-        }],
-        topology: Vec::new(),
-        preferences: Vec::new(),
-        data: Vec::new(),
-        command: vec!["service-member".into()],
-        image: None,
-        storage: Vec::new(),
-        ports: Vec::new(),
-        lifetime: 3_600,
-        priority: 1,
+fn replica(id: u64) -> archon_node::workload::WorkloadSpec {
+    archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Service,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: Vec::new(),
+            }],
+            topology: Vec::new(),
+            preferences: Vec::new(),
+            data: Vec::new(),
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["service-member".into()],
+            image: None,
+            storage: Vec::new(),
+            ports: Vec::new(),
+            grace_secs: 0,
+        },
         keep_alive: true,
-        machine_local: true,
-        grace_secs: 0,
     }
 }
 

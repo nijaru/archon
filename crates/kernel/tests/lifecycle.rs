@@ -55,15 +55,9 @@ fn request() -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 10,
         priority: 1,
-        keep_alive: false,
         machine_local: true,
-        grace_secs: 0,
     }
 }
 

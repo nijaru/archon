@@ -83,15 +83,9 @@ fn request(id: u64, priority: u32) -> Request {
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
-        image: None,
-        storage: vec![],
-        ports: vec![],
         lifetime: 10,
         priority,
-        keep_alive: false,
         machine_local: true,
-        grace_secs: 0,
     }
 }
 

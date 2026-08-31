@@ -16,15 +16,9 @@ fn request(kind: ResourceClass) -> Request {
         topology: Vec::new(),
         preferences: Vec::new(),
         data: Vec::new(),
-        command: Vec::new(),
-        image: None,
-        storage: Vec::new(),
-        ports: Vec::new(),
         lifetime: 60,
         priority: 1,
         machine_local: true,
-        grace_secs: 0,
-        keep_alive: false,
     }
 }
 
