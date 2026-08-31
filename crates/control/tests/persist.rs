@@ -17,7 +17,7 @@ use archon_node::protocol::{
     AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities, read_greeting,
     read_request, write_response,
 };
-use archon_node::service::{LeaseExecutor, NodeService};
+use archon_node::service::{AgentClient, NodeService};
 
 #[derive(Default)]
 struct EnforcingTestExecutor {
@@ -40,8 +40,8 @@ impl EnforcingTestExecutor {
     }
 }
 
-impl LeaseExecutor for EnforcingTestExecutor {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for EnforcingTestExecutor {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         Ok(match request {
             AgentRequest::Capabilities => AgentResponse::Capabilities {
                 capabilities: Self::capabilities(),
@@ -123,7 +123,7 @@ fn spawn_test_agent() -> String {
         let mut executor = EnforcingTestExecutor::default();
         while let Ok(request) = read_request(&mut stream) {
             let response = executor
-                .execute(request)
+                .call(request)
                 .unwrap_or_else(|reason| AgentResponse::Failed { binding: 0, reason });
             if write_response(&mut stream, &response).is_err() {
                 break;

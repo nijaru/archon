@@ -12,14 +12,14 @@ use archon_node::protocol::{
     AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities,
 };
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
+use archon_node::service::{AgentClient, LocalAgentClient, NodeService};
 
 struct DeviceClaimExecutor {
-    inner: LocalExecutor,
+    inner: LocalAgentClient,
 }
 
-impl LeaseExecutor for DeviceClaimExecutor {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for DeviceClaimExecutor {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         if matches!(request, AgentRequest::Capabilities) {
             return Ok(AgentResponse::Capabilities {
                 capabilities: ExecutionCapabilities {
@@ -35,13 +35,13 @@ impl LeaseExecutor for DeviceClaimExecutor {
                 },
             });
         }
-        self.inner.execute(request)
+        self.inner.call(request)
     }
 }
 
-fn executor() -> Box<dyn LeaseExecutor> {
+fn executor() -> Box<dyn AgentClient> {
     Box::new(DeviceClaimExecutor {
-        inner: LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new())),
+        inner: LocalAgentClient::new(LeaseAgent::new(ProcessRuntime::new())),
     })
 }
 

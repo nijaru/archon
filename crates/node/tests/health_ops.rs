@@ -13,7 +13,7 @@ use archon_node::protocol::{
     write_response,
 };
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
+use archon_node::service::{AgentClient, LocalAgentClient, NodeService};
 
 fn lifecycle_capabilities() -> ExecutionCapabilities {
     ExecutionCapabilities {
@@ -30,17 +30,17 @@ fn lifecycle_capabilities() -> ExecutionCapabilities {
 }
 
 struct HealthProcessExecutor {
-    inner: LocalExecutor,
+    inner: LocalAgentClient,
 }
 
-impl LeaseExecutor for HealthProcessExecutor {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for HealthProcessExecutor {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         if matches!(request, AgentRequest::Capabilities) {
             return Ok(AgentResponse::Capabilities {
                 capabilities: lifecycle_capabilities(),
             });
         }
-        self.inner.execute(request)
+        self.inner.call(request)
     }
 }
 
@@ -50,7 +50,7 @@ fn register_local_health_agent(service: &mut NodeService) {
         .register_agent(
             description,
             Box::new(HealthProcessExecutor {
-                inner: LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new())),
+                inner: LocalAgentClient::new(LeaseAgent::new(ProcessRuntime::new())),
             }),
         )
         .expect("register health test machine");
@@ -101,7 +101,8 @@ fn spawn_agent(instance: &'static str) -> (String, std::thread::JoinHandle<()>) 
 }
 
 fn register(service: &mut NodeService, instance: &str, addr: &str) -> archon_kernel::NodeId {
-    let mut executor = archon_node::service::RemoteExecutor::connect(addr, None).expect("connect");
+    let mut executor =
+        archon_node::service::RemoteAgentClient::connect(addr, None).expect("connect");
     let mut description = NodeService::hello(&mut executor).expect("hello");
     description.instance_id = instance.to_string();
     service

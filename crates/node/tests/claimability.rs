@@ -6,7 +6,7 @@ use archon_kernel::{
 use archon_node::agent::LeaseAgent;
 use archon_node::discover::{DeviceSpec, MachineDescription};
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::{LocalExecutor, NodeService};
+use archon_node::service::{LocalAgentClient, NodeService};
 
 fn request(kind: ResourceClass, id: u64) -> archon_node::workload::WorkloadSpec {
     archon_node::workload::WorkloadSpec {
@@ -48,7 +48,9 @@ fn service() -> NodeService {
                 host_nodes: Vec::new(),
                 devices: Vec::new(),
             },
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            Box::new(LocalAgentClient::new(
+                LeaseAgent::new(ProcessRuntime::new()),
+            )),
         )
         .unwrap();
     service
@@ -167,7 +169,9 @@ fn returning_agent_backfills_claim_contracts_missing_from_older_graph_state() {
     let returned = service
         .register_agent(
             description,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            Box::new(LocalAgentClient::new(
+                LeaseAgent::new(ProcessRuntime::new()),
+            )),
         )
         .expect("validated returning agent backfills current provider contracts");
     assert_eq!(returned, machine);
@@ -235,7 +239,9 @@ fn returning_agent_never_overwrites_a_conflicting_claim_provider() {
     let error = service
         .register_agent(
             description,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            Box::new(LocalAgentClient::new(
+                LeaseAgent::new(ProcessRuntime::new()),
+            )),
         )
         .expect_err("returning agent must not steal another provider's claim contract");
     assert!(error.to_string().contains("already belongs to provider"));
@@ -304,7 +310,9 @@ fn returning_agent_backfills_only_devices_in_current_provider_inventory() {
     service
         .register_agent(
             returning,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            Box::new(LocalAgentClient::new(
+                LeaseAgent::new(ProcessRuntime::new()),
+            )),
         )
         .expect("current provider inventory reconciles");
 
@@ -369,7 +377,9 @@ fn returning_device_fact_change_never_overwrites_conflicting_provider_contract()
     let error = service
         .register_agent(
             returning,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            Box::new(LocalAgentClient::new(
+                LeaseAgent::new(ProcessRuntime::new()),
+            )),
         )
         .expect_err("device fact refresh must not steal another provider contract");
     assert!(error.to_string().contains("already belongs to provider"));
@@ -431,7 +441,9 @@ fn returning_host_contract_conflict_prevents_device_reconciliation_mutation() {
     let error = service
         .register_agent(
             returning,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            Box::new(LocalAgentClient::new(
+                LeaseAgent::new(ProcessRuntime::new()),
+            )),
         )
         .expect_err("host provider conflict must fail before device reconciliation");
     assert!(error.to_string().contains("already belongs to provider"));
@@ -488,7 +500,9 @@ fn returning_host_writer_conflict_prevents_device_fact_mutation() {
     let error = service
         .register_agent(
             returning,
-            Box::new(LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new()))),
+            Box::new(LocalAgentClient::new(
+                LeaseAgent::new(ProcessRuntime::new()),
+            )),
         )
         .expect_err("discovery writer conflict must fail before device reconciliation");
     assert!(error.to_string().contains("discovery writer"));

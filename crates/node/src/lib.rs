@@ -6,9 +6,11 @@ pub mod container;
 pub mod device_filter;
 pub mod discover;
 pub mod dispatch;
+mod executor;
 #[cfg(target_os = "linux")]
 mod linux_process;
 pub mod protocol;
+mod provider;
 pub mod runtime;
 pub mod service;
 pub mod transport;

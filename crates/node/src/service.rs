@@ -28,34 +28,34 @@ use crate::protocol::{
 use crate::runtime::ProcessRuntime;
 use crate::workload::WorkloadSpec;
 
-/// The controller side of the enforcement seam.
-pub trait LeaseExecutor: Send {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String>;
+/// One controller-side client for the Agent request/response protocol.
+pub trait AgentClient: Send {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String>;
 }
 
-/// In-process execution: the agent runs in this same process.
-pub struct LocalExecutor {
+/// In-process Agent client: the Agent runs in this same process.
+pub struct LocalAgentClient {
     agent: LeaseAgent,
 }
 
-impl LocalExecutor {
+impl LocalAgentClient {
     pub fn new(agent: LeaseAgent) -> Self {
         Self { agent }
     }
 }
 
-impl LeaseExecutor for LocalExecutor {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for LocalAgentClient {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         Ok(self.agent.handle(request))
     }
 }
 
-/// Remote execution over TCP; one encrypted connection per agent.
-pub struct RemoteExecutor {
+/// Remote Agent client over TCP; one encrypted connection per agent.
+pub struct RemoteAgentClient {
     stream: crate::transport::SecureStream,
 }
 
-impl RemoteExecutor {
+impl RemoteAgentClient {
     pub fn connect(addr: &str, token: Option<&str>) -> std::io::Result<Self> {
         let stream = TcpStream::connect(addr)?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
@@ -79,8 +79,8 @@ impl RemoteExecutor {
     }
 }
 
-impl LeaseExecutor for RemoteExecutor {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for RemoteAgentClient {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         write_frame(&mut self.stream, &request).map_err(|err| err.to_string())?;
         read_frame(&mut self.stream).map_err(|err| err.to_string())
     }
@@ -257,16 +257,17 @@ impl NodeService {
             let _ = cgroup_root;
             ProcessRuntime::new()
         };
-        let executor = LocalExecutor::new(LeaseAgent::new(runtime));
+        let executor = LocalAgentClient::new(LeaseAgent::new(runtime));
         self.register_agent(description, Box::new(executor))
     }
 
     /// Connect to a remote agent, learn its machine, and register it.
     pub fn register_remote(&mut self, addr: &str) -> Result<NodeId, Error> {
         let token = self.link_token.as_deref();
-        let mut executor = RemoteExecutor::connect(addr, token).map_err(|err| Error::Refused {
-            explanation: format!("connect {addr}: {err}"),
-        })?;
+        let mut executor =
+            RemoteAgentClient::connect(addr, token).map_err(|err| Error::Refused {
+                explanation: format!("connect {addr}: {err}"),
+            })?;
         let description = Self::hello(&mut executor)?;
         if description.instance_id.is_empty() {
             return Err(Error::Refused {
@@ -277,10 +278,10 @@ impl NodeService {
     }
 
     pub fn hello(
-        executor: &mut dyn LeaseExecutor,
+        executor: &mut dyn AgentClient,
     ) -> Result<crate::discover::MachineDescription, Error> {
         match executor
-            .execute(AgentRequest::Hello)
+            .call(AgentRequest::Hello)
             .map_err(|reason| Error::Refused {
                 explanation: reason,
             })? {
@@ -308,13 +309,13 @@ impl NodeService {
     /// Register one machine's agent: apply its graph fragment (or match an
     /// existing machine by name on re-registration), assign a fresh session,
     /// and let the kernel's Reconcile re-drive live work onto the agent.
-    /// The executor moves onto a dedicated worker thread; registration and
+    /// The Agent client moves onto a dedicated worker thread; registration and
     /// all later effects enqueue without blocking on the agent.
     pub fn query_execution_capabilities(
-        executor: &mut dyn LeaseExecutor,
+        executor: &mut dyn AgentClient,
     ) -> Result<ExecutionCapabilities, Error> {
         match executor
-            .execute(AgentRequest::Capabilities)
+            .call(AgentRequest::Capabilities)
             .map_err(|reason| Error::Refused {
                 explanation: format!("agent capability query failed: {reason}"),
             })? {
@@ -328,7 +329,7 @@ impl NodeService {
     pub fn register_agent(
         &mut self,
         description: crate::discover::MachineDescription,
-        mut executor: Box<dyn LeaseExecutor>,
+        mut executor: Box<dyn AgentClient>,
     ) -> Result<NodeId, Error> {
         let capabilities = Self::query_execution_capabilities(executor.as_mut())?;
         self.register_agent_with_capabilities(description, executor, capabilities)
@@ -341,7 +342,7 @@ impl NodeService {
     pub fn register_agent_with_capabilities(
         &mut self,
         description: crate::discover::MachineDescription,
-        executor: Box<dyn LeaseExecutor>,
+        executor: Box<dyn AgentClient>,
         capabilities: ExecutionCapabilities,
     ) -> Result<NodeId, Error> {
         crate::discover::validate_machine_description(&description)

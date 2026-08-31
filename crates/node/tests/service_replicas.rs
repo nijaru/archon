@@ -10,7 +10,7 @@ use archon_node::discover::{HostNodeSpec, MachineDescription};
 use archon_node::protocol::{
     AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities,
 };
-use archon_node::service::{LeaseExecutor, NodeService};
+use archon_node::service::{AgentClient, NodeService};
 
 const GIB: u64 = 1 << 30;
 
@@ -24,8 +24,8 @@ struct ReplicaExecutor {
     events: Arc<Mutex<Vec<Event>>>,
 }
 
-impl LeaseExecutor for ReplicaExecutor {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for ReplicaExecutor {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         match request {
             AgentRequest::Prepare { binding, .. } => Ok(AgentResponse::Prepared {
                 binding,

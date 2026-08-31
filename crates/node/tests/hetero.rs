@@ -12,7 +12,7 @@ use archon_node::protocol::{
     write_response,
 };
 use archon_node::runtime::ProcessRuntime;
-use archon_node::service::{LeaseExecutor, LocalExecutor, NodeService};
+use archon_node::service::{AgentClient, LocalAgentClient, NodeService};
 
 fn hetero_capabilities(device_isolation: bool) -> ExecutionCapabilities {
     ExecutionCapabilities {
@@ -29,18 +29,18 @@ fn hetero_capabilities(device_isolation: bool) -> ExecutionCapabilities {
 }
 
 struct HeteroExecutor {
-    inner: LocalExecutor,
+    inner: LocalAgentClient,
     device_isolation: bool,
 }
 
-impl LeaseExecutor for HeteroExecutor {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for HeteroExecutor {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         if matches!(request, AgentRequest::Capabilities) {
             return Ok(AgentResponse::Capabilities {
                 capabilities: hetero_capabilities(self.device_isolation),
             });
         }
-        self.inner.execute(request)
+        self.inner.call(request)
     }
 }
 
@@ -95,7 +95,8 @@ fn register(
     cpus: u64,
     addr: &str,
 ) -> archon_kernel::NodeId {
-    let mut executor = archon_node::service::RemoteExecutor::connect(addr, None).expect("connect");
+    let mut executor =
+        archon_node::service::RemoteAgentClient::connect(addr, None).expect("connect");
     let mut description = NodeService::hello(&mut executor).expect("hello");
     description.instance_id = instance.to_string();
     description.name = name.to_string();
@@ -265,7 +266,7 @@ fn device_claims_resolve_to_host_paths() {
                 devices: vec![gpu_spec("/dev/gpuA"), gpu_spec("/dev/gpuB")],
             },
             Box::new(HeteroExecutor {
-                inner: LocalExecutor::new(LeaseAgent::new(ProcessRuntime::new())),
+                inner: LocalAgentClient::new(LeaseAgent::new(ProcessRuntime::new())),
                 device_isolation: true,
             }),
         )

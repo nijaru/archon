@@ -10,7 +10,7 @@ use archon_node::discover::{HostNodeSpec, MachineDescription};
 use archon_node::protocol::{
     AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities,
 };
-use archon_node::service::{LeaseExecutor, NodeService, RecoveryEvent};
+use archon_node::service::{AgentClient, NodeService, RecoveryEvent};
 
 const GIB: u64 = 1 << 30;
 
@@ -47,8 +47,8 @@ struct StatusExecutor {
     events: Arc<Mutex<Vec<Event>>>,
 }
 
-impl LeaseExecutor for StatusExecutor {
-    fn execute(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+impl AgentClient for StatusExecutor {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         match request {
             AgentRequest::Prepare { binding, .. } => Ok(AgentResponse::Prepared {
                 binding,
