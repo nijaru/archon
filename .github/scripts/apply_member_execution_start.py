@@ -59,6 +59,63 @@ service = replace_once(
     "binding activation ack",
 )
 
+is_running_marker = """        let active = self
+            .cluster
+            .leases
+            .get(&lease)
+            .is_some_and(|l| l.state == archon_kernel::LeaseState::Active);
+        if !active {
+            return false;
+        }
+        self.request_status(lease);
+        let _ = self.drive(Duration::from_secs(1));
+        let machines = self.lease_machines(lease);
+        !machines.is_empty()
+            && machines.iter().all(|machine| {
+                self.member_status
+                    .get(&(lease, *machine))
+                    .is_some_and(|status| status.running)
+            })
+    }
+"""
+is_running_replacement = """        // Member execution is a separate pipeline stage after resource
+        // activation: an early status answer can observe the member before
+        // its execution start settles, so poll until every member proves
+        // running or the observation window closes.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self
+                .cluster
+                .leases
+                .get(&lease)
+                .is_none_or(|l| l.state != archon_kernel::LeaseState::Active)
+            {
+                return false;
+            }
+            let machines = self.lease_machines(lease);
+            if machines.is_empty() {
+                return false;
+            }
+            self.request_status(lease);
+            let _ = self.drive(Duration::from_millis(50));
+            let all_running = machines.iter().all(|machine| {
+                self.member_status
+                    .get(&(lease, *machine))
+                    .is_some_and(|status| status.running)
+            });
+            if all_running || Instant::now() >= deadline {
+                return all_running;
+            }
+        }
+    }
+"""
+service = replace_once(
+    service,
+    is_running_marker,
+    is_running_replacement,
+    "is_running settles execution start",
+)
+
 status_marker = """                (\n                    Tag::Status { lease, machine },\n                    Ok(AgentResponse::Running {\n"""
 execution_arm = """                (\n                    Tag::ExecutionStart {\n                        lease,\n                        machine,\n                        session,\n                    },\n                    reply,\n                ) => {\n                    let (lease, machine, session) = (*lease, *machine, *session);\n                    let current = self\n                        .cluster\n                        .sessions\n                        .get(&machine)\n                        .is_some_and(|current| *current == session)\n                        && self\n                            .cluster\n                            .leases\n                            .get(&lease)\n                            .is_some_and(|record| record.state == archon_kernel::LeaseState::Active);\n                    if !current {\n                        eprintln!(\n                            \"archon: ignoring stale execution-start completion for lease {lease} on machine {machine} session {session}\"\n                        );\n                        continue;\n                    }\n                    match reply {\n                        Ok(AgentResponse::ExecutionStarted { lease: got })\n                            if got == lease.as_u64() =>\n                        {\n                            self.execution_started.insert((lease, machine, session));\n                        }\n                        Ok(AgentResponse::ExecutionFailed { lease: got, reason })\n                            if got == lease.as_u64() =>\n                        {\n                            self.commit_lenient(Command::FailLease {\n                                lease,\n                                reason: format!(\n                                    \"execution start failed on machine {machine}: {reason}\"\n                                ),\n                            });\n                        }\n                        Ok(other) => {\n                            self.commit_lenient(Command::FailLease {\n                                lease,\n                                reason: format!(\n                                    \"execution start on machine {machine} returned unexpected response: {other:?}\"\n                                ),\n                            });\n                        }\n                        Err(reason) => {\n                            self.commit_lenient(Command::FailLease {\n                                lease,\n                                reason: format!(\n                                    \"execution start on machine {machine} became unprovable: {reason}\"\n                                ),\n                            });\n                        }\n                    }\n                }\n"""
 service = replace_once(

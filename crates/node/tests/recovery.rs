@@ -94,6 +94,9 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                             shared.lock().unwrap().activates += 1;
                             AgentResponse::Activated { binding }
                         }
+                        AgentRequest::StartExecution { lease, .. } => {
+                            AgentResponse::ExecutionStarted { lease }
+                        }
                         AgentRequest::Fence { binding, .. } => {
                             shared.lock().unwrap().fences += 1;
                             AgentResponse::Fenced { binding }
