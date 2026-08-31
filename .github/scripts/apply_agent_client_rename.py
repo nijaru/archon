@@ -11,10 +11,14 @@ for path in Path("crates").rglob("*.rs"):
     updated = text
     for old, new in IDENTIFIERS.items():
         updated = updated.replace(old, new)
+    uses_agent_client = any(
+        name in updated for name in ("AgentClient", "LocalAgentClient", "RemoteAgentClient")
+    )
     if "pub trait AgentClient" in updated or "impl AgentClient for" in updated:
         updated = updated.replace("fn execute(", "fn call(")
-    if path == Path("crates/node/src/service.rs"):
+    if uses_agent_client:
         updated = updated.replace(".execute(", ".call(")
+    if path == Path("crates/node/src/service.rs"):
         updated = updated.replace(
             "/// The controller side of the enforcement seam.\n",
             "/// One controller-side client for the Agent request/response protocol.\n",
