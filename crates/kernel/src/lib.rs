@@ -16,9 +16,11 @@ mod select;
 mod types;
 
 pub use admit::{
-    Admission, AdmissionPolicy, BackfillCtx, ClassUsage, RequestExclusions, admit, admit_backfill,
-    admit_backfill_with_exclusions, admit_backfill_with_policy, admit_with_ceiling,
-    admit_with_policy, owner_usage, refuse_reason,
+    Admission, AdmissionCandidateTrace, AdmissionOutcome, AdmissionPolicy, AdmissionTrace,
+    BackfillCtx, ClassUsage, RequestExclusions, admit, admit_backfill,
+    admit_backfill_with_exclusions, admit_backfill_with_policy,
+    admit_backfill_with_policy_explained, admit_with_ceiling, admit_with_policy,
+    admit_with_policy_explained, owner_usage, refuse_reason,
 };
 pub use cluster::{BindingDigest, Cluster, Digest, LeaseDigest};
 pub use command::{Command, Effect};
