@@ -1,0 +1,43 @@
+name: Workload intent split
+on:
+  push:
+    branches: [tmp/workload-intent-split]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Apply workload split
+        run: python3 .github/scripts/apply_workload_split.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Kernel tests
+        run: cargo test -p archon-kernel
+      - name: Node tests
+        run: cargo test -p archon-node
+      - name: Strict Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Workspace tests
+        run: cargo test --workspace
+      - name: Simulator
+        run: cargo run -p archon-sim
+      - name: Supply chain
+        run: cargo deny check advisories bans licenses sources
+      - name: Publish validated source tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -f .github/workflows/workload-intent-split.yml .github/workflows/workload-split-audit.yml .github/scripts/apply_workload_split.py
+          git add -A
+          git config user.name Nick
+          git config user.email nijaru7@gmail.com
+          git commit -m 'refactor: separate workload intent from resource requests'
+          git push origin HEAD:tmp/workload-intent-split
