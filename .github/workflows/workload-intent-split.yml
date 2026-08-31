@@ -46,6 +46,7 @@ jobs:
           PY
           python3 .github/scripts/apply_workload_split.py
           sed -i 's/request\.id = restarts\[0\]\.0\.id;/request.resources.id = restarts[0].0.id;/' crates/node/tests/health_ops.rs
+          sed -i 's/image: image,/image,/; s/grace_secs: grace_secs,/grace_secs,/; s/keep_alive: keep_alive,/keep_alive,/' crates/control/src/server.rs
       - name: Format
         run: cargo fmt --all
       - name: Format check
