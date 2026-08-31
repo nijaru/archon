@@ -1,7 +1,8 @@
 use archon_kernel::{
     Allocation, BindingScope, CapacityDimension, Claim, ClaimBinding, ClaimBindingUpdate, Cluster,
     Command, Edge, EdgeKind, LeaseId, Need, Node, NodeId, OwnerId, PreemptionOutcome, ProviderId,
-    Quantity, Request, RequestClass, RequestId, ResourceClass, preempt_victims, preemption_plan, qty,
+    Quantity, Request, RequestClass, RequestId, ResourceClass, preempt_victims, preemption_plan,
+    qty,
 };
 
 fn node(id: u64, kind: ResourceClass, capacity: Quantity) -> Node {
@@ -108,7 +109,11 @@ fn already_feasible_request_needs_no_preemption() {
     assert!(plan.victims.is_empty());
     assert!(plan.steps.is_empty());
     assert_eq!(preempt_victims(&cluster, &request), Some(Vec::new()));
-    assert_eq!(cluster.digest(), before, "planning must not mutate authority");
+    assert_eq!(
+        cluster.digest(),
+        before,
+        "planning must not mutate authority"
+    );
 }
 
 #[test]
@@ -128,9 +133,16 @@ fn plan_explains_the_lower_priority_victim_that_makes_request_feasible() {
     assert_eq!(plan.steps[0].owner, OwnerId::from_u64(7));
     assert_eq!(plan.steps[0].priority, 2);
     assert!(plan.steps[0].feasible_after_eviction);
-    assert_eq!(preempt_victims(&cluster, &request), Some(plan.victims.clone()));
+    assert_eq!(
+        preempt_victims(&cluster, &request),
+        Some(plan.victims.clone())
+    );
     assert!(cluster.occupies(LeaseId::from_u64(1)));
-    assert_eq!(cluster.digest(), before, "planning cannot revoke its victim");
+    assert_eq!(
+        cluster.digest(),
+        before,
+        "planning cannot revoke its victim"
+    );
 }
 
 #[test]
