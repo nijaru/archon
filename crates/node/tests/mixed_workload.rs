@@ -9,6 +9,8 @@ use archon_node::discover::{DeviceSpec, HostNodeSpec, MachineDescription};
 use archon_node::protocol::{AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities};
 use archon_node::service::{LeaseExecutor, NodeService};
 
+const GIB: u64 = 1 << 30;
+
 struct ProofExecutor;
 
 impl LeaseExecutor for ProofExecutor {
@@ -54,14 +56,23 @@ fn description(name: &str, gpu: bool) -> MachineDescription {
         instance_id: format!("mixed-{name}"),
         name: format!("mixed-{name}"),
         cpus: 1,
-        memory_bytes: 0,
-        host_nodes: vec![HostNodeSpec {
-            id: "cpu0".into(),
-            kind: ResourceClass::Cpu,
-            parent: None,
-            attrs: BTreeMap::new(),
-            capacity: qty(CapacityDimension::Count, 1),
-        }],
+        memory_bytes: GIB,
+        host_nodes: vec![
+            HostNodeSpec {
+                id: "cpu0".into(),
+                kind: ResourceClass::Cpu,
+                parent: None,
+                attrs: BTreeMap::new(),
+                capacity: qty(CapacityDimension::Count, 1),
+            },
+            HostNodeSpec {
+                id: "mem0".into(),
+                kind: ResourceClass::Memory,
+                parent: None,
+                attrs: BTreeMap::new(),
+                capacity: qty(CapacityDimension::Bytes, GIB),
+            },
+        ],
         devices: if gpu {
             vec![DeviceSpec {
                 kind: ResourceClass::Gpu,
