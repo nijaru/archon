@@ -26,6 +26,9 @@ enum Event {
         limits: LeaseLimits,
         devices: Vec<DeviceAccess>,
     },
+    StopExecution {
+        machine: String,
+    },
     Fence {
         machine: String,
     },
@@ -80,6 +83,15 @@ impl AgentClient for RecordingAgent {
                 }
             }
             AgentRequest::Release { binding, .. } => Ok(AgentResponse::Released { binding }),
+            AgentRequest::StopExecution { lease, .. } => {
+                self.events
+                    .lock()
+                    .expect("event lock")
+                    .push(Event::StopExecution {
+                        machine: self.machine.clone(),
+                    });
+                Ok(AgentResponse::ExecutionStopped { lease })
+            }
             AgentRequest::Fence { binding, .. } => {
                 self.events.lock().expect("event lock").push(Event::Fence {
                     machine: self.machine.clone(),
@@ -351,5 +363,35 @@ fn execution_start_failure_fails_and_fences_the_rigid_root() {
         events
             .iter()
             .any(|event| { matches!(event, Event::Fence { machine } if machine == "b") })
+    );
+
+    // Every member of a terminal program-carrying lease is stopped —
+    // including the member that refused to start, whose stop is an
+    // idempotent no-op — and each machine's fencing proceeds only after
+    // that machine's member stop is proven. A fence ack still implies the
+    // member is gone.
+    for member in ["a", "b"] {
+        let stop = events
+            .iter()
+            .position(
+                |event| matches!(event, Event::StopExecution { machine } if machine == member),
+            )
+            .unwrap_or_else(|| panic!("member {member} must be asked to stop before reuse"));
+        let fence = events
+            .iter()
+            .position(|event| matches!(event, Event::Fence { machine } if machine == member))
+            .unwrap_or_else(|| panic!("member {member} must fence"));
+        assert!(
+            stop < fence,
+            "member {member}'s resource fencing may proceed only after its stop"
+        );
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::StopExecution { .. }))
+            .count(),
+        2,
+        "each machine receives exactly one member stop"
     );
 }

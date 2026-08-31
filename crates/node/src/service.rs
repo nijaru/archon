@@ -119,6 +119,13 @@ pub enum RecoveryEvent {
         lease: LeaseId,
         machine: NodeId,
     },
+    /// A terminal lease's leftover member resolved after controller
+    /// restart: an exited member proved itself gone; a running one is
+    /// being stopped through the member-stop path before its held fence.
+    TerminalMemberResolved {
+        lease: LeaseId,
+        machine: NodeId,
+    },
 }
 
 pub struct NodeService {
@@ -147,6 +154,16 @@ pub struct NodeService {
     /// Workload members whose execution start was acknowledged for an exact
     /// Agent session. A new Agent session naturally requires a new start.
     execution_started: BTreeSet<(LeaseId, NodeId, u64)>,
+    /// Workload members whose execution stop was acknowledged for an exact
+    /// Agent session. Resource teardown for that machine may proceed only
+    /// after this proof; like the start set, it is controller observation,
+    /// never durable authority.
+    execution_stopped: BTreeSet<(LeaseId, NodeId, u64)>,
+    /// Resource-close effects (Release/Fence) held while a machine's member
+    /// execution stop is still pending. The kernel keeps those bindings open
+    /// (capacity stays occupied) until the stop is proven, preserving the
+    /// invariant that reusing a resource implies its member is gone.
+    held_effects: BTreeSet<(BindingId, EffectPhase)>,
     /// Machines whose last probe failed, consumed by health policy.
     unreachable: Vec<NodeId>,
     queue: Vec<Queued>,
@@ -911,6 +928,8 @@ impl NodeService {
             member_status: BTreeMap::new(),
             provider_activations: BTreeSet::new(),
             execution_started: BTreeSet::new(),
+            execution_stopped: BTreeSet::new(),
+            held_effects: BTreeSet::new(),
             unreachable: Vec::new(),
             queue: Vec::new(),
             queued_workloads: BTreeMap::new(),
@@ -1175,6 +1194,11 @@ impl NodeService {
         // again from live Agents before adopting authority.
         self.provider_activations.clear();
         self.execution_started.clear();
+        self.execution_stopped.clear();
+        // Held resource-close effects belonged to the previous controller's
+        // in-flight observations; recovery regenerates teardown from live
+        // state as machines re-register.
+        self.held_effects.clear();
         self.restart_handled = state.restart_handled;
         self.restart_counts = state.restart_counts;
         self.restart_last_at = state.restart_last_at;
@@ -1778,6 +1802,57 @@ impl NodeService {
                     }
                 }
                 (
+                    Tag::ExecutionStop {
+                        lease,
+                        machine,
+                        session,
+                    },
+                    reply,
+                ) => {
+                    let (lease, machine, session) = (*lease, *machine, *session);
+                    let current = self
+                        .cluster
+                        .sessions
+                        .get(&machine)
+                        .is_some_and(|current| *current == session);
+                    if !current {
+                        eprintln!(
+                            "archon: ignoring stale execution-stop completion for lease {lease} on machine {machine} session {session}"
+                        );
+                        continue;
+                    }
+                    match reply {
+                        Ok(AgentResponse::ExecutionStopped { lease: got })
+                            if got == lease.as_u64() =>
+                        {
+                            self.execution_stopped.insert((lease, machine, session));
+                            // The machine's member is proven gone: release
+                            // any resource teardown this stop was holding.
+                            self.drive_held_effects()?;
+                        }
+                        Ok(AgentResponse::ExecutionStopFailed { lease: got, reason })
+                            if got == lease.as_u64() =>
+                        {
+                            // Capacity stays held (bindings remain open) so a
+                            // stuck member cannot leak its claims; health
+                            // policy and fencing recover from here.
+                            eprintln!(
+                                "archon: execution stop for lease {lease} on machine {machine} failed: {reason}"
+                            );
+                        }
+                        Ok(other) => {
+                            eprintln!(
+                                "archon: unexpected execution-stop response for lease {lease} on machine {machine}: {other:?}"
+                            );
+                        }
+                        Err(reason) => {
+                            eprintln!(
+                                "archon: execution stop for lease {lease} on machine {machine} became unprovable: {reason}"
+                            );
+                        }
+                    }
+                }
+                (
                     Tag::Status { lease, machine },
                     Ok(AgentResponse::Running {
                         running, exit_code, ..
@@ -1849,6 +1924,61 @@ impl NodeService {
 
     fn binding_lease(&self, binding: BindingId) -> Option<LeaseId> {
         self.cluster.bindings.get(&binding).map(|r| r.lease)
+    }
+
+    /// Whether a lease's member on one machine is proven stopped for the
+    /// machine's current Agent session. The stop is the only accepted proof:
+    /// cleared start observations after a restart must never imply a member
+    /// is gone.
+    fn member_stop_proven(&self, lease: LeaseId, machine: NodeId) -> bool {
+        let Some(session) = self.cluster.sessions.get(&machine).copied() else {
+            return false;
+        };
+        self.execution_stopped.contains(&(lease, machine, session))
+    }
+
+    /// Re-route resource-close effects that were held pending member-stop
+    /// proof, keeping any that still wait on an unproven stop.
+    fn drive_held_effects(&mut self) -> Result<(), Error> {
+        let held: Vec<_> = self.held_effects.iter().copied().collect();
+        self.held_effects.clear();
+        for (binding, phase) in held {
+            let Some(record) = self.cluster.bindings.get(&binding) else {
+                continue;
+            };
+            let lease = record.lease;
+            let Some(machine) = self.cluster.graph.machine_of(record.node) else {
+                continue;
+            };
+            if self.member_stop_proven(lease, machine) {
+                let effect = match phase {
+                    EffectPhase::Prepare => unreachable!("prepare is never held"),
+                    EffectPhase::Activate => unreachable!("activate is never held"),
+                    EffectPhase::Release => Effect::Release {
+                        binding,
+                        node: record.node,
+                        provider: record.provider,
+                        fence: record.fence,
+                        session: record.agent_session,
+                        epoch: self.cluster.epoch,
+                    },
+                    EffectPhase::Fence => Effect::Fence {
+                        binding,
+                        node: record.node,
+                        provider: record.provider,
+                        fence: record.fence,
+                        session: record.agent_session,
+                        epoch: self.cluster.epoch,
+                    },
+                };
+                for command in self.route(effect)? {
+                    self.commit(command)?;
+                }
+            } else {
+                self.held_effects.insert((binding, phase));
+            }
+        }
+        Ok(())
     }
 
     /// Activate a preparing lease once every enforced binding is prepared.
@@ -1962,6 +2092,70 @@ impl NodeService {
         Ok(())
     }
 
+    /// Stop each workload member exactly once per Agent session when the
+    /// root Lease has gone terminal. Resource teardown for a machine waits
+    /// for that machine's stop proof, so capacity reuse still implies the
+    /// member is gone. Every member of a terminal program-carrying lease
+    /// is stopped, including members whose start was refused or whose
+    /// start observation was lost to a restart: the agent's stop is
+    /// idempotent, and only the stop acknowledgement proves the member gone.
+    fn maybe_stop_executions(&mut self, lease: LeaseId) -> Result<(), Error> {
+        let Some(record) = self.cluster.leases.get(&lease) else {
+            return Ok(());
+        };
+        if !matches!(
+            record.state,
+            archon_kernel::LeaseState::Released
+                | archon_kernel::LeaseState::Expired
+                | archon_kernel::LeaseState::Revoked
+                | archon_kernel::LeaseState::Failed
+                | archon_kernel::LeaseState::Completed
+        ) {
+            return Ok(());
+        }
+        let has_program = self
+            .requests
+            .get(&lease)
+            .is_some_and(|(workload, _)| workload.execution.has_program());
+        if !has_program {
+            return Ok(());
+        }
+        for machine in self.lease_machines(lease) {
+            let Some(session) = self.cluster.sessions.get(&machine).copied() else {
+                continue;
+            };
+            let key = (lease, machine, session);
+            if self.execution_stopped.contains(&key)
+                || self.inflight.iter().any(|tag| {
+                    matches!(
+                        tag,
+                        Tag::ExecutionStop {
+                            lease: pending_lease,
+                            machine: pending_machine,
+                            session: pending_session,
+                        } if (*pending_lease, *pending_machine, *pending_session) == key
+                    )
+                })
+            {
+                continue;
+            }
+            self.dispatch(
+                machine,
+                Tag::ExecutionStop {
+                    lease,
+                    machine,
+                    session,
+                },
+                AgentRequest::StopExecution {
+                    lease: lease.as_u64(),
+                    session,
+                    epoch: self.cluster.epoch,
+                },
+            );
+        }
+        Ok(())
+    }
+
     fn request_status(&mut self, lease: LeaseId) {
         for machine in self.lease_machines(lease) {
             self.request_status_on_machine(lease, machine);
@@ -2051,6 +2245,7 @@ impl NodeService {
         let mut commands = Vec::new();
         let mut active = BTreeSet::new();
         let mut preparing = BTreeSet::new();
+        let mut terminal_status = BTreeSet::new();
         for binding in bindings {
             let Some(record) = self.cluster.bindings.get(&binding) else {
                 continue;
@@ -2073,6 +2268,17 @@ impl NodeService {
                             machine,
                             binding,
                         });
+                    // A terminal lease's leftover open Binding fences only
+                    // after its member is proven gone on this machine. The
+                    // Status proof below drives that: an exited member
+                    // records the stop; a still-running member is stopped
+                    // through the ordinary member-stop path once the fence
+                    // effect holds for the stop proof.
+                    if terminal_status.insert(record.lease)
+                        && let Some(pending) = self.recovering_machines.get_mut(&machine)
+                    {
+                        pending.insert(record.lease);
+                    }
                 }
             }
         }
@@ -2088,6 +2294,11 @@ impl NodeService {
             if let Some(pending) = self.recovering_machines.get_mut(&machine) {
                 pending.insert(lease);
             }
+            if self.recovering_members.insert((lease, machine)) {
+                self.request_status_on_machine(lease, machine);
+            }
+        }
+        for lease in terminal_status {
             if self.recovering_members.insert((lease, machine)) {
                 self.request_status_on_machine(lease, machine);
             }
@@ -2108,6 +2319,41 @@ impl NodeService {
     ) {
         self.member_status
             .insert((lease, machine), MemberStatus { running, exit_code });
+        // A terminal lease recovers through member shutdown, not adoption:
+        // an exited member records the stop proof (releasing held fences);
+        // a still-running member is stopped by the ordinary member-stop
+        // path, and its held fences proceed once the stop is proven.
+        let terminal = matches!(
+            self.cluster.leases.get(&lease).map(|record| record.state),
+            Some(
+                archon_kernel::LeaseState::Released
+                    | archon_kernel::LeaseState::Expired
+                    | archon_kernel::LeaseState::Revoked
+                    | archon_kernel::LeaseState::Failed
+                    | archon_kernel::LeaseState::Completed
+            )
+        );
+        if terminal {
+            if let Some(session) = self.cluster.sessions.get(&machine).copied()
+                && !running
+            {
+                self.execution_stopped.insert((lease, machine, session));
+            }
+            if let Err(err) = self.maybe_stop_executions(lease) {
+                eprintln!(
+                    "archon: stopping recovered terminal member lease {lease} on machine {machine} failed: {err}"
+                );
+            }
+            if let Err(err) = self.drive_held_effects() {
+                eprintln!(
+                    "archon: re-driving held teardown for lease {lease} on machine {machine} failed: {err}"
+                );
+            }
+            self.recovery_events
+                .push(RecoveryEvent::TerminalMemberResolved { lease, machine });
+            self.settle_machine_recovery(lease, machine);
+            return;
+        }
         if running || exit_code.is_some() {
             if let Err(err) = self.rebind_lease_machine(lease, machine) {
                 eprintln!("archon: adopting lease {lease} on machine {machine} failed: {err}");
@@ -2132,6 +2378,11 @@ impl NodeService {
             }
             if let Some(session) = self.cluster.sessions.get(&machine).copied() {
                 self.execution_started.insert((lease, machine, session));
+                // A recovered member that already exited proves the member
+                // gone: resource teardown for this machine may proceed.
+                if !running {
+                    self.execution_stopped.insert((lease, machine, session));
+                }
             }
             self.resolve_observed_completion(lease, finished);
             self.recovery_events.push(RecoveryEvent::MemberRecovered {
@@ -2327,6 +2578,42 @@ impl NodeService {
                 explanation: format!("binding {binding_id} node has no machine ancestor"),
             })?;
 
+        // Resource teardown defers to proven member shutdown: hold this
+        // Release/Fence while the lease's member on this machine is not
+        // proven stopped under the current session. Bindings stay open in
+        // the kernel, so capacity cannot leak; the stop acknowledgement
+        // re-drives the held effect. Leases without a program never started
+        // execution and release directly. A machine without a live session
+        // keeps the old drop behavior — there is no one to prove against.
+        //
+        // This hold deliberately includes recovering machines: after a
+        // controller restart, cleared start observations must not let a
+        // terminal lease's still-running member escape the stop-before-reuse
+        // contract.
+        let terminal = matches!(
+            self.cluster.leases.get(&lease).map(|record| record.state),
+            Some(
+                archon_kernel::LeaseState::Released
+                    | archon_kernel::LeaseState::Expired
+                    | archon_kernel::LeaseState::Revoked
+                    | archon_kernel::LeaseState::Failed
+                    | archon_kernel::LeaseState::Completed
+            )
+        );
+        if terminal
+            && self
+                .requests
+                .get(&lease)
+                .is_some_and(|(workload, _)| workload.execution.has_program())
+            && self.cluster.sessions.contains_key(&machine)
+            && !self.member_stop_proven(lease, machine)
+        {
+            self.maybe_stop_executions(lease)?;
+            self.held_effects
+                .insert((binding_id, effect_phase(&effect)));
+            return Ok(Vec::new());
+        }
+
         let request = match &effect {
             Effect::Prepare { .. } => AgentRequest::Prepare {
                 binding: binding_id.as_u64(),
@@ -2371,13 +2658,7 @@ impl NodeService {
             Effect::Reconcile { .. } => unreachable!(),
         };
 
-        let phase = match &effect {
-            Effect::Prepare { .. } => EffectPhase::Prepare,
-            Effect::Activate { .. } => EffectPhase::Activate,
-            Effect::Release { .. } => EffectPhase::Release,
-            Effect::Fence { .. } => EffectPhase::Fence,
-            Effect::Reconcile { .. } => unreachable!(),
-        };
+        let phase = effect_phase(&effect);
         self.dispatch(
             machine,
             Tag::Binding {
@@ -2389,5 +2670,15 @@ impl NodeService {
             request,
         );
         Ok(Vec::new())
+    }
+}
+
+fn effect_phase(effect: &Effect) -> EffectPhase {
+    match effect {
+        Effect::Prepare { .. } => EffectPhase::Prepare,
+        Effect::Activate { .. } => EffectPhase::Activate,
+        Effect::Release { .. } => EffectPhase::Release,
+        Effect::Fence { .. } => EffectPhase::Fence,
+        Effect::Reconcile { .. } => unreachable!(),
     }
 }

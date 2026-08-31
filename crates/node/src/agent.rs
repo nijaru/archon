@@ -151,13 +151,13 @@ impl LeaseAgent {
             }
             AgentRequest::Release {
                 binding,
-                lease,
                 node,
                 provider,
                 scope,
                 session,
                 fence,
                 epoch,
+                ..
             } => {
                 let generation = EndpointGeneration {
                     binding,
@@ -168,23 +168,20 @@ impl LeaseAgent {
                     fence,
                     epoch,
                 };
-                if let Err(reason) = self.provider.release(generation) {
-                    return self.failed(binding, &reason);
-                }
-                match self.execution.stop(LeaseId::from_u64(lease)) {
-                    Ok(_) => AgentResponse::Released { binding },
+                match self.provider.release(generation) {
+                    Ok(()) => AgentResponse::Released { binding },
                     Err(reason) => self.failed(binding, &reason),
                 }
             }
             AgentRequest::Fence {
                 binding,
-                lease,
                 node,
                 provider,
                 scope,
                 session,
                 fence,
                 epoch,
+                ..
             } => {
                 let generation = EndpointGeneration {
                     binding,
@@ -195,12 +192,26 @@ impl LeaseAgent {
                     fence,
                     epoch,
                 };
-                if let Err(reason) = self.provider.fence(generation) {
-                    return self.failed(binding, &reason);
+                match self.provider.fence(generation) {
+                    Ok(()) => AgentResponse::Fenced { binding },
+                    Err(reason) => self.failed(binding, &reason),
+                }
+            }
+            AgentRequest::StopExecution {
+                lease,
+                session,
+                epoch,
+            } => {
+                if let Err(reason) = self.provider.authorize_execution(session, epoch) {
+                    eprintln!("archon: stop for lease {lease} refused: {reason}");
+                    return AgentResponse::ExecutionStopFailed { lease, reason };
                 }
                 match self.execution.stop(LeaseId::from_u64(lease)) {
-                    Ok(_) => AgentResponse::Fenced { binding },
-                    Err(reason) => self.failed(binding, &reason),
+                    Ok(_) => AgentResponse::ExecutionStopped { lease },
+                    Err(reason) => {
+                        eprintln!("archon: stop for lease {lease} failed: {reason}");
+                        AgentResponse::ExecutionStopFailed { lease, reason }
+                    }
                 }
             }
         }

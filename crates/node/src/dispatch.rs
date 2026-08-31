@@ -41,6 +41,11 @@ pub enum Tag {
         machine: NodeId,
         session: u64,
     },
+    ExecutionStop {
+        lease: LeaseId,
+        machine: NodeId,
+        session: u64,
+    },
     Status {
         lease: LeaseId,
         machine: NodeId,

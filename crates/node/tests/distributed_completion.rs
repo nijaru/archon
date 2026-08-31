@@ -38,6 +38,7 @@ impl WorkReply {
 enum Event {
     Activate,
     StartExecution,
+    StopExecution,
     Status,
     Fence,
     Release,
@@ -72,6 +73,13 @@ impl AgentClient for StatusAgent {
             AgentRequest::Release { binding, .. } => {
                 self.events.lock().expect("event lock").push(Event::Release);
                 Ok(AgentResponse::Released { binding })
+            }
+            AgentRequest::StopExecution { lease, .. } => {
+                self.events
+                    .lock()
+                    .expect("event lock")
+                    .push(Event::StopExecution);
+                Ok(AgentResponse::ExecutionStopped { lease })
             }
             AgentRequest::Fence { binding, .. } => {
                 self.events.lock().expect("event lock").push(Event::Fence);
