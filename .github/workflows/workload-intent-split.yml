@@ -17,6 +17,7 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
+          import re
           from pathlib import Path
 
           script = Path('.github/scripts/apply_workload_split.py')
@@ -28,15 +29,20 @@ jobs:
 
           containers = Path('crates/node/tests/containers.rs')
           text = containers.read_text()
-          old = '''    let request = Request {
-              grace_secs: 10,
-              ..submit_request_template(1, busybox_drain_command(), &dir)
-          };'''
-          new = '''    let mut request = submit_request_template(1, busybox_drain_command(), &dir);
-          request.grace_secs = 10;'''
-          if old not in text:
-              raise SystemExit('container grace fixture pattern not found')
-          containers.write_text(text.replace(old, new, 1))
+          pattern = re.compile(
+              r'(?m)^    let request = Request \{\n'
+              r'        grace_secs: 10,\n'
+              r'        \.\.submit_request_template\(1, busybox_drain_command\(\), &dir\)\n'
+              r'    \};'
+          )
+          replacement = (
+              '    let mut request = submit_request_template(1, busybox_drain_command(), &dir);\n'
+              '    request.grace_secs = 10;'
+          )
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'container grace fixture matches: {count}')
+          containers.write_text(text)
           PY
           python3 .github/scripts/apply_workload_split.py
           sed -i 's/request\.id = restarts\[0\]\.0\.id;/request.resources.id = restarts[0].0.id;/' crates/node/tests/health_ops.rs
