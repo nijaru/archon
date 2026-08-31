@@ -91,6 +91,35 @@ struct MemberStatus {
     exit_code: Option<i32>,
 }
 
+/// Material controller-restart reconciliation outcomes. These are
+/// observational controller events, not kernel authority or replay state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryEvent {
+    PreparingLeaseFailed {
+        lease: LeaseId,
+        machine: NodeId,
+    },
+    TerminalBindingFenced {
+        lease: LeaseId,
+        machine: NodeId,
+        binding: BindingId,
+    },
+    MemberRecovered {
+        lease: LeaseId,
+        machine: NodeId,
+        running: bool,
+        exit_code: Option<i32>,
+    },
+    MemberRevokedUnprovable {
+        lease: LeaseId,
+        machine: NodeId,
+    },
+    MemberRevokedRebindFailed {
+        lease: LeaseId,
+        machine: NodeId,
+    },
+}
+
 pub struct NodeService {
     pub cluster: Cluster,
     /// Shared secret for outbound agent connections; None runs open mode.
@@ -149,6 +178,9 @@ pub struct NodeService {
     /// outstanding. Recovery authority is machine-local even when the Lease
     /// itself spans several agents.
     recovering_members: BTreeSet<(LeaseId, NodeId)>,
+    /// Material restart-recovery decisions waiting for an observer. This is
+    /// controller-local telemetry and is intentionally absent from ServiceState.
+    recovery_events: Vec<RecoveryEvent>,
     /// Observes every command applied to the cluster; the control plane
     /// persists them here.
     command_sink: Option<CommandSink>,
@@ -892,6 +924,7 @@ impl NodeService {
             session_floor: 0,
             recovering_machines: BTreeMap::new(),
             recovering_members: BTreeSet::new(),
+            recovery_events: Vec::new(),
             command_sink: None,
             history: Vec::new(),
         }
@@ -1090,6 +1123,13 @@ impl NodeService {
     /// Every command applied since construction, in order.
     pub fn command_history(&self) -> Vec<Command> {
         self.history.clone()
+    }
+
+    /// Drain material controller-restart reconciliation outcomes observed
+    /// since the previous call. Recovery events explain decisions but never
+    /// participate in authority, replay, or ServiceState restoration.
+    pub fn take_recovery_events(&mut self) -> Vec<RecoveryEvent> {
+        std::mem::take(&mut self.recovery_events)
     }
 
     /// Capture the controller-side state that outlives restarts alongside
@@ -1842,7 +1882,15 @@ impl NodeService {
                 archon_kernel::LeaseState::Preparing => {
                     preparing.insert(record.lease);
                 }
-                _ => commands.push(Command::FenceBinding { binding }),
+                _ => {
+                    commands.push(Command::FenceBinding { binding });
+                    self.recovery_events
+                        .push(RecoveryEvent::TerminalBindingFenced {
+                            lease: record.lease,
+                            machine,
+                            binding,
+                        });
+                }
             }
         }
         for lease in preparing {
@@ -1850,6 +1898,8 @@ impl NodeService {
                 lease,
                 reason: "restart left preparation unproven".into(),
             });
+            self.recovery_events
+                .push(RecoveryEvent::PreparingLeaseFailed { lease, machine });
         }
         for lease in active {
             if let Some(pending) = self.recovering_machines.get_mut(&machine) {
@@ -1878,14 +1928,24 @@ impl NodeService {
         if running || exit_code.is_some() {
             if let Err(err) = self.rebind_lease_machine(lease, machine) {
                 eprintln!("archon: adopting lease {lease} on machine {machine} failed: {err}");
+                self.recovery_events
+                    .push(RecoveryEvent::MemberRevokedRebindFailed { lease, machine });
                 self.commit_lenient(Command::RevokeLease { lease });
                 finished.push(lease);
                 self.settle_machine_recovery(lease, machine);
                 return;
             }
             self.resolve_observed_completion(lease, finished);
+            self.recovery_events.push(RecoveryEvent::MemberRecovered {
+                lease,
+                machine,
+                running,
+                exit_code,
+            });
             eprintln!("archon: recovered lease {lease} member on machine {machine}");
         } else {
+            self.recovery_events
+                .push(RecoveryEvent::MemberRevokedUnprovable { lease, machine });
             self.commit_lenient(Command::RevokeLease { lease });
             finished.push(lease);
             eprintln!(

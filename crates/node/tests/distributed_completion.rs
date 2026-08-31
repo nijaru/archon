@@ -10,7 +10,7 @@ use archon_node::discover::{HostNodeSpec, MachineDescription};
 use archon_node::protocol::{
     AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities,
 };
-use archon_node::service::{LeaseExecutor, NodeService};
+use archon_node::service::{LeaseExecutor, NodeService, RecoveryEvent};
 
 const GIB: u64 = 1 << 30;
 
@@ -288,6 +288,15 @@ fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
         .expect("recover first member");
     assert_eq!(binding_sessions(&recovered, a), BTreeSet::from([3]));
     assert_eq!(
+        recovered.take_recovery_events(),
+        vec![RecoveryEvent::MemberRecovered {
+            lease: LeaseId::from_u64(1),
+            machine: a,
+            running: false,
+            exit_code: Some(0),
+        }]
+    );
+    assert_eq!(
         binding_sessions(&recovered, b),
         old_b,
         "recovering one machine must not rewrite a sibling machine's binding session"
@@ -306,6 +315,15 @@ fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
         .expect("recover second member");
     assert_eq!(binding_sessions(&recovered, b), BTreeSet::from([4]));
     assert_eq!(
+        recovered.take_recovery_events(),
+        vec![RecoveryEvent::MemberRecovered {
+            lease: LeaseId::from_u64(1),
+            machine: b,
+            running: true,
+            exit_code: None,
+        }]
+    );
+    assert_eq!(
         recovered.cluster.leases[&LeaseId::from_u64(1)].state,
         LeaseState::Active
     );
@@ -319,5 +337,39 @@ fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
                 .expect("event lock")
                 .contains(&Event::Activate),
         "recovery must adopt proven members rather than re-executing them"
+    );
+}
+
+#[test]
+fn restart_recovery_explains_unprovable_member_revocation() {
+    let running_a = Arc::new(Mutex::new(WorkReply::RUNNING));
+    let running_b = Arc::new(Mutex::new(WorkReply::RUNNING));
+    let (service, a, _, _, _) = active_service(running_a, running_b);
+    let cluster = service.cluster.clone();
+    let state = service.state_snapshot();
+    drop(service);
+
+    let mut recovered = NodeService::new();
+    recovered.restore(cluster, state);
+    let unknown = Arc::new(Mutex::new(WorkReply {
+        running: false,
+        exit_code: None,
+    }));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    assert_eq!(register(&mut recovered, "a", unknown, events), a);
+    recovered
+        .drive(Duration::from_secs(2))
+        .expect("resolve unprovable recovery member");
+
+    assert_eq!(
+        recovered.take_recovery_events(),
+        vec![RecoveryEvent::MemberRevokedUnprovable {
+            lease: LeaseId::from_u64(1),
+            machine: a,
+        }]
+    );
+    assert_eq!(
+        recovered.cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Revoked
     );
 }
