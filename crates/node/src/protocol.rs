@@ -171,6 +171,16 @@ pub enum AgentRequest {
         #[serde(default)]
         devices: Vec<DeviceAccess>,
     },
+    /// Stop exactly one workload member's execution, honoring the lease's
+    /// captured grace budget. This is the Executor-side counterpart of
+    /// StartExecution: it never closes or fences resource Bindings, and the
+    /// controller may release a machine's resources only after that
+    /// machine's member stop is proven.
+    StopExecution {
+        lease: u64,
+        session: u64,
+        epoch: u64,
+    },
     Release {
         binding: u64,
         lease: u64,
@@ -228,6 +238,15 @@ pub enum AgentResponse {
         lease: u64,
     },
     ExecutionFailed {
+        lease: u64,
+        reason: String,
+    },
+    ExecutionStopped {
+        lease: u64,
+    },
+    /// The member stop was refused or could not be proven; the lease's
+    /// resources stay held so ownership cannot silently leak.
+    ExecutionStopFailed {
         lease: u64,
         reason: String,
     },

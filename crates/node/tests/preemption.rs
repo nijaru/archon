@@ -18,6 +18,7 @@ enum Event {
     Activate(u64),
     Fence(u64),
     ExecutionStart(u64),
+    ExecutionStop(u64),
 }
 
 struct ProofExecutor {
@@ -44,6 +45,13 @@ impl AgentClient for ProofExecutor {
                     .expect("event lock")
                     .push(Event::ExecutionStart(lease));
                 Ok(AgentResponse::ExecutionStarted { lease })
+            }
+            AgentRequest::StopExecution { lease, .. } => {
+                self.events
+                    .lock()
+                    .expect("event lock")
+                    .push(Event::ExecutionStop(lease));
+                Ok(AgentResponse::ExecutionStopped { lease })
             }
             AgentRequest::Fence { binding, lease, .. } => {
                 self.events

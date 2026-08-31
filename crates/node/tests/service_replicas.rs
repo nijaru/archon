@@ -18,6 +18,7 @@ const GIB: u64 = 1 << 30;
 enum Event {
     Activate,
     ExecutionStart,
+    ExecutionStop,
     Fence,
 }
 
@@ -45,6 +46,13 @@ impl AgentClient for ReplicaExecutor {
                     .expect("event lock")
                     .push(Event::ExecutionStart);
                 Ok(AgentResponse::ExecutionStarted { lease })
+            }
+            AgentRequest::StopExecution { lease, .. } => {
+                self.events
+                    .lock()
+                    .expect("event lock")
+                    .push(Event::ExecutionStop);
+                Ok(AgentResponse::ExecutionStopped { lease })
             }
             AgentRequest::Fence { binding, .. } => {
                 self.events.lock().expect("event lock").push(Event::Fence);
