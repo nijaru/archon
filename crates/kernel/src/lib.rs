@@ -29,7 +29,9 @@ pub use error::Error;
 pub use graph::Graph;
 pub use ids::{BindingId, FactWriterId, LeaseId, NodeId, OwnerId, ProviderId, RequestId};
 pub use occupancy::{Occupancy, occupancy_from_leases};
-pub use preempt::preempt_victims;
+pub use preempt::{
+    PreemptionOutcome, PreemptionPlan, PreemptionStep, preempt_victims, preemption_plan,
+};
 pub use select::select;
 pub use types::{
     Allocation, Attrs, Binding, BindingScope, BindingState, CapacityDimension, Claim, ClaimBinding,
