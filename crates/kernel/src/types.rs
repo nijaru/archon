@@ -452,10 +452,109 @@ pub struct Claim {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum PlacementReason {
+    MachineSelected {
+        machine: NodeId,
+    },
+    CandidateScore {
+        node: NodeId,
+        score: i64,
+        data_local: Vec<NodeId>,
+        degraded_ancestor: Option<NodeId>,
+    },
+    TopologyConstraint {
+        index: usize,
+        relation: TopologyRelation,
+        selected_left: Vec<NodeId>,
+        selected_right: Vec<NodeId>,
+        rejected: Option<(NodeId, NodeId)>,
+    },
+}
+
+/// Human-readable placement summary plus typed evidence that policy and UI
+/// layers can inspect without parsing prose. Legacy persisted Allocations that
+/// encoded this field as a string deserialize as a summary with no reasons.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct PlacementExplanation {
+    pub summary: String,
+    pub reasons: Vec<PlacementReason>,
+}
+
+impl PlacementExplanation {
+    pub fn new(summary: impl Into<String>, reasons: Vec<PlacementReason>) -> Self {
+        Self {
+            summary: summary.into(),
+            reasons,
+        }
+    }
+}
+
+impl From<String> for PlacementExplanation {
+    fn from(summary: String) -> Self {
+        Self::new(summary, Vec::new())
+    }
+}
+
+impl From<&str> for PlacementExplanation {
+    fn from(summary: &str) -> Self {
+        Self::from(summary.to_owned())
+    }
+}
+
+impl fmt::Display for PlacementExplanation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.summary)
+    }
+}
+
+impl AsRef<str> for PlacementExplanation {
+    fn as_ref(&self) -> &str {
+        &self.summary
+    }
+}
+
+impl std::ops::Deref for PlacementExplanation {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.summary
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for PlacementExplanation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Structured {
+            summary: String,
+            #[serde(default)]
+            reasons: Vec<PlacementReason>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Representation {
+            Legacy(String),
+            Structured(Structured),
+        }
+
+        match Representation::deserialize(deserializer)? {
+            Representation::Legacy(summary) => Ok(Self::from(summary)),
+            Representation::Structured(value) => Ok(Self::new(value.summary, value.reasons)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Allocation {
     pub claims: Vec<Claim>,
     pub graph_revision: u64,
-    pub explanation: String,
+    pub explanation: PlacementExplanation,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

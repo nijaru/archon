@@ -408,6 +408,29 @@ fn explanation_reports_topology_that_changes_machine_choice() {
     );
     assert!(allocation.explanation.contains("rejected"));
     assert!(allocation.explanation.contains("under numa"));
+    assert!(allocation.explanation.reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            archon_kernel::PlacementReason::MachineSelected { machine }
+                if *machine == NodeId::from_u64(200)
+        )
+    }));
+    assert!(allocation.explanation.reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            archon_kernel::PlacementReason::TopologyConstraint {
+                index: 0,
+                relation: TopologyRelation::SameAncestor { class },
+                selected_left,
+                selected_right,
+                rejected: Some((left, right)),
+            } if *class == ResourceClass::Numa
+                && selected_left == &vec![NodeId::from_u64(202)]
+                && selected_right == &vec![NodeId::from_u64(203)]
+                && *left == NodeId::from_u64(103)
+                && *right == NodeId::from_u64(104)
+        )
+    }));
 }
 
 #[test]
