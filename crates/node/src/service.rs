@@ -140,6 +140,13 @@ pub struct NodeService {
     /// Last observed workload state per (lease, machine) member. A rigid
     /// multi-machine Lease is complete only after member states aggregate.
     member_status: BTreeMap<(LeaseId, NodeId), MemberStatus>,
+    /// Provider activation acknowledgements for exact Binding generations.
+    /// Kernel BindingState becomes Active when activation is committed, before
+    /// the Agent ack, so execution barriers must use this stronger proof.
+    provider_activations: BTreeSet<(BindingId, u64, u64)>,
+    /// Workload members whose execution start was acknowledged for an exact
+    /// Agent session. A new Agent session naturally requires a new start.
+    execution_started: BTreeSet<(LeaseId, NodeId, u64)>,
     /// Machines whose last probe failed, consumed by health policy.
     unreachable: Vec<NodeId>,
     queue: Vec<Queued>,
@@ -902,6 +909,8 @@ impl NodeService {
             inbox: Arc::new(Inbox::default()),
             inflight: BTreeSet::new(),
             member_status: BTreeMap::new(),
+            provider_activations: BTreeSet::new(),
+            execution_started: BTreeSet::new(),
             unreachable: Vec::new(),
             queue: Vec::new(),
             queued_workloads: BTreeMap::new(),
@@ -1161,6 +1170,11 @@ impl NodeService {
         self.next_session = state.next_session;
         self.next_binding = state.next_binding;
         self.requests = state.requests;
+        // Provider/execution acknowledgements are observations of the current
+        // Agent sessions, never durable controller state. Recovery proves them
+        // again from live Agents before adopting authority.
+        self.provider_activations.clear();
+        self.execution_started.clear();
         self.restart_handled = state.restart_handled;
         self.restart_counts = state.restart_counts;
         self.restart_last_at = state.restart_last_at;
@@ -1485,23 +1499,35 @@ impl NodeService {
         {
             let _ = self.drive(Duration::from_millis(50));
         }
-        let active = self
-            .cluster
-            .leases
-            .get(&lease)
-            .is_some_and(|l| l.state == archon_kernel::LeaseState::Active);
-        if !active {
-            return false;
-        }
-        self.request_status(lease);
-        let _ = self.drive(Duration::from_secs(1));
-        let machines = self.lease_machines(lease);
-        !machines.is_empty()
-            && machines.iter().all(|machine| {
+        // Member execution is a separate pipeline stage after resource
+        // activation: an early status answer can observe the member before
+        // its execution start settles, so poll until every member proves
+        // running or the observation window closes.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self
+                .cluster
+                .leases
+                .get(&lease)
+                .is_none_or(|l| l.state != archon_kernel::LeaseState::Active)
+            {
+                return false;
+            }
+            let machines = self.lease_machines(lease);
+            if machines.is_empty() {
+                return false;
+            }
+            self.request_status(lease);
+            let _ = self.drive(Duration::from_millis(50));
+            let all_running = machines.iter().all(|machine| {
                 self.member_status
                     .get(&(lease, *machine))
                     .is_some_and(|status| status.running)
-            })
+            });
+            if all_running || Instant::now() >= deadline {
+                return all_running;
+            }
+        }
     }
 
     fn dequeue(&mut self, request_id: &RequestId) {
@@ -1583,8 +1609,19 @@ impl NodeService {
     /// there are legitimate races (expiry vs. late agent answers), so they
     /// are logged instead of failing the whole drain.
     fn commit_lenient(&mut self, command: Command) {
-        if let Err(err) = self.commit(command) {
-            eprintln!("archon: rejected stale completion: {err}");
+        let _ = self.try_commit_lenient(command);
+    }
+
+    /// Like commit_lenient, but report whether the completion was accepted.
+    /// Controller-only activation barriers use this to avoid treating stale
+    /// Agent acknowledgements as proof of the current Binding generation.
+    fn try_commit_lenient(&mut self, command: Command) -> bool {
+        match self.commit(command) {
+            Ok(()) => true,
+            Err(err) => {
+                eprintln!("archon: rejected stale completion: {err}");
+                false
+            }
         }
     }
 
@@ -1632,11 +1669,19 @@ impl NodeService {
                             }
                         }
                         Ok(AgentResponse::Activated { .. }) => {
-                            self.commit_lenient(Command::RecordBindingActive {
+                            let lease = self.binding_lease(binding);
+                            let accepted = self.try_commit_lenient(Command::RecordBindingActive {
                                 binding,
                                 session: *session,
                                 fence: *fence,
-                            })
+                            });
+                            if accepted {
+                                self.provider_activations
+                                    .insert((binding, *session, *fence));
+                                if let Some(lease) = lease {
+                                    self.maybe_start_executions(lease)?;
+                                }
+                            }
                         }
                         Ok(AgentResponse::Released { .. }) => {
                             self.commit_lenient(Command::RecordBindingReleased {
@@ -1672,6 +1717,63 @@ impl NodeService {
                             eprintln!(
                                 "archon: agent call for binding {binding} failed; dropping: {reason}"
                             );
+                        }
+                    }
+                }
+                (
+                    Tag::ExecutionStart {
+                        lease,
+                        machine,
+                        session,
+                    },
+                    reply,
+                ) => {
+                    let (lease, machine, session) = (*lease, *machine, *session);
+                    let current = self
+                        .cluster
+                        .sessions
+                        .get(&machine)
+                        .is_some_and(|current| *current == session)
+                        && self.cluster.leases.get(&lease).is_some_and(|record| {
+                            record.state == archon_kernel::LeaseState::Active
+                        });
+                    if !current {
+                        eprintln!(
+                            "archon: ignoring stale execution-start completion for lease {lease} on machine {machine} session {session}"
+                        );
+                        continue;
+                    }
+                    match reply {
+                        Ok(AgentResponse::ExecutionStarted { lease: got })
+                            if got == lease.as_u64() =>
+                        {
+                            self.execution_started.insert((lease, machine, session));
+                        }
+                        Ok(AgentResponse::ExecutionFailed { lease: got, reason })
+                            if got == lease.as_u64() =>
+                        {
+                            self.commit_lenient(Command::FailLease {
+                                lease,
+                                reason: format!(
+                                    "execution start failed on machine {machine}: {reason}"
+                                ),
+                            });
+                        }
+                        Ok(other) => {
+                            self.commit_lenient(Command::FailLease {
+                                lease,
+                                reason: format!(
+                                    "execution start on machine {machine} returned unexpected response: {other:?}"
+                                ),
+                            });
+                        }
+                        Err(reason) => {
+                            self.commit_lenient(Command::FailLease {
+                                lease,
+                                reason: format!(
+                                    "execution start on machine {machine} became unprovable: {reason}"
+                                ),
+                            });
                         }
                     }
                 }
@@ -1749,9 +1851,9 @@ impl NodeService {
         self.cluster.bindings.get(&binding).map(|r| r.lease)
     }
 
-    /// Activate a preparing lease once every enforced binding is prepared:
-    /// commit ActivateLease and ActivateBinding so their effects spawn the
-    /// workload on the agent.
+    /// Activate a preparing lease once every enforced binding is prepared.
+    /// This commits resource activation only; workload members start later,
+    /// after every current Binding generation has acknowledged activation.
     fn maybe_activate(&mut self, lease: LeaseId) {
         let Some(record) = self.cluster.leases.get(&lease) else {
             return;
@@ -1776,6 +1878,88 @@ impl NodeService {
         for binding in bindings {
             self.commit_lenient(Command::ActivateBinding { binding });
         }
+    }
+
+    /// Start each workload member exactly once per Agent session, but only
+    /// after every resource Binding in the rigid root has acknowledged the
+    /// exact generation currently recorded by the kernel.
+    fn maybe_start_executions(&mut self, lease: LeaseId) -> Result<(), Error> {
+        let Some(record) = self.cluster.leases.get(&lease) else {
+            return Ok(());
+        };
+        if record.state != archon_kernel::LeaseState::Active {
+            return Ok(());
+        }
+        let Some((workload, _)) = self.requests.get(&lease) else {
+            return Ok(());
+        };
+        if !workload.execution.has_program() {
+            return Ok(());
+        }
+        let execution = workload.execution.clone();
+        let bindings = self.cluster.bindings_for(lease);
+        let all_provider_active = !bindings.is_empty()
+            && bindings.iter().all(|binding| {
+                self.cluster.bindings.get(binding).is_some_and(|record| {
+                    record.state == archon_kernel::BindingState::Active
+                        && self.provider_activations.contains(&(
+                            *binding,
+                            record.agent_session,
+                            record.fence,
+                        ))
+                })
+            });
+        if !all_provider_active {
+            return Ok(());
+        }
+
+        for machine in self.lease_machines(lease) {
+            // Controller-restart recovery adopts already-running execution
+            // through Status proof; it must never respawn it blindly.
+            if self.recovering_machines.contains_key(&machine) {
+                continue;
+            }
+            let Some(session) = self.cluster.sessions.get(&machine).copied() else {
+                continue;
+            };
+            let key = (lease, machine, session);
+            if self.execution_started.contains(&key)
+                || self.inflight.iter().any(|tag| {
+                    matches!(
+                        tag,
+                        Tag::ExecutionStart {
+                            lease: pending_lease,
+                            machine: pending_machine,
+                            session: pending_session,
+                        } if (*pending_lease, *pending_machine, *pending_session) == key
+                    )
+                })
+            {
+                continue;
+            }
+            let request = AgentRequest::StartExecution {
+                lease: lease.as_u64(),
+                session,
+                epoch: self.cluster.epoch,
+                command: execution.command.clone(),
+                limits: self.lease_limits_on_machine(lease, machine)?,
+                image: execution.image.clone().unwrap_or_default(),
+                storage: execution.storage.clone(),
+                ports: execution.ports.clone(),
+                grace_secs: execution.grace_secs,
+                devices: self.lease_devices_on_machine(lease, machine),
+            };
+            self.dispatch(
+                machine,
+                Tag::ExecutionStart {
+                    lease,
+                    machine,
+                    session,
+                },
+                request,
+            );
+        }
+        Ok(())
     }
 
     fn request_status(&mut self, lease: LeaseId) {
@@ -1934,6 +2118,21 @@ impl NodeService {
                 self.settle_machine_recovery(lease, machine);
                 return;
             }
+            // A running/exited member proves that this Agent still owns the
+            // previously-active Provider endpoints. Rebinding moves those
+            // proofs to the current controller session without respawning.
+            for binding in self.cluster.bindings_for(lease) {
+                if let Some(record) = self.cluster.bindings.get(&binding)
+                    && record.state == archon_kernel::BindingState::Active
+                    && self.cluster.graph.machine_of(record.node) == Some(machine)
+                {
+                    self.provider_activations
+                        .insert((binding, record.agent_session, record.fence));
+                }
+            }
+            if let Some(session) = self.cluster.sessions.get(&machine).copied() {
+                self.execution_started.insert((lease, machine, session));
+            }
             self.resolve_observed_completion(lease, finished);
             self.recovery_events.push(RecoveryEvent::MemberRecovered {
                 lease,
@@ -2033,12 +2232,12 @@ impl NodeService {
     /// agent that owns its node without waiting for the answer. Agent acks
     /// come back through [`NodeService::absorb`] as Record commands.
     fn route(&mut self, effect: Effect) -> Result<Vec<Command>, Error> {
-        // Reconcile re-drives a machine's live bindings onto its (fresh)
-        // agent: rebind each still-Active binding to the machine's new
-        // session, then ActivateBinding — idempotent for Active bindings,
-        // forward-moving for Preparing ones. The resulting Activate effects
-        // spawn the work again on the new agent process. Revoked or expired
-        // leases stay dead.
+        // Reconcile re-drives a machine's live resource Bindings onto
+        // its fresh Agent: rebind each still-Active Binding to the new
+        // session, then ActivateBinding. Current-generation Provider acks
+        // feed the global activation barrier; only then can the member's
+        // separate StartExecution request be sent. Revoked/expired leases
+        // stay dead.
         if let Effect::Reconcile {
             machine,
             bindings,
@@ -2148,33 +2347,6 @@ impl NodeService {
                 session,
                 fence,
                 epoch,
-                command: self
-                    .requests
-                    .get(&lease)
-                    .map(|(workload, _)| workload.execution.command.clone())
-                    .unwrap_or_default(),
-                limits: self.lease_limits_on_machine(lease, machine)?,
-                image: self
-                    .requests
-                    .get(&lease)
-                    .and_then(|(workload, _)| workload.execution.image.clone())
-                    .unwrap_or_default(),
-                storage: self
-                    .requests
-                    .get(&lease)
-                    .map(|(workload, _)| workload.execution.storage.clone())
-                    .unwrap_or_default(),
-                ports: self
-                    .requests
-                    .get(&lease)
-                    .map(|(workload, _)| workload.execution.ports.clone())
-                    .unwrap_or_default(),
-                grace_secs: self
-                    .requests
-                    .get(&lease)
-                    .map(|(workload, _)| workload.execution.grace_secs)
-                    .unwrap_or(0),
-                devices: self.lease_devices_on_machine(lease, machine),
             },
             Effect::Release { .. } => AgentRequest::Release {
                 binding: binding_id.as_u64(),

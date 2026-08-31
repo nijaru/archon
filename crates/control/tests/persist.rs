@@ -58,9 +58,10 @@ impl AgentClient for EnforcingTestExecutor {
                 binding,
                 handle: binding,
             },
-            AgentRequest::Activate { binding, lease, .. } => {
+            AgentRequest::Activate { binding, .. } => AgentResponse::Activated { binding },
+            AgentRequest::StartExecution { lease, .. } => {
                 self.running.insert(lease);
-                AgentResponse::Activated { binding }
+                AgentResponse::ExecutionStarted { lease }
             }
             AgentRequest::Release { binding, lease, .. } => {
                 self.running.remove(&lease);

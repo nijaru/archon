@@ -1,9 +1,9 @@
 //! Remote agent protocol: length-prefixed JSON frames over TCP.
 //!
-//! The controller sends `AgentRequest`s derived from kernel Effects; the
-//! agent answers with `AgentResponse`s the controller turns into Record
-//! commands. Every request carries the binding's session and fence, so the
-//! seam between decision and enforcement survives the network unchanged.
+//! Binding lifecycle requests carry the session/fence generation that protects
+//! resource authority. Workload execution is a separate member-scoped request
+//! authorized by the current controller session/epoch after resource Bindings
+//! are Active.
 
 use std::io::{Read, Write};
 
@@ -135,6 +135,8 @@ pub enum AgentRequest {
         fence: u64,
         epoch: u64,
     },
+    /// Activate one already-prepared resource Binding. This operation carries
+    /// no workload payload and cannot start execution by itself.
     Activate {
         binding: u64,
         lease: u64,
@@ -143,6 +145,13 @@ pub enum AgentRequest {
         scope: BindingScope,
         session: u64,
         fence: u64,
+        epoch: u64,
+    },
+    /// Start exactly one workload member on this Agent after the controller
+    /// has observed every resource Binding for the rigid root as Active.
+    StartExecution {
+        lease: u64,
+        session: u64,
         epoch: u64,
         command: Vec<String>,
         limits: LeaseLimits,
@@ -158,7 +167,7 @@ pub enum AgentRequest {
         /// Seconds between SIGTERM and SIGKILL on teardown.
         #[serde(default)]
         grace_secs: u32,
-        /// Devices the lease's claims bound.
+        /// Devices this workload member may access on the target machine.
         #[serde(default)]
         devices: Vec<DeviceAccess>,
     },
@@ -182,7 +191,7 @@ pub enum AgentRequest {
         fence: u64,
         epoch: u64,
     },
-    /// Liveness probe for a lease's process. Read-only: carries no
+    /// Liveness probe for a lease's execution. Read-only: carries no
     /// session, so probing never touches fencing generations.
     Status { lease: u64 },
     /// A lease's captured output. Read-only like Status.
@@ -215,14 +224,21 @@ pub enum AgentResponse {
     Activated {
         binding: u64,
     },
+    ExecutionStarted {
+        lease: u64,
+    },
+    ExecutionFailed {
+        lease: u64,
+        reason: String,
+    },
     Released {
         binding: u64,
     },
     Fenced {
         binding: u64,
     },
-    /// The agent refused or failed the operation; the controller turns this
-    /// into RecordBindingFailed.
+    /// The resource Provider refused or failed one Binding operation; the
+    /// controller turns this into RecordBindingFailed.
     Failed {
         binding: u64,
         reason: String,

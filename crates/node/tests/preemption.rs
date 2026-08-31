@@ -17,6 +17,7 @@ const GIB: u64 = 1 << 30;
 enum Event {
     Activate(u64),
     Fence(u64),
+    ExecutionStart(u64),
 }
 
 struct ProofExecutor {
@@ -36,6 +37,13 @@ impl AgentClient for ProofExecutor {
                     .expect("event lock")
                     .push(Event::Activate(lease));
                 Ok(AgentResponse::Activated { binding })
+            }
+            AgentRequest::StartExecution { lease, .. } => {
+                self.events
+                    .lock()
+                    .expect("event lock")
+                    .push(Event::ExecutionStart(lease));
+                Ok(AgentResponse::ExecutionStarted { lease })
             }
             AgentRequest::Fence { binding, lease, .. } => {
                 self.events

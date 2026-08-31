@@ -1,9 +1,9 @@
 //! Agent dispatch: one worker thread per registered machine owns the
 //! [`AgentClient`] and performs every round trip off the caller's lock.
 //! The controller enqueues jobs and absorbs completions later, so slow or
-//! dead agents cannot stall other clients or agents. Completions carry the
-//! session and fence captured at send time; the kernel endpoints stay the
-//! authority that rejects stale generations.
+//! dead agents cannot stall other clients or agents. Binding completions carry
+//! their session/fence generation; execution starts carry the member session
+//! that authorized the start.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
@@ -17,7 +17,7 @@ use crate::service::AgentClient;
 /// A controller-side answer from an agent.
 pub type AgentReply = Result<AgentResponse, String>;
 
-/// Which lifecycle step produced a completion, keeping inflight keys
+/// Which resource lifecycle step produced a completion, keeping inflight keys
 /// distinct when one binding sees several effects in flight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EffectPhase {
@@ -35,6 +35,11 @@ pub enum Tag {
         session: u64,
         fence: u64,
         phase: EffectPhase,
+    },
+    ExecutionStart {
+        lease: LeaseId,
+        machine: NodeId,
+        session: u64,
     },
     Status {
         lease: LeaseId,
