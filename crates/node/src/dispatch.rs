@@ -1,5 +1,5 @@
 //! Agent dispatch: one worker thread per registered machine owns the
-//! [`LeaseExecutor`] and performs every round trip off the caller's lock.
+//! [`AgentClient`] and performs every round trip off the caller's lock.
 //! The controller enqueues jobs and absorbs completions later, so slow or
 //! dead agents cannot stall other clients or agents. Completions carry the
 //! session and fence captured at send time; the kernel endpoints stay the
@@ -12,7 +12,7 @@ use std::time::Duration;
 use archon_kernel::{BindingId, LeaseId, NodeId};
 
 use crate::protocol::{AgentRequest, AgentResponse};
-use crate::service::LeaseExecutor;
+use crate::service::AgentClient;
 
 /// A controller-side answer from an agent.
 pub type AgentReply = Result<AgentResponse, String>;
@@ -104,13 +104,13 @@ impl AgentHandle {
     }
 }
 
-/// Move `executor` onto a dedicated thread; every call it receives is a
-/// full request/response round trip performed outside any controller lock.
-pub fn spawn_worker(mut executor: Box<dyn LeaseExecutor>, inbox: Arc<Inbox>) -> AgentHandle {
+/// Move `client` onto a dedicated thread; every call it receives is a full
+/// request/response round trip performed outside any controller lock.
+pub fn spawn_worker(mut client: Box<dyn AgentClient>, inbox: Arc<Inbox>) -> AgentHandle {
     let (tx, rx) = channel::<Job>();
     std::thread::spawn(move || {
         while let Ok(job) = rx.recv() {
-            let reply = executor.execute(job.request);
+            let reply = client.call(job.request);
             match job.delivery {
                 Delivery::Direct(sender) => {
                     let _ = sender.send(reply);
