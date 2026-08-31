@@ -1,0 +1,50 @@
+name: Structured placement explanations
+
+on:
+  push:
+    branches:
+      - tmp/structured-placement-explanations-validation2
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Apply structured explanation patch
+        run: python3 .github/scripts/patch_structured_explanations.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Targeted placement tests
+        run: |
+          cargo test -p archon-kernel --test select
+          cargo test -p archon-node --test placement_explanations
+      - name: Strict Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Workspace tests
+        run: cargo test --workspace
+      - name: Simulator
+        run: cargo run -p archon-sim
+      - name: Supply chain
+        run: cargo deny check advisories bans licenses sources
+      - name: Publish validated source tree
+        run: |
+          rm .github/scripts/patch_structured_explanations.py
+          rm .github/workflows/structured-placement-explanations.yml
+          git add -A
+          git config user.name "Nick"
+          git config user.email "nijaru7@gmail.com"
+          git commit -m "feat(kernel): add structured placement explanations"
+          git push origin HEAD:tmp/structured-placement-explanations-validation2
