@@ -35,6 +35,24 @@ jobs:
           PY
       - name: Apply structured explanation patch
         run: python3 .github/scripts/patch_structured_explanations.py
+      - name: Migrate direct Allocation test constructor
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          matches = 0
+          for path in Path('crates').rglob('*.rs'):
+              text = path.read_text()
+              count = text.count('explanation: String::new(),')
+              if count:
+                  text = text.replace(
+                      'explanation: String::new(),',
+                      'explanation: String::new().into(),',
+                  )
+                  path.write_text(text)
+                  matches += count
+          if matches != 1:
+              raise SystemExit(f'expected one direct String::new Allocation explanation, found {matches}')
+          PY
       - name: Format
         run: cargo fmt --all
       - name: Check formatting
