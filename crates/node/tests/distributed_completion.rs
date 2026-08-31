@@ -37,17 +37,18 @@ impl WorkReply {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Event {
     Activate,
+    StartExecution,
     Status,
     Fence,
     Release,
 }
 
-struct StatusExecutor {
+struct StatusAgent {
     status: Arc<Mutex<WorkReply>>,
     events: Arc<Mutex<Vec<Event>>>,
 }
 
-impl AgentClient for StatusExecutor {
+impl AgentClient for StatusAgent {
     fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         match request {
             AgentRequest::Prepare { binding, .. } => Ok(AgentResponse::Prepared {
@@ -60,6 +61,13 @@ impl AgentClient for StatusExecutor {
                     .expect("event lock")
                     .push(Event::Activate);
                 Ok(AgentResponse::Activated { binding })
+            }
+            AgentRequest::StartExecution { lease, .. } => {
+                self.events
+                    .lock()
+                    .expect("event lock")
+                    .push(Event::StartExecution);
+                Ok(AgentResponse::ExecutionStarted { lease })
             }
             AgentRequest::Release { binding, .. } => {
                 self.events.lock().expect("event lock").push(Event::Release);
@@ -82,7 +90,7 @@ impl AgentClient for StatusExecutor {
                 lease,
                 output: String::new(),
             }),
-            other => Err(format!("unexpected request in status executor: {other:?}")),
+            other => Err(format!("unexpected request in status agent: {other:?}")),
         }
     }
 }
@@ -178,7 +186,7 @@ fn register(
     service
         .register_agent_with_capabilities(
             description(member),
-            Box::new(StatusExecutor { status, events }),
+            Box::new(StatusAgent { status, events }),
             caps(),
         )
         .expect("register proof agent")
@@ -331,16 +339,14 @@ fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
         recovered.cluster.leases[&LeaseId::from_u64(1)].state,
         LeaseState::Active
     );
+    let a_events = a_events.lock().expect("event lock");
+    let b_events = b_events.lock().expect("event lock");
     assert!(
-        !a_events
-            .lock()
-            .expect("event lock")
-            .contains(&Event::Activate)
-            && !b_events
-                .lock()
-                .expect("event lock")
-                .contains(&Event::Activate),
-        "recovery must adopt proven members rather than re-executing them"
+        !a_events.contains(&Event::Activate)
+            && !b_events.contains(&Event::Activate)
+            && !a_events.contains(&Event::StartExecution)
+            && !b_events.contains(&Event::StartExecution),
+        "recovery must adopt proven members rather than re-activate resources or restart execution"
     );
 }
 
