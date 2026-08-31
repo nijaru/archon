@@ -18,12 +18,25 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          path = Path('.github/scripts/apply_workload_split.py')
-          text = path.read_text()
+
+          script = Path('.github/scripts/apply_workload_split.py')
+          text = script.read_text()
           text = text.replace("expr('command', 'Vec::new())", "expr('command', 'Vec::new()')")
           text = text.replace("expr('storage', 'Vec::new())", "expr('storage', 'Vec::new()')")
           text = text.replace("expr('ports', 'Vec::new())", "expr('ports', 'Vec::new()')")
-          path.write_text(text)
+          script.write_text(text)
+
+          containers = Path('crates/node/tests/containers.rs')
+          text = containers.read_text()
+          old = '''    let request = Request {
+              grace_secs: 10,
+              ..submit_request_template(1, busybox_drain_command(), &dir)
+          };'''
+          new = '''    let mut request = submit_request_template(1, busybox_drain_command(), &dir);
+          request.grace_secs = 10;'''
+          if old not in text:
+              raise SystemExit('container grace fixture pattern not found')
+          containers.write_text(text.replace(old, new, 1))
           PY
           python3 .github/scripts/apply_workload_split.py
           sed -i 's/request\.id = restarts\[0\]\.0\.id;/request.resources.id = restarts[0].0.id;/' crates/node/tests/health_ops.rs
