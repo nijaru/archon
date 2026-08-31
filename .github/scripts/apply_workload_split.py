@@ -258,6 +258,15 @@ def transform_request_literals(path: Path, can_wrap: bool) -> None:
         parts = split_fields(body)
         parsed = [field_match(part) for part in parts]
         fields = {item[0]: item[1] for item in parsed if item is not None}
+
+        # `fn helper(...) -> Request { ... }` also contains the token sequence
+        # `Request {`; only a real Request literal has a top-level `id:` field.
+        # Preserve the signature and keep scanning inside its function body.
+        if "id" not in fields:
+            out.append(text[cursor:match.end()])
+            cursor = match.end()
+            continue
+
         kept = [part for part, item in zip(parts, parsed) if item is None or item[0] not in WORKLOAD_FIELDS]
         pure = "Request {" + ",".join(kept) + "}"
         if can_wrap and payload_is_meaningful(fields):
@@ -362,8 +371,6 @@ def migrate_request_literals() -> None:
         text = text.replace("archon_kernel::PortPublish", "archon_node::workload::PortPublish")
         path.write_text(text)
 
-    # Node integration tests historically imported attachment types from the
-    # kernel. Remove those import-list entries and qualify remaining uses.
     for path in Path("crates/node/tests").glob("*.rs"):
         text = path.read_text()
         if "StorageMount" in text:
