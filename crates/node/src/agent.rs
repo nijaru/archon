@@ -92,20 +92,13 @@ impl LeaseAgent {
             }
             AgentRequest::Activate {
                 binding,
-                lease,
                 node,
                 provider,
                 scope,
                 session,
                 fence,
                 epoch,
-                command,
-                limits,
-                image,
-                storage,
-                ports,
-                grace_secs,
-                devices,
+                ..
             } => {
                 let generation = EndpointGeneration {
                     binding,
@@ -116,8 +109,25 @@ impl LeaseAgent {
                     fence,
                     epoch,
                 };
-                if let Err(reason) = self.provider.activate(generation) {
-                    return self.failed(binding, &reason);
+                match self.provider.activate(generation) {
+                    Ok(()) => AgentResponse::Activated { binding },
+                    Err(reason) => self.failed(binding, &reason),
+                }
+            }
+            AgentRequest::StartExecution {
+                lease,
+                session,
+                epoch,
+                command,
+                limits,
+                image,
+                storage,
+                ports,
+                grace_secs,
+                devices,
+            } => {
+                if let Err(reason) = self.provider.authorize_execution(session, epoch) {
+                    return AgentResponse::ExecutionFailed { lease, reason };
                 }
                 let result = self.execution.start(
                     LeaseId::from_u64(lease),
@@ -132,10 +142,10 @@ impl LeaseAgent {
                     },
                 );
                 match result {
-                    Ok(()) => AgentResponse::Activated { binding },
+                    Ok(()) => AgentResponse::ExecutionStarted { lease },
                     Err(reason) => {
-                        eprintln!("archon: execution for binding {binding} failed: {reason}");
-                        self.failed(binding, &reason)
+                        eprintln!("archon: execution for lease {lease} failed: {reason}");
+                        AgentResponse::ExecutionFailed { lease, reason }
                     }
                 }
             }
