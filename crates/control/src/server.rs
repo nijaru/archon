@@ -543,58 +543,66 @@ impl ControlPlane {
                 filters: vec![],
             });
         }
-        let request = Request {
-            id,
-            class: RequestClass::Batch,
-            needs,
-            topology: vec![],
-            preferences: vec![],
-            data: vec![],
-            command: command.clone(),
-            lifetime: lifetime_secs.max(1),
-            keep_alive,
-            priority: 1,
-            machine_local: true,
-            grace_secs,
-            image,
-            storage: volumes
-                .iter()
-                .filter_map(|spec| spec.split_once(':'))
-                .map(|(host_path, mount_path)| archon_kernel::StorageMount {
-                    host_path: host_path.into(),
-                    mount_path: mount_path.into(),
-                })
-                .collect(),
-            ports: match ports
-                .iter()
-                .map(|spec| match spec.split_once(':') {
-                    Some((host, container)) => {
-                        let container_port: u16 = container.parse().map_err(|_| {
-                            "invalid port spec (expected [host:]container)".to_string()
-                        })?;
-                        let host_port: u16 = host.parse().map_err(|_| {
-                            "invalid port spec (expected [host:]container)".to_string()
-                        })?;
-                        Ok(archon_kernel::PortPublish {
-                            container_port,
-                            host_port: Some(host_port),
-                        })
-                    }
-                    None => spec
-                        .parse::<u16>()
-                        .map(|container_port| archon_kernel::PortPublish {
-                            container_port,
-                            host_port: None,
-                        })
-                        .map_err(|_| "invalid port spec (expected [host:]container)".to_string()),
-                })
-                .collect::<Result<Vec<_>, String>>()
-            {
-                Ok(ports) => ports,
-                Err(reason) => {
-                    return ServerResponse::Error { reason };
-                }
+        let request = archon_node::workload::WorkloadSpec {
+            resources: Request {
+                id,
+                class: RequestClass::Batch,
+                needs,
+                topology: vec![],
+                preferences: vec![],
+                data: vec![],
+                lifetime: lifetime_secs.max(1),
+                priority: 1,
+                machine_local: true,
             },
+            execution: archon_node::workload::ExecutionSpec {
+                command: command.clone(),
+                image,
+                storage: volumes
+                    .iter()
+                    .filter_map(|spec| spec.split_once(':'))
+                    .map(
+                        |(host_path, mount_path)| archon_node::workload::StorageMount {
+                            host_path: host_path.into(),
+                            mount_path: mount_path.into(),
+                        },
+                    )
+                    .collect(),
+                ports: match ports
+                    .iter()
+                    .map(|spec| match spec.split_once(':') {
+                        Some((host, container)) => {
+                            let container_port: u16 = container.parse().map_err(|_| {
+                                "invalid port spec (expected [host:]container)".to_string()
+                            })?;
+                            let host_port: u16 = host.parse().map_err(|_| {
+                                "invalid port spec (expected [host:]container)".to_string()
+                            })?;
+                            Ok(archon_node::workload::PortPublish {
+                                container_port,
+                                host_port: Some(host_port),
+                            })
+                        }
+                        None => spec
+                            .parse::<u16>()
+                            .map(|container_port| archon_node::workload::PortPublish {
+                                container_port,
+                                host_port: None,
+                            })
+                            .map_err(|_| {
+                                "invalid port spec (expected [host:]container)".to_string()
+                            }),
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+                {
+                    Ok(ports) => ports,
+                    Err(reason) => {
+                        return ServerResponse::Error { reason };
+                    }
+                },
+                grace_secs,
+            },
+            keep_alive,
         };
         self.service.submit(request, OwnerId::from_u64(owner));
         match self.service.admit_one() {

@@ -142,23 +142,27 @@ fn cpu_need(member: &str) -> Need {
     }
 }
 
-fn request() -> Request {
-    Request {
-        id: RequestId::from_u64(1),
-        class: RequestClass::Batch,
-        needs: vec![cpu_need("a"), cpu_need("b")],
-        topology: Vec::new(),
-        preferences: Vec::new(),
-        data: Vec::new(),
-        command: vec!["rigid-member".into()],
-        image: None,
-        storage: Vec::new(),
-        ports: Vec::new(),
-        lifetime: 60,
-        priority: 1,
+fn request() -> archon_node::workload::WorkloadSpec {
+    archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(1),
+            class: RequestClass::Batch,
+            needs: vec![cpu_need("a"), cpu_need("b")],
+            topology: Vec::new(),
+            preferences: Vec::new(),
+            data: Vec::new(),
+            lifetime: 60,
+            priority: 1,
+            machine_local: false,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["rigid-member".into()],
+            image: None,
+            storage: Vec::new(),
+            ports: Vec::new(),
+            grace_secs: 0,
+        },
         keep_alive: false,
-        machine_local: false,
-        grace_secs: 0,
     }
 }
 

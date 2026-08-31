@@ -390,34 +390,13 @@ pub struct Request {
     /// candidates whose ancestry caches these objects rank higher, but the
     /// request is never refused for missing locality.
     pub data: Vec<NodeId>,
-    /// Process to execute when the lease activates, e.g. ["sleep", "30"].
-    /// Empty means a pure resource claim with no executable payload. The
-    /// node's execution adapter consumes this; it is workload intent, not
-    /// resource state. When `image` is set the command runs inside a
-    /// container instead of as a bare process.
-    pub command: Vec<String>,
-    /// OCI image reference for container execution; None runs the command
-    /// as a plain process on the host.
-    pub image: Option<String>,
-    /// Host directories bound into the container. Ignored by the process
-    /// adapter (it already shares the host filesystem).
-    pub storage: Vec<StorageMount>,
-    /// Container ports to publish to the host. Ignored by the process
-    /// adapter (it already shares the host network namespace).
-    pub ports: Vec<PortPublish>,
     pub lifetime: u64,
     pub priority: u32,
-    /// Keep-alive workloads are re-queued and re-placed automatically when
-    /// their lease fails or expires (services). False: run-once.
-    pub keep_alive: bool,
     /// Whether one need's claims must share a single machine. True (the
     /// default) fits process/container workloads that cannot span hosts;
     /// false allows a need's claims to spread across machines for explicit
     /// multi-member groups.
     pub machine_local: bool,
-    /// Seconds between SIGTERM and SIGKILL when this lease is torn down
-    /// (drain-on-revoke). Zero tears down immediately.
-    pub grace_secs: u32,
 }
 
 /// A queued request carries the owner that submitted it and the submit time,
@@ -426,21 +405,6 @@ pub struct Queued {
     pub request: Request,
     pub owner: crate::ids::OwnerId,
     pub submitted_at: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct StorageMount {
-    pub host_path: String,
-    pub mount_path: String,
-}
-
-/// A container port published to the host; None lets the host choose.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PortPublish {
-    pub container_port: u16,
-    pub host_port: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

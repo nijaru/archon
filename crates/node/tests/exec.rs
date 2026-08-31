@@ -68,27 +68,31 @@ fn boot() -> NodeService {
     service
 }
 
-fn request(id: u64, command: Vec<String>) -> Request {
-    Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: command.clone(),
-        lifetime: 3_600,
+fn request(id: u64, command: Vec<String>) -> archon_node::workload::WorkloadSpec {
+    archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: command.clone(),
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
     }
 }
 
@@ -333,7 +337,7 @@ fn drain_grace_lets_a_workload_finish_cleanly() {
             "trap 'exit 0' TERM; sleep 30".into(),
         ],
     );
-    req.grace_secs = 5;
+    req.execution.grace_secs = 5;
     service.submit(req, OwnerId::from_u64(1));
     service.tick().unwrap();
     service.admit_one().unwrap();

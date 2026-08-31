@@ -83,26 +83,30 @@ fn provider_support_paths_follow_one_device_claim() {
     service.revoke(LeaseId::from_u64(1)).expect("revoke");
 }
 
-fn gpu_request() -> Request {
-    Request {
-        id: RequestId::from_u64(1),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Gpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sleep".into(), "5".into()],
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 3_600,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
+fn gpu_request() -> archon_node::workload::WorkloadSpec {
+    archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(1),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Gpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sleep".into(), "5".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
     }
 }

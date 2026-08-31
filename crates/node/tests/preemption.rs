@@ -107,27 +107,31 @@ fn boot() -> (NodeService, Arc<Mutex<Vec<Event>>>) {
     (service, events)
 }
 
-fn request(id: u64, priority: u32) -> Request {
-    Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: Vec::new(),
-        }],
-        topology: Vec::new(),
-        preferences: Vec::new(),
-        data: Vec::new(),
-        command: vec![format!("job-{id}")],
-        image: None,
-        storage: Vec::new(),
-        ports: Vec::new(),
-        lifetime: 3_600,
-        priority,
+fn request(id: u64, priority: u32) -> archon_node::workload::WorkloadSpec {
+    archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: Vec::new(),
+            }],
+            topology: Vec::new(),
+            preferences: Vec::new(),
+            data: Vec::new(),
+            lifetime: 3_600,
+            priority,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec![format!("job-{id}")],
+            image: None,
+            storage: Vec::new(),
+            ports: Vec::new(),
+            grace_secs: 0,
+        },
         keep_alive: false,
-        machine_local: true,
-        grace_secs: 0,
     }
 }
 

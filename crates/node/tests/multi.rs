@@ -96,26 +96,30 @@ fn register_instance(
 }
 
 fn submit_sleep(service: &mut NodeService, id: u64) -> RequestId {
-    let request = Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sleep".into(), "30".into()],
-        machine_local: true,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 3_600,
+    let request = archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            machine_local: true,
+            lifetime: 3_600,
+            priority: 1,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sleep".into(), "30".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
-        priority: 1,
     };
     service.submit(request, OwnerId::from_u64(1));
     service.cluster.set_now(1);

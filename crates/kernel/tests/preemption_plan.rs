@@ -64,15 +64,9 @@ fn request(id: u64, cpus: u64, priority: u32) -> Request {
         topology: Vec::new(),
         preferences: Vec::new(),
         data: Vec::new(),
-        command: Vec::new(),
-        image: None,
-        storage: Vec::new(),
-        ports: Vec::new(),
         lifetime: 100,
         priority,
-        keep_alive: false,
         machine_local: true,
-        grace_secs: 0,
     }
 }
 

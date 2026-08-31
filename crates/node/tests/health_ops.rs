@@ -110,25 +110,29 @@ fn register(service: &mut NodeService, instance: &str, addr: &str) -> archon_ker
 }
 
 fn keep_alive_submit(service: &mut NodeService, id: u64) -> Option<RequestId> {
-    let request = Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sleep".into(), "30".into()],
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 3_600,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
+    let request = archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sleep".into(), "30".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: true,
     };
     service.submit(request, OwnerId::from_u64(1));
@@ -224,25 +228,29 @@ fn lease_machine(service: &NodeService, lease: LeaseId) -> Option<archon_kernel:
 }
 
 fn submit_run_once(service: &mut NodeService, id: u64) -> Option<RequestId> {
-    let request = Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sleep".into(), "30".into()],
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 3_600,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
+    let request = archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sleep".into(), "30".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
     };
     service.submit(request, OwnerId::from_u64(2));
@@ -255,25 +263,29 @@ fn restarts_back_off_exponentially() {
     register_local_health_agent(&mut service);
 
     // A keep-alive workload whose command always fails.
-    let mut request = Request {
-        id: RequestId::from_u64(1),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sh".into(), "-c".into(), "exit 1".into()],
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 3_600,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
+    let mut request = archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(1),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sh".into(), "-c".into(), "exit 1".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: true,
     };
     service.submit(request.clone(), OwnerId::from_u64(1));
@@ -292,7 +304,7 @@ fn restarts_back_off_exponentially() {
     assert_eq!(finished, vec![LeaseId::from_u64(1)]);
     let restarts = service.take_restarts();
     assert_eq!(restarts.len(), 1, "first restart must be immediate");
-    request.id = restarts[0].0.id;
+    request.resources.id = restarts[0].0.id;
     service.submit(restarts[0].0.clone(), restarts[0].1);
     service.admit_one().unwrap();
 
@@ -321,25 +333,29 @@ fn restart_cap_survives_generations() {
     let mut service = NodeService::new();
     register_local_health_agent(&mut service);
 
-    let request = Request {
-        id: RequestId::from_u64(1),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, 1),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sh".into(), "-c".into(), "exit 1".into()],
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 3_600,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
+    let request = archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(1),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, 1),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sh".into(), "-c".into(), "exit 1".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: true,
     };
     service.submit(request, OwnerId::from_u64(1));

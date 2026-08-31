@@ -7,7 +7,8 @@
 
 use std::io::{Read, Write};
 
-use archon_kernel::{BindingScope, PortPublish, StorageMount};
+use crate::workload::{PortPublish, StorageMount};
+use archon_kernel::BindingScope;
 use serde::{Deserialize, Serialize};
 
 /// Connection greeting: role declaration, sent as the first framed

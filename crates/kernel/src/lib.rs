@@ -37,9 +37,8 @@ pub use types::{
     Allocation, Attrs, Binding, BindingScope, BindingState, CapacityDimension, Claim, ClaimBinding,
     ClaimBindingUpdate, Edge, EdgeKind, Endpoint, EndpointPhase, FactEdge, FactWriterAssignment,
     Filter, IdentifierError, Lease, LeaseState, Need, Node, NodeState, PlacementExplanation,
-    PlacementReason, PortPublish, Preference, ProviderFactBatch, Quantity, Queued, Request,
-    RequestClass, ResourceClass, StorageMount, TopologyConstraint, TopologyRelation, qty,
-    quantity_get,
+    PlacementReason, Preference, ProviderFactBatch, Quantity, Queued, Request, RequestClass,
+    ResourceClass, TopologyConstraint, TopologyRelation, qty, quantity_get,
 };
 
 impl Cluster {

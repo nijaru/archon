@@ -106,26 +106,30 @@ fn register(
 }
 
 fn submit(service: &mut NodeService, id: u64, cpus: u64) -> Option<RequestId> {
-    let request = Request {
-        id: RequestId::from_u64(id),
-        class: RequestClass::Batch,
-        needs: vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, cpus),
-            filters: vec![],
-        }],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sleep".into(), "30".into()],
-        machine_local: true,
-        grace_secs: 0,
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 3_600,
+    let request = archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(id),
+            class: RequestClass::Batch,
+            needs: vec![Need {
+                kind: ResourceClass::Cpu,
+                quantity: qty(CapacityDimension::Count, cpus),
+                filters: vec![],
+            }],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            machine_local: true,
+            lifetime: 3_600,
+            priority: 1,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sleep".into(), "30".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
-        priority: 1,
     };
     service.submit(request, OwnerId::from_u64(1));
     service.cluster.set_now(1);
@@ -267,32 +271,36 @@ fn device_claims_resolve_to_host_paths() {
         )
         .unwrap();
 
-    let request = Request {
-        id: RequestId::from_u64(1),
-        class: RequestClass::Batch,
-        needs: vec![
-            Need {
-                kind: ResourceClass::Cpu,
-                quantity: qty(CapacityDimension::Count, 1),
-                filters: vec![],
-            },
-            Need {
-                kind: ResourceClass::Gpu,
-                quantity: qty(CapacityDimension::Count, 1),
-                filters: vec![],
-            },
-        ],
-        topology: vec![],
-        preferences: vec![],
-        data: vec![],
-        command: vec!["sleep".into(), "5".into()],
-        image: None,
-        storage: vec![],
-        ports: vec![],
-        lifetime: 3_600,
-        priority: 1,
-        machine_local: true,
-        grace_secs: 0,
+    let request = archon_node::workload::WorkloadSpec {
+        resources: Request {
+            id: RequestId::from_u64(1),
+            class: RequestClass::Batch,
+            needs: vec![
+                Need {
+                    kind: ResourceClass::Cpu,
+                    quantity: qty(CapacityDimension::Count, 1),
+                    filters: vec![],
+                },
+                Need {
+                    kind: ResourceClass::Gpu,
+                    quantity: qty(CapacityDimension::Count, 1),
+                    filters: vec![],
+                },
+            ],
+            topology: vec![],
+            preferences: vec![],
+            data: vec![],
+            lifetime: 3_600,
+            priority: 1,
+            machine_local: true,
+        },
+        execution: archon_node::workload::ExecutionSpec {
+            command: vec!["sleep".into(), "5".into()],
+            image: None,
+            storage: vec![],
+            ports: vec![],
+            grace_secs: 0,
+        },
         keep_alive: false,
     };
     service.submit(request, OwnerId::from_u64(1));

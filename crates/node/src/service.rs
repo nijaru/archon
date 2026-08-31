@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use archon_kernel::{
     Allocation, BindingId, CapacityDimension, Cluster, Command, Effect, Error,
-    FactWriterAssignment, LeaseId, NodeId, OwnerId, ProviderFactBatch, ProviderId, Queued, Request,
+    FactWriterAssignment, LeaseId, NodeId, OwnerId, ProviderFactBatch, ProviderId, Queued,
     RequestId, ResourceClass, quantity_get,
 };
 
@@ -26,6 +26,7 @@ use crate::protocol::{
     AgentRequest, AgentResponse, ExecutionCapabilities, LeaseLimits, read_frame, write_frame,
 };
 use crate::runtime::ProcessRuntime;
+use crate::workload::WorkloadSpec;
 
 /// The controller side of the enforcement seam.
 pub trait LeaseExecutor: Send {
@@ -142,15 +143,11 @@ pub struct NodeService {
     /// Machines whose last probe failed, consumed by health policy.
     unreachable: Vec<NodeId>,
     queue: Vec<Queued>,
-    /// Workload payload per queued request, kept outside the kernel log:
-    /// resource decisions never need it, only execution does.
-    commands: BTreeMap<RequestId, Vec<String>>,
-    /// Command per active lease, recorded when its request is admitted.
-    lease_commands: BTreeMap<LeaseId, Vec<String>>,
-    /// Container image per active lease; None runs a bare process.
-    lease_images: BTreeMap<LeaseId, Option<String>>,
-    /// Original request per admitted lease, for keep-alive restarts.
-    requests: BTreeMap<LeaseId, (Request, OwnerId)>,
+    /// Desired-state/execution intent for queued requests. Resource ordering
+    /// still uses only `queue`; this map never enters kernel authority.
+    queued_workloads: BTreeMap<RequestId, WorkloadSpec>,
+    /// Workload intent per admitted root Lease, retained for execution and restart.
+    requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,
     /// Dead leases whose failure has been processed for restarts.
     restart_handled: std::collections::BTreeSet<LeaseId>,
     /// Restart attempts per original request id.
@@ -192,9 +189,7 @@ pub struct NodeService {
 /// Restorable controller-side state that lives outside the kernel log.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServiceState {
-    pub lease_commands: BTreeMap<LeaseId, Vec<String>>,
-    pub lease_images: BTreeMap<LeaseId, Option<String>>,
-    pub requests: BTreeMap<LeaseId, (Request, OwnerId)>,
+    pub requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,
     pub restart_handled: std::collections::BTreeSet<LeaseId>,
     pub restart_counts: BTreeMap<RequestId, u32>,
     /// Cluster time of each request's last restart, backing exponential
@@ -908,9 +903,7 @@ impl NodeService {
             member_status: BTreeMap::new(),
             unreachable: Vec::new(),
             queue: Vec::new(),
-            commands: BTreeMap::new(),
-            lease_commands: BTreeMap::new(),
-            lease_images: BTreeMap::new(),
+            queued_workloads: BTreeMap::new(),
             requests: BTreeMap::new(),
             restart_handled: std::collections::BTreeSet::new(),
             restart_counts: BTreeMap::new(),
@@ -986,11 +979,13 @@ impl NodeService {
         self.pump()
     }
 
-    /// Submit a workload: queued for admission; its command runs when the
-    /// lease activates.
-    pub fn submit(&mut self, request: Request, owner: OwnerId) {
-        self.commands.remove(&request.id);
+    /// Submit workload intent. Only the nested resource Request enters the
+    /// scheduler; execution and desired-state policy stay controller-local.
+    pub fn submit(&mut self, workload: impl Into<WorkloadSpec>, owner: OwnerId) {
+        let workload = workload.into();
+        let request = workload.resources.clone();
         self.next_request_id = self.next_request_id.max(request.id.as_u64() + 1);
+        self.queued_workloads.insert(request.id, workload);
         self.queue.push(Queued {
             request,
             owner,
@@ -1007,7 +1002,10 @@ impl NodeService {
         let machines = self.cluster.graph.nodes_of_class(ResourceClass::Machine);
         for queued in &self.queue {
             let request = &queued.request;
-            if request.command.is_empty() && request.image.is_none() {
+            let Some(workload) = self.queued_workloads.get(&request.id) else {
+                continue;
+            };
+            if !workload.execution.has_program() {
                 continue;
             }
             let needs_cpu = request
@@ -1024,7 +1022,8 @@ impl NodeService {
                     ResourceClass::Gpu | ResourceClass::Nic | ResourceClass::Nvme
                 )
             });
-            let container = request
+            let container = workload
+                .execution
                 .image
                 .as_deref()
                 .is_some_and(|image| !image.is_empty());
@@ -1094,13 +1093,11 @@ impl NodeService {
         let request_id = admission.request.id;
         let lease = LeaseId::from_u64(self.next_lease);
         self.next_lease += 1;
-        self.commands.remove(&request_id);
-        let command = admission.request.command.clone();
-        self.lease_commands.insert(lease, command);
-        self.lease_images
-            .insert(lease, admission.request.image.clone());
-        self.requests
-            .insert(lease, (admission.request.clone(), admission.owner));
+        let workload = self
+            .queued_workloads
+            .remove(&request_id)
+            .unwrap_or_else(|| WorkloadSpec::resource_only(admission.request.clone()));
+        self.requests.insert(lease, (workload, admission.owner));
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
         self.commit(Command::OpenLease {
             lease,
@@ -1136,8 +1133,6 @@ impl NodeService {
     /// the cluster snapshot.
     pub fn state_snapshot(&self) -> ServiceState {
         ServiceState {
-            lease_commands: self.lease_commands.clone(),
-            lease_images: self.lease_images.clone(),
             requests: self.requests.clone(),
             restart_handled: self.restart_handled.clone(),
             restart_counts: self.restart_counts.clone(),
@@ -1164,8 +1159,6 @@ impl NodeService {
         self.next_request_id = state.next_request_id;
         self.next_session = state.next_session;
         self.next_binding = state.next_binding;
-        self.lease_commands = state.lease_commands;
-        self.lease_images = state.lease_images;
         self.requests = state.requests;
         self.restart_handled = state.restart_handled;
         self.restart_counts = state.restart_counts;
@@ -1250,7 +1243,7 @@ impl NodeService {
     /// spin, with exponential backoff between attempts (1s doubling to a
     /// 60s ceiling). Run-once workloads are never restarted. Leases whose
     /// backoff has not elapsed stay pending for a later tick.
-    pub fn take_restarts(&mut self) -> Vec<(Request, OwnerId)> {
+    pub fn take_restarts(&mut self) -> Vec<(WorkloadSpec, OwnerId)> {
         const MAX_RESTARTS: u32 = 5;
         const BACKOFF_CAP_SECS: u64 = 60;
         let now = self.cluster.now;
@@ -1273,9 +1266,9 @@ impl NodeService {
             // per-attempt ids.
             let root = self
                 .restart_root
-                .get(&request.id)
+                .get(&request.resources.id)
                 .copied()
-                .unwrap_or(request.id);
+                .unwrap_or(request.resources.id);
             let count = self.restart_counts.entry(root).or_insert(0);
             if *count >= MAX_RESTARTS {
                 eprintln!("archon: request {root} exceeded restart cap");
@@ -1291,9 +1284,9 @@ impl NodeService {
             self.restart_last_at.insert(root, now);
             self.restart_handled.insert(*id);
             let mut fresh = request.clone();
-            fresh.id = RequestId::from_u64(self.next_request_id);
+            fresh.resources.id = RequestId::from_u64(self.next_request_id);
             self.next_request_id += 1;
-            self.restart_root.insert(fresh.id, root);
+            self.restart_root.insert(fresh.resources.id, root);
             out.push((fresh, *owner));
         }
         out
@@ -1320,7 +1313,10 @@ impl NodeService {
             .values()
             .filter(|lease| {
                 matches!(lease.state, archon_kernel::LeaseState::Active)
-                    && self.lease_commands.contains_key(&lease.id)
+                    && self
+                        .requests
+                        .get(&lease.id)
+                        .is_some_and(|(workload, _)| workload.execution.has_program())
             })
             .map(|lease| lease.id)
             .collect()
@@ -1350,7 +1346,9 @@ impl NodeService {
 
     /// The command executing under a lease, for status reporting.
     pub fn lease_command_of(&self, lease: LeaseId) -> Option<Vec<String>> {
-        self.lease_commands.get(&lease).cloned()
+        self.requests
+            .get(&lease)
+            .map(|(workload, _)| workload.execution.command.clone())
     }
 
     /// A lease's captured output, fetched from its executing agent. Blocks
@@ -2149,28 +2147,31 @@ impl NodeService {
                 session,
                 fence,
                 epoch,
-                command: self.lease_commands.get(&lease).cloned().unwrap_or_default(),
+                command: self
+                    .requests
+                    .get(&lease)
+                    .map(|(workload, _)| workload.execution.command.clone())
+                    .unwrap_or_default(),
                 limits: self.lease_limits_on_machine(lease, machine)?,
                 image: self
-                    .lease_images
+                    .requests
                     .get(&lease)
-                    .cloned()
-                    .flatten()
+                    .and_then(|(workload, _)| workload.execution.image.clone())
                     .unwrap_or_default(),
                 storage: self
                     .requests
                     .get(&lease)
-                    .map(|(request, _)| request.storage.clone())
+                    .map(|(workload, _)| workload.execution.storage.clone())
                     .unwrap_or_default(),
                 ports: self
                     .requests
                     .get(&lease)
-                    .map(|(request, _)| request.ports.clone())
+                    .map(|(workload, _)| workload.execution.ports.clone())
                     .unwrap_or_default(),
                 grace_secs: self
                     .requests
                     .get(&lease)
-                    .map(|(request, _)| request.grace_secs)
+                    .map(|(workload, _)| workload.execution.grace_secs)
                     .unwrap_or(0),
                 devices: self.lease_devices_on_machine(lease, machine),
             },

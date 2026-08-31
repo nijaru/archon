@@ -39,15 +39,9 @@ fn spread_request(
         topology: vec![],
         preferences: vec![],
         data: vec![],
-        command: vec![],
         lifetime,
         priority,
-        image: None,
-        storage: vec![],
-        ports: vec![],
         machine_local,
-        grace_secs: 0,
-        keep_alive: false,
     }
 }
 
