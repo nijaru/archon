@@ -26,6 +26,7 @@ jobs:
           path.write_text(text)
           PY
           python3 .github/scripts/apply_workload_split.py
+          sed -i 's/request\.id = restarts\[0\]\.0\.id;/request.resources.id = restarts[0].0.id;/' crates/node/tests/health_ops.rs
       - name: Format
         run: cargo fmt --all
       - name: Format check
