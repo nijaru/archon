@@ -104,10 +104,7 @@ fn active_lease(id: u64, owner: u64, node: u64, priority: u32, expires_at: u64) 
 #[test]
 fn trace_exposes_fair_share_ordering_inputs() {
     let cluster = cluster();
-    let leases = BTreeMap::from([(
-        LeaseId::from_u64(1),
-        active_lease(1, 1, 2, 1, 100),
-    )]);
+    let leases = BTreeMap::from([(LeaseId::from_u64(1), active_lease(1, 1, 2, 1, 100))]);
     let occupancy = occupancy_from_leases(leases.values(), &BTreeSet::new(), &BTreeSet::new());
     let queue = vec![
         Queued {
@@ -158,10 +155,7 @@ fn trace_exposes_fair_share_ordering_inputs() {
 #[test]
 fn trace_distinguishes_quota_from_priority_order() {
     let cluster = cluster();
-    let leases = BTreeMap::from([(
-        LeaseId::from_u64(1),
-        active_lease(1, 1, 2, 1, 100),
-    )]);
+    let leases = BTreeMap::from([(LeaseId::from_u64(1), active_lease(1, 1, 2, 1, 100))]);
     let occupancy = occupancy_from_leases(leases.values(), &BTreeSet::new(), &BTreeSet::new());
     let queue = vec![
         Queued {
@@ -176,10 +170,7 @@ fn trace_distinguishes_quota_from_priority_order() {
         },
     ];
     let policy = AdmissionPolicy {
-        owner_ceiling: BTreeMap::from([(
-            ResourceClass::Cpu,
-            qty(CapacityDimension::Count, 1),
-        )]),
+        owner_ceiling: BTreeMap::from([(ResourceClass::Cpu, qty(CapacityDimension::Count, 1))]),
         ..AdmissionPolicy::default()
     };
 
