@@ -193,6 +193,9 @@ pub struct NodeService {
     group_restarts: BTreeMap<String, u32>,
     /// Cluster time of each group's last replacement round (backoff).
     group_last_restart: BTreeMap<String, u64>,
+    /// Per-machine member pins (per-eligible-machine groups): request id
+    /// -> machine NodeId. Controller-local execution intent, never authority.
+    member_pins: BTreeMap<RequestId, NodeId>,
     next_request_id: u64,
     /// Next lease id; recovered from the log on replay.
     next_lease: u64,
@@ -242,6 +245,8 @@ pub struct ServiceState {
     /// Group replacement accounting, durable across controller restarts.
     pub group_restarts: BTreeMap<String, u32>,
     pub group_last_restart: BTreeMap<String, u64>,
+    /// Per-machine member pins for per-eligible-machine groups.
+    pub member_pins: BTreeMap<RequestId, NodeId>,
     pub next_lease: u64,
     pub next_request_id: u64,
     pub next_session: u64,
@@ -963,6 +968,7 @@ impl NodeService {
             member_groups: BTreeMap::new(),
             group_restarts: BTreeMap::new(),
             group_last_restart: BTreeMap::new(),
+            member_pins: BTreeMap::new(),
             next_request_id: 1,
             next_lease: 1,
             pending: VecDeque::new(),
@@ -1059,6 +1065,17 @@ impl NodeService {
             let Some(workload) = self.queued_workloads.get(&request.id) else {
                 continue;
             };
+            // A per-machine pinned member may claim resources only on its
+            // machine: every other machine is a hard exclusion. The pin is
+            // desired-state intent, so it rides the same controller-local
+            // pass as runtime capability guarantees.
+            if let Some(pinned) = self.member_pins.get(&request.id) {
+                for machine in machines {
+                    if machine != pinned {
+                        exclusions.entry(request.id).or_default().insert(*machine);
+                    }
+                }
+            }
             if !workload.execution.has_program() {
                 continue;
             }
@@ -1197,6 +1214,7 @@ impl NodeService {
             member_groups: self.member_groups.clone(),
             group_restarts: self.group_restarts.clone(),
             group_last_restart: self.group_last_restart.clone(),
+            member_pins: self.member_pins.clone(),
             next_lease: self.next_lease,
             next_request_id: self.next_request_id,
             next_session: self.next_session,
@@ -1238,6 +1256,7 @@ impl NodeService {
         self.member_groups = state.member_groups;
         self.group_restarts = state.group_restarts;
         self.group_last_restart = state.group_last_restart;
+        self.member_pins = state.member_pins;
         self.next_lease = state.next_lease;
     }
 
@@ -1323,18 +1342,53 @@ impl NodeService {
     /// authority. Re-registering the same id replaces the template and
     /// desired count; existing member leases stay owned until reconciliation
     /// observes them dead or the group is scaled down.
-    pub fn register_service_group(&mut self, group: crate::workload::ServiceGroup) {
+    /// Register or update a desired service group. The group is
+    /// product-level desired state: reconciliation maintains its member
+    /// count; existing member leases stay owned until reconciliation
+    /// scales down. Malformed cardinality is refused up front.
+    pub fn register_service_group(
+        &mut self,
+        group: crate::workload::ServiceGroup,
+    ) -> Result<(), String> {
+        group.cardinality.validate()?;
         self.service_groups.insert(group.id.clone(), group);
+        Ok(())
+    }
+
+    /// Steer a bounded-elastic group's target member count within its
+    /// registered bounds. Scaling never touches authority: it changes
+    /// desired state only, and reconciliation does the rest. Fixed and
+    /// per-machine groups reject scaling explicitly instead of silently
+    /// reinterpreting their cardinality.
+    pub fn scale_service_group(&mut self, id: &str, target: usize) -> Result<usize, String> {
+        let group = self
+            .service_groups
+            .get_mut(id)
+            .ok_or_else(|| format!("unknown service group {id}"))?;
+        let crate::workload::Cardinality::Elastic { min, max, .. } = group.cardinality else {
+            return Err(format!(
+                "service group {id} does not use bounded-elastic cardinality"
+            ));
+        };
+        if target < min || target > max {
+            return Err(format!(
+                "target {target} outside elastic bounds [{min}, {max}]"
+            ));
+        }
+        group.cardinality = crate::workload::Cardinality::Elastic { min, target, max };
+        Ok(target)
     }
 
     /// Remove a group's desired state. Members already running keep their
     /// leases until ordinary lifetime/revoke semantics end them; only future
-    /// reconciliation stops.
+    /// reconciliation stops. Pins die with the lineage so they cannot leak
+    /// into another group's exclusions.
     pub fn remove_service_group(&mut self, group: &str) {
         self.service_groups.remove(group);
         if let Some(members) = self.group_members.remove(group) {
             for member in members {
                 self.member_groups.remove(&member);
+                self.member_pins.remove(&member);
             }
         }
     }
@@ -1353,15 +1407,7 @@ impl NodeService {
         self.cluster
             .leases
             .values()
-            .filter(|lease| {
-                !matches!(
-                    lease.state,
-                    archon_kernel::LeaseState::Released
-                        | archon_kernel::LeaseState::Expired
-                        | archon_kernel::LeaseState::Revoked
-                        | archon_kernel::LeaseState::Failed
-                )
-            })
+            .filter(|lease| !self.terminal_lease(lease.state))
             .filter(|lease| {
                 self.requests
                     .get(&lease.id)
@@ -1371,22 +1417,47 @@ impl NodeService {
             .collect()
     }
 
-    /// Reconcile every group's desired member count against live member
-    /// leases, submitting replacements for dead or missing members. Dead
-    /// members leave the group index; replacements carry fresh request ids
-    /// and lineage into the group's restart accounting, so a permanently
-    /// broken member cannot respawn unbounded. Returns the submitted
-    /// replacement request ids.
+    /// Whether a lease state can no longer carry a live member: the four
+    /// failure/teardown states plus natural completion.
+    fn terminal_lease(&self, state: archon_kernel::LeaseState) -> bool {
+        matches!(
+            state,
+            archon_kernel::LeaseState::Released
+                | archon_kernel::LeaseState::Expired
+                | archon_kernel::LeaseState::Revoked
+                | archon_kernel::LeaseState::Failed
+                | archon_kernel::LeaseState::Completed
+        )
+    }
+
+    /// Reconcile every group's desired membership against live member
+    /// leases. Dead members leave the group index; death-replacements
+    /// carry fresh request ids and lineage into the group's restart
+    /// accounting, so a permanently broken member cannot respawn
+    /// unbounded. Deliberate scaling is not replacement: growth never
+    /// burns the cap, and scale-down cancels/revokes the newest members
+    /// through ordinary lifetime semantics. Returns submitted member
+    /// request ids for the caller to admit.
     pub fn reconcile_service_groups(&mut self) -> Vec<RequestId> {
         const MAX_RESTARTS: u32 = 5;
         const BACKOFF_CAP_SECS: u64 = 60;
         let now = self.cluster.now;
+        let machines: Vec<NodeId> = self
+            .cluster
+            .graph
+            .nodes_of_class(ResourceClass::Machine)
+            .to_vec();
         let mut submitted = Vec::new();
         let groups: Vec<crate::workload::ServiceGroup> =
             self.service_groups.values().cloned().collect();
         for group in groups {
             // Drop dead members from the index; queued or live-leased members
             // count toward the desired total.
+            let before = self
+                .group_members
+                .get(&group.id)
+                .map(|members| members.len())
+                .unwrap_or(0);
             let live: Vec<RequestId> = self
                 .group_members
                 .get(&group.id)
@@ -1398,34 +1469,159 @@ impl NodeService {
                         .collect()
                 })
                 .unwrap_or_default();
+            let mut live = live;
+            let died = before.saturating_sub(live.len());
             if let Some(members) = self.group_members.get_mut(&group.id) {
                 *members = live.iter().copied().collect();
                 for id in members.iter() {
                     self.member_groups.insert(*id, group.id.clone());
                 }
             }
-            let shortfall = group.desired.saturating_sub(live.len());
+            // Pins of dead members die with them: a replacement member gets
+            // its own pin when it is submitted.
+            if died > 0 {
+                let live_set: std::collections::BTreeSet<RequestId> =
+                    live.iter().copied().collect();
+                let dead_pins: Vec<RequestId> = self
+                    .member_pins
+                    .keys()
+                    .copied()
+                    .filter(|id| {
+                        self.member_groups.get(id) == Some(&group.id) && !live_set.contains(id)
+                    })
+                    .collect();
+                for id in dead_pins {
+                    self.member_pins.remove(&id);
+                }
+            }
+            // Per-machine groups reconcile against the machine set itself:
+            // every present machine without a live member needs one, and a
+            // member pinned to a machine that no longer exists dies with it.
+            if let crate::workload::Cardinality::PerMachine = group.cardinality {
+                let live_machines: BTreeMap<NodeId, RequestId> = live
+                    .iter()
+                    .filter_map(|id| {
+                        self.member_pins
+                            .get(id)
+                            .cloned()
+                            .map(|machine| (machine, *id))
+                    })
+                    .collect();
+                let mut missing: Vec<NodeId> = machines
+                    .iter()
+                    .copied()
+                    .filter(|machine| !live_machines.contains_key(machine))
+                    .collect();
+                // Stable order: deterministic reconciliation across rounds.
+                missing.sort_by_key(|machine| machine.as_u64());
+                if !missing.is_empty() {
+                    let count = self.group_restarts.entry(group.id.clone()).or_insert(0);
+                    if *count < MAX_RESTARTS * machines.len().max(1) as u32 {
+                        let last_at = self.group_last_restart.get(&group.id).copied().unwrap_or(0);
+                        let delay = (1u64 << (*count).min(6)).min(BACKOFF_CAP_SECS);
+                        let replacement_round = died > 0;
+                        if !replacement_round || now >= last_at.saturating_add(delay) {
+                            for machine in missing {
+                                if replacement_round {
+                                    self.group_restarts
+                                        .entry(group.id.clone())
+                                        .and_modify(|count| *count += 1)
+                                        .or_insert(1);
+                                }
+                                let member_id = RequestId::from_u64(self.next_request_id);
+                                self.next_request_id += 1;
+                                let member = group.member(member_id);
+                                self.member_pins.insert(member_id, machine);
+                                self.member_groups.insert(member_id, group.id.clone());
+                                self.group_members
+                                    .entry(group.id.clone())
+                                    .or_default()
+                                    .insert(member_id);
+                                self.submit(member, group.owner);
+                                submitted.push(member_id);
+                            }
+                            self.group_last_restart.insert(group.id.clone(), now);
+                        }
+                    } else {
+                        eprintln!("archon: group {} exceeded replacement cap", group.id);
+                    }
+                }
+                continue;
+            }
+            let desired = group.cardinality.desired_count(machines.len());
+            // Scale-down: cancel the newest queued members first, then
+            // revoke the newest live members. Stopping runs through the
+            // ordinary revoke path, so member stops prove before release
+            // exactly like any other workload teardown. Stopped members
+            // leave the index immediately: deliberate scaling is not
+            // death, and must never burn the replacement cap or backoff.
+            if live.len() > desired {
+                let excess = live.len() - desired;
+                let mut members: Vec<RequestId> = live.clone();
+                members.sort_by_key(|id| id.as_u64());
+                members.reverse(); // newest first
+                let mut to_stop = excess;
+                let mut stopped = Vec::new();
+                for member in members {
+                    if to_stop == 0 {
+                        break;
+                    }
+                    if let Some(lease) = self.lease_of_member(member) {
+                        match self.revoke(lease) {
+                            Ok(()) => {
+                                stopped.push(member);
+                                to_stop -= 1;
+                            }
+                            Err(err) => {
+                                eprintln!("archon: scale-down of {} failed: {err}", group.id);
+                            }
+                        }
+                    } else if self.queue.iter().any(|queued| queued.request.id == member) {
+                        self.cancel_member(member);
+                        stopped.push(member);
+                        to_stop -= 1;
+                    }
+                }
+                if !stopped.is_empty() {
+                    if let Some(members) = self.group_members.get_mut(&group.id) {
+                        for member in &stopped {
+                            members.remove(member);
+                        }
+                    }
+                    live.retain(|member| !stopped.contains(member));
+                }
+            }
+            let shortfall = desired.saturating_sub(live.len());
             if shortfall == 0 {
                 continue;
             }
-            // Replacement caps and backoff anchor on the group id, not on
-            // any member: member replacement churns request ids, and the
-            // group is the durable desired-state owner.
+            // Only deaths consume the replacement cap and its backoff:
+            // growth from a deliberate scale-up or a first-round submission
+            // is ordinary reconciliation, not failure accounting. A round
+            // may mix both: gate only its replacement portion.
+            let replacement = shortfall.min(died);
+            let growth = shortfall - replacement;
             let count = self.group_restarts.entry(group.id.clone()).or_insert(0);
-            if *count >= MAX_RESTARTS * group.desired as u32 {
+            let cap = MAX_RESTARTS * desired.max(1) as u32;
+            let mut allowed_replacement = replacement;
+            if replacement > 0 && *count >= cap {
                 eprintln!("archon: group {} exceeded replacement cap", group.id);
-                continue;
+                allowed_replacement = 0;
+            } else if replacement > 0 {
+                let last_at = self.group_last_restart.get(&group.id).copied().unwrap_or(0);
+                let delay = (1u64 << (*count).min(6)).min(BACKOFF_CAP_SECS);
+                if now < last_at.saturating_add(delay) {
+                    allowed_replacement = 0; // backoff until the window passes
+                }
             }
-            let last_at = self.group_last_restart.get(&group.id).copied().unwrap_or(0);
-            let delay = (1u64 << (*count).min(6)).min(BACKOFF_CAP_SECS);
-            if now < last_at.saturating_add(delay) {
-                continue; // backoff: a later maintenance round reconciles
-            }
-            for _ in 0..shortfall {
-                self.group_restarts
-                    .entry(group.id.clone())
-                    .and_modify(|count| *count += 1)
-                    .or_insert(1);
+            let allowed = allowed_replacement + growth;
+            for index in 0..allowed {
+                if index < allowed_replacement {
+                    self.group_restarts
+                        .entry(group.id.clone())
+                        .and_modify(|count| *count += 1)
+                        .or_insert(1);
+                }
                 let member_id = RequestId::from_u64(self.next_request_id);
                 self.next_request_id += 1;
                 let member = group.member(member_id);
@@ -1437,15 +1633,45 @@ impl NodeService {
                 self.submit(member, group.owner);
                 submitted.push(member_id);
             }
-            self.group_last_restart.insert(group.id.clone(), now);
+            if allowed_replacement > 0 {
+                self.group_last_restart.insert(group.id.clone(), now);
+            }
         }
         submitted
     }
 
+    /// The live lease carrying one member's execution, if any.
+    fn lease_of_member(&self, request: RequestId) -> Option<LeaseId> {
+        self.cluster
+            .leases
+            .values()
+            .find(|lease| {
+                !self.terminal_lease(lease.state)
+                    && self
+                        .requests
+                        .get(&lease.id)
+                        .is_some_and(|(workload, _)| workload.resources.id == request)
+            })
+            .map(|lease| lease.id)
+    }
+
+    /// Drop a queued member from the queue and its bookkeeping without a
+    /// lease. The member never executed, so no stop proof is needed.
+    fn cancel_member(&mut self, request: RequestId) {
+        self.queue.retain(|queued| queued.request.id != request);
+        self.queued_workloads.remove(&request);
+        self.member_pins.remove(&request);
+        if let Some(group) = self.member_groups.remove(&request)
+            && let Some(members) = self.group_members.get_mut(&group)
+        {
+            members.remove(&request);
+        }
+    }
+
     /// Whether a group member still counts toward its desired count: queued
     /// for admission, or admitted to a lease that has not gone terminal.
-    /// Terminal-lease members are dead; a naturally completed batch member
-    /// never restarts through group reconciliation.
+    /// Terminal-lease members are dead; a naturally completed member
+    /// restarts through group reconciliation exactly like a crashed one.
     fn member_live(&self, request: RequestId) -> bool {
         if self.queue.iter().any(|queued| queued.request.id == request) {
             return true;
@@ -1454,16 +1680,11 @@ impl NodeService {
             .values()
             .any(|(workload, _)| workload.resources.id == request)
             && self.cluster.leases.values().any(|lease| {
-                !matches!(
-                    lease.state,
-                    archon_kernel::LeaseState::Released
-                        | archon_kernel::LeaseState::Expired
-                        | archon_kernel::LeaseState::Revoked
-                        | archon_kernel::LeaseState::Failed
-                ) && self
-                    .requests
-                    .get(&lease.id)
-                    .is_some_and(|(workload, _)| workload.resources.id == request)
+                !self.terminal_lease(lease.state)
+                    && self
+                        .requests
+                        .get(&lease.id)
+                        .is_some_and(|(workload, _)| workload.resources.id == request)
             })
     }
 
