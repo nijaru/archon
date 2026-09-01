@@ -6,7 +6,7 @@ Rust-first distributed resource OS. Archon is the resource/scheduling authority 
 
 Durable project context is centralized at:
 
-`~/github/nijaru/agent-context/projects/github.com/omendb/archon/ai/`
+`~/github/nijaru/agent-context/projects/github.com/nijaru/archon/ai/`
 
 Never recreate a repository-local `ai/` tree and do not copy product/design/roadmap prose into this repository.
 

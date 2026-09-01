@@ -23,14 +23,14 @@ All client↔controller and controller↔agent links use encrypted Noise transpo
 
 ## Project context
 
-Durable product/design/roadmap context is centralized in the private [Archon project context](https://github.com/nijaru/agent-context/tree/main/projects/github.com/omendb/archon/ai) rather than duplicated in this repository.
+Durable product/design/roadmap context is centralized in the private [Archon project context](https://github.com/nijaru/agent-context/tree/main/projects/github.com/nijaru/archon/ai) rather than duplicated in this repository.
 
 Key sources:
 
-- [`spec.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/spec.md) — canonical product/system contract;
-- [`STATUS.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/STATUS.md) — current implementation state;
-- [`PLAN.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/PLAN.md) — active roadmap;
-- [`design/deployment-and-adoption.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/design/deployment-and-adoption.md) — Linux/datacenter deployment and authority-handoff design.
+- [`spec.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/nijaru/archon/ai/spec.md) — canonical product/system contract;
+- [`STATUS.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/nijaru/archon/ai/STATUS.md) — current implementation state;
+- [`PLAN.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/nijaru/archon/ai/PLAN.md) — active roadmap;
+- [`design/deployment-and-adoption.md`](https://github.com/nijaru/agent-context/blob/main/projects/github.com/nijaru/archon/ai/design/deployment-and-adoption.md) — Linux/datacenter deployment and authority-handoff design.
 
 This repository should document behavior that is actually implemented—CLI/API usage, host prerequisites, installation, troubleshooting, and version compatibility as those stabilize. Future product/deployment strategy belongs in the centralized context.
 
