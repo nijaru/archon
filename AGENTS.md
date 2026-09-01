@@ -10,6 +10,10 @@ Durable project context is centralized at:
 
 Never recreate a repository-local `ai/` tree and do not copy product/design/roadmap prose into this repository.
 
+## Current repository workflow
+
+During current private R&D, work directly on `main`. Do not open pull requests unless the user explicitly asks for one.
+
 ## Session start
 
 1. Read centralized `brief.md`.
