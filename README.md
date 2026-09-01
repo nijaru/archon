@@ -36,4 +36,6 @@ This repository should document behavior that is actually implemented—CLI/API 
 
 ## License
 
-Archon is currently private. The planned public-release boundary is [AGPL-3.0-or-later](https://github.com/nijaru/agent-context/blob/main/projects/github.com/omendb/archon/ai/design/LICENSE_BOUNDARY.md) for the core, with Apache-2.0 for schemas, SDKs, and provider/extension interfaces. Public license text, copyright ownership, and contribution policy will be finalized before release.
+Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE).
+
+A contribution-rights policy will be added before broad external contributions are opened; DCO is the current default unless a concrete need for contributor relicensing rights justifies a CLA.
