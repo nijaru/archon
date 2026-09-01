@@ -341,3 +341,60 @@ fn a_silent_agent_does_not_block_other_clients() {
     assert!(matches!(response, ServerResponse::Error { .. }));
     assert!(start.elapsed() < Duration::from_secs(2));
 }
+
+#[test]
+fn service_group_registers_runs_and_replaces_over_the_wire() {
+    let addr = spawn_server("service-group");
+    let mut stream = open_client(&addr, None);
+
+    let response = roundtrip(
+        &mut stream,
+        ClientRequest::SubmitService {
+            id: "web".into(),
+            owner: 1,
+            desired: 2,
+            cpus: 1,
+            memory_mib: 0,
+            lifetime_secs: 3_600,
+            command: vec!["sleep".into(), "30".into()],
+            volumes: vec![],
+            ports: vec![],
+            grace_secs: 0,
+            image: None,
+        },
+    );
+    let ServerResponse::ServiceRegistered { id, desired } = response else {
+        panic!("expected ServiceRegistered, got {response:?}");
+    };
+    assert_eq!(id, "web");
+    assert_eq!(desired, 2);
+
+    // The first reconciliation round admitted its members onto the plane's
+    // single test agent; status must show two live leases.
+    assert!(wait_until(Duration::from_secs(5), || {
+        let response = roundtrip(&mut stream, ClientRequest::Status);
+        let ServerResponse::Status { leases, .. } = response else {
+            panic!("expected Status");
+        };
+        leases.len() >= 2
+    }));
+
+    // Zero desired count is refused up front.
+    let response = roundtrip(
+        &mut stream,
+        ClientRequest::SubmitService {
+            id: "bad".into(),
+            owner: 1,
+            desired: 0,
+            cpus: 1,
+            memory_mib: 0,
+            lifetime_secs: 3_600,
+            command: vec!["sleep".into(), "30".into()],
+            volumes: vec![],
+            ports: vec![],
+            grace_secs: 0,
+            image: None,
+        },
+    );
+    assert!(matches!(response, ServerResponse::Error { .. }));
+}

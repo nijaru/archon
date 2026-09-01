@@ -70,6 +70,36 @@ impl From<Request> for WorkloadSpec {
     }
 }
 
+/// Desired service-member group above the resource kernel: one member
+/// template plus a fixed desired count. The group is product-level desired
+/// state only — reconciliation compiles it into ordinary member
+/// submissions, one independent Lease per member, so group semantics never
+/// enter resource authority, placement, or the kernel command log.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceGroup {
+    /// Group identity, stable across member replacement and restarts.
+    pub id: String,
+    pub owner: archon_kernel::OwnerId,
+    /// Desired member count to maintain.
+    pub desired: usize,
+    /// Member template: resource request plus execution intent. Each
+    /// compiled member gets its own request id and Lease.
+    pub template: WorkloadSpec,
+}
+
+impl ServiceGroup {
+    /// Compile one member submission with a fresh request id. The caller
+    /// owns id allocation so restarts cannot mint colliding ids. The member
+    /// carries no per-member keep-alive: the group is the sole desired-state
+    /// owner, so per-member restart paths never double-act on it.
+    pub fn member(&self, request_id: archon_kernel::RequestId) -> WorkloadSpec {
+        let mut member = self.template.clone();
+        member.resources.id = request_id;
+        member.keep_alive = false;
+        member
+    }
+}
+
 impl Deref for WorkloadSpec {
     type Target = Request;
 
