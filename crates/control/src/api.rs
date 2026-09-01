@@ -35,6 +35,30 @@ pub enum ClientRequest {
         #[serde(default)]
         gpus: u64,
     },
+    /// Register a desired service group: one member template plus a fixed
+    /// desired count, maintained by controller reconciliation. Re-submitting
+    /// the same id replaces the template/desired count.
+    SubmitService {
+        id: String,
+        owner: u64,
+        desired: u32,
+        cpus: u64,
+        memory_mib: u64,
+        lifetime_secs: u64,
+        command: Vec<String>,
+        /// "host_path:mount_path" bind mounts.
+        #[serde(default)]
+        volumes: Vec<String>,
+        /// Ports to publish; "container" or "host:container".
+        #[serde(default)]
+        ports: Vec<String>,
+        /// Seconds between SIGTERM and SIGKILL on teardown (drain).
+        #[serde(default)]
+        grace_secs: u32,
+        /// OCI image reference; the command runs inside a container.
+        #[serde(default)]
+        image: Option<String>,
+    },
     Status,
     Revoke {
         lease: u64,
@@ -64,6 +88,12 @@ pub enum ServerResponse {
     Submitted {
         request: u64,
         lease: u64,
+    },
+    /// The group's durable desired state was registered; reconciliation
+    /// runs with maintenance.
+    ServiceRegistered {
+        id: String,
+        desired: u32,
     },
     Status {
         queue_len: usize,

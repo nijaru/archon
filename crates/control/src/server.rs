@@ -35,6 +35,20 @@ struct SubmitSpec {
     gpus: u64,
 }
 
+/// Resource/execution wire fields shared by single submits and service-group
+/// member templates.
+struct WorkloadWire {
+    cpus: u64,
+    memory_mib: u64,
+    lifetime_secs: u64,
+    command: Vec<String>,
+    volumes: Vec<String>,
+    ports: Vec<String>,
+    grace_secs: u32,
+    image: Option<String>,
+    gpus: u64,
+}
+
 /// How the control plane reaches its execution agents.
 pub enum AgentLink {
     /// Execute on this machine; cgroup root enables kernel enforcement.
@@ -275,6 +289,19 @@ impl ControlPlane {
                 Err(err) => eprintln!("archon: restart admission failed: {err}"),
             }
         }
+        // Service groups are the desired-state owner for their members:
+        // reconcile after per-member restarts so groups replace dead or
+        // missing members up to their desired count.
+        for member in self.service.reconcile_service_groups() {
+            match self.service.admit_one() {
+                Ok(Some(admitted)) => {
+                    eprintln!("archon: service member admitted as request {admitted}")
+                }
+                Ok(None) => {} // queued until capacity returns
+                Err(err) => eprintln!("archon: service member admission failed: {err}"),
+            }
+            let _ = member;
+        }
         let since = self
             .commands_since_compaction
             .load(std::sync::atomic::Ordering::Relaxed);
@@ -465,6 +492,31 @@ impl ControlPlane {
                 image,
                 gpus,
             }),
+            ClientRequest::SubmitService {
+                id,
+                owner,
+                desired,
+                cpus,
+                memory_mib,
+                lifetime_secs,
+                command,
+                volumes,
+                ports,
+                grace_secs,
+                image,
+            } => self.submit_service(
+                id,
+                owner,
+                desired,
+                cpus,
+                memory_mib,
+                lifetime_secs,
+                command,
+                volumes,
+                ports,
+                grace_secs,
+                image,
+            ),
             ClientRequest::Status => self.status(),
             ClientRequest::Revoke { lease } => self.revoke(lease),
             ClientRequest::Logs { lease } => {
@@ -518,92 +570,24 @@ impl ControlPlane {
         }
         let id = RequestId::from_u64(self.next_request);
         self.next_request += 1;
-        let mut needs = vec![Need {
-            kind: ResourceClass::Cpu,
-            quantity: qty(CapacityDimension::Count, cpus.max(1)),
-            filters: vec![],
-        }];
-        if memory_mib > 0 {
-            let bytes = memory_mib.checked_mul(1 << 20);
-            let Some(bytes) = bytes else {
-                return ServerResponse::Error {
-                    reason: "memory_mib overflows".into(),
-                };
-            };
-            needs.push(Need {
-                kind: ResourceClass::Memory,
-                quantity: qty(CapacityDimension::Bytes, bytes),
-                filters: vec![],
-            });
-        }
-        if gpus > 0 {
-            needs.push(Need {
-                kind: ResourceClass::Gpu,
-                quantity: qty(CapacityDimension::Count, gpus),
-                filters: vec![],
-            });
-        }
-        let request = archon_node::workload::WorkloadSpec {
-            resources: Request {
-                id,
-                class: RequestClass::Batch,
-                needs,
-                topology: vec![],
-                preferences: vec![],
-                data: vec![],
-                lifetime: lifetime_secs.max(1),
-                priority: 1,
-                machine_local: true,
-            },
-            execution: archon_node::workload::ExecutionSpec {
-                command: command.clone(),
-                image,
-                storage: volumes
-                    .iter()
-                    .filter_map(|spec| spec.split_once(':'))
-                    .map(
-                        |(host_path, mount_path)| archon_node::workload::StorageMount {
-                            host_path: host_path.into(),
-                            mount_path: mount_path.into(),
-                        },
-                    )
-                    .collect(),
-                ports: match ports
-                    .iter()
-                    .map(|spec| match spec.split_once(':') {
-                        Some((host, container)) => {
-                            let container_port: u16 = container.parse().map_err(|_| {
-                                "invalid port spec (expected [host:]container)".to_string()
-                            })?;
-                            let host_port: u16 = host.parse().map_err(|_| {
-                                "invalid port spec (expected [host:]container)".to_string()
-                            })?;
-                            Ok(archon_node::workload::PortPublish {
-                                container_port,
-                                host_port: Some(host_port),
-                            })
-                        }
-                        None => spec
-                            .parse::<u16>()
-                            .map(|container_port| archon_node::workload::PortPublish {
-                                container_port,
-                                host_port: None,
-                            })
-                            .map_err(|_| {
-                                "invalid port spec (expected [host:]container)".to_string()
-                            }),
-                    })
-                    .collect::<Result<Vec<_>, String>>()
-                {
-                    Ok(ports) => ports,
-                    Err(reason) => {
-                        return ServerResponse::Error { reason };
-                    }
-                },
+        let mut request = match self.compile_workload(
+            id,
+            WorkloadWire {
+                cpus,
+                memory_mib,
+                lifetime_secs,
+                command,
+                volumes,
+                ports,
                 grace_secs,
+                image,
+                gpus,
             },
-            keep_alive,
+        ) {
+            Ok(workload) => workload,
+            Err(reason) => return ServerResponse::Error { reason },
         };
+        request.keep_alive = keep_alive;
         self.service.submit(request, OwnerId::from_u64(owner));
         match self.service.admit_one() {
             Ok(Some(_)) => ServerResponse::Submitted {
@@ -618,6 +602,166 @@ impl ControlPlane {
                 reason: err.to_string(),
             },
         }
+    }
+
+    /// Build a member WorkloadSpec from wire fields. Shared by single submits
+    /// and service-group member templates.
+    fn compile_workload(
+        &self,
+        id: archon_kernel::RequestId,
+        wire: WorkloadWire,
+    ) -> Result<archon_node::workload::WorkloadSpec, String> {
+        let WorkloadWire {
+            cpus,
+            memory_mib,
+            lifetime_secs,
+            command,
+            volumes,
+            ports,
+            grace_secs,
+            image,
+            gpus,
+        } = wire;
+        if command.is_empty() && image.is_none() {
+            return Err("empty command".into());
+        }
+        let mut needs = vec![Need {
+            kind: ResourceClass::Cpu,
+            quantity: qty(CapacityDimension::Count, cpus.max(1)),
+            filters: vec![],
+        }];
+        if memory_mib > 0 {
+            let bytes = memory_mib
+                .checked_mul(1 << 20)
+                .ok_or_else(|| "memory_mib overflows".to_string())?;
+            needs.push(Need {
+                kind: ResourceClass::Memory,
+                quantity: qty(CapacityDimension::Bytes, bytes),
+                filters: vec![],
+            });
+        }
+        if gpus > 0 {
+            needs.push(Need {
+                kind: ResourceClass::Gpu,
+                quantity: qty(CapacityDimension::Count, gpus),
+                filters: vec![],
+            });
+        }
+        let execution = archon_node::workload::ExecutionSpec {
+            command,
+            image,
+            storage: volumes
+                .iter()
+                .filter_map(|spec| spec.split_once(':'))
+                .map(
+                    |(host_path, mount_path)| archon_node::workload::StorageMount {
+                        host_path: host_path.into(),
+                        mount_path: mount_path.into(),
+                    },
+                )
+                .collect(),
+            ports: ports
+                .iter()
+                .map(|spec| match spec.split_once(':') {
+                    Some((host, container)) => {
+                        let container_port: u16 = container.parse().map_err(|_| {
+                            "invalid port spec (expected [host:]container)".to_string()
+                        })?;
+                        let host_port: u16 = host.parse().map_err(|_| {
+                            "invalid port spec (expected [host:]container)".to_string()
+                        })?;
+                        Ok(archon_node::workload::PortPublish {
+                            container_port,
+                            host_port: Some(host_port),
+                        })
+                    }
+                    None => spec
+                        .parse::<u16>()
+                        .map(|container_port| archon_node::workload::PortPublish {
+                            container_port,
+                            host_port: None,
+                        })
+                        .map_err(|_| "invalid port spec (expected [host:]container)".to_string()),
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            grace_secs,
+        };
+        Ok(archon_node::workload::WorkloadSpec {
+            resources: Request {
+                id,
+                class: RequestClass::Batch,
+                needs,
+                topology: vec![],
+                preferences: vec![],
+                data: vec![],
+                lifetime: lifetime_secs.max(1),
+                priority: 1,
+                machine_local: true,
+            },
+            execution,
+            keep_alive: false,
+        })
+    }
+
+    /// Register a desired service group and immediately run one
+    /// reconciliation round so the first members are submitted now rather
+    /// than at the next maintenance tick. Later rounds run in `maintain`.
+    #[allow(clippy::too_many_arguments)]
+    fn submit_service(
+        &mut self,
+        id: String,
+        owner: u64,
+        desired: u32,
+        cpus: u64,
+        memory_mib: u64,
+        lifetime_secs: u64,
+        command: Vec<String>,
+        volumes: Vec<String>,
+        ports: Vec<String>,
+        grace_secs: u32,
+        image: Option<String>,
+    ) -> ServerResponse {
+        if desired == 0 {
+            return ServerResponse::Error {
+                reason: "desired member count must be positive".into(),
+            };
+        }
+        // Reserve no member ids here: reconciliation compiles members with
+        // the service's own fresh ids so replacement lineage stays coherent.
+        let template = match self.compile_workload(
+            archon_kernel::RequestId::from_u64(0),
+            WorkloadWire {
+                cpus,
+                memory_mib,
+                lifetime_secs,
+                command,
+                volumes,
+                ports,
+                grace_secs,
+                image,
+                gpus: 0,
+            },
+        ) {
+            Ok(workload) => workload,
+            Err(reason) => return ServerResponse::Error { reason },
+        };
+        self.service
+            .register_service_group(archon_node::workload::ServiceGroup {
+                id: id.clone(),
+                owner: OwnerId::from_u64(owner),
+                desired: desired as usize,
+                template,
+            });
+        for member in self.service.reconcile_service_groups() {
+            match self.service.admit_one() {
+                Ok(Some(admitted)) if admitted != member => continue,
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!("archon: service member admission failed: {err}");
+                }
+            }
+        }
+        ServerResponse::ServiceRegistered { id, desired }
     }
 
     fn lease_of_request(&self) -> u64 {

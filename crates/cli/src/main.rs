@@ -44,6 +44,7 @@ fn main() {
                 .map(String::from),
         ),
         (Some("submit"), connect)
+        | (Some("service"), connect)
         | (Some("status"), connect)
         | (Some("revoke"), connect)
         | (Some("logs"), connect) => client(connect, &args),
@@ -83,7 +84,7 @@ where
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon demo [--remote ADDR]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR status | logs LEASE\n  archon -c ADDR revoke LEASE"
+        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon demo [--remote ADDR]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR service --id NAME [--replicas N] [--owner N] [--cpus N] [--mem-mib N] -- CMD...\n  archon -c ADDR status | logs LEASE\n  archon -c ADDR revoke LEASE"
     );
     exit(2);
 }
@@ -508,6 +509,7 @@ fn client(connect: Option<String>, args: &[String]) {
     // it on the first request failing instead.
     let response = match rest[0].as_str() {
         "submit" => submit_request(&rest[1..]),
+        "service" => service_request(&rest[1..]),
         "status" => ClientRequest::Status,
         "revoke" | "logs" => {
             let Some(value) = rest.get(1) else {
@@ -530,6 +532,78 @@ fn client(connect: Option<String>, args: &[String]) {
         std::process::exit(1);
     });
     print_response(reply);
+}
+
+fn service_request(args: &[String]) -> ClientRequest {
+    let mut id: Option<String> = None;
+    let mut owner = 1;
+    let mut desired: u32 = 1;
+    let mut cpus = 1;
+    let mut mem_mib = 0;
+    let mut lifetime = 3_600;
+    let mut volumes: Vec<String> = Vec::new();
+    let mut ports: Vec<String> = Vec::new();
+    let mut grace_secs: u32 = 0;
+    let mut image: Option<String> = None;
+    let mut rest = args;
+    while !rest.is_empty() && rest[0].starts_with("--") && rest[0] != "--" {
+        let (flag, value) = (
+            rest[0].as_str(),
+            match rest.get(1) {
+                Some(value) => value,
+                None => fail(format!("flag {} needs a value", rest[0])),
+            },
+        );
+        match flag {
+            "--id" => id = Some(value.clone()),
+            "--owner" => owner = parse_flag(value, flag),
+            "--replicas" => desired = parse_flag(value, flag),
+            "--cpus" => cpus = parse_flag(value, flag),
+            "--mem-mib" => mem_mib = parse_flag(value, flag),
+            "--lifetime" => lifetime = parse_flag(value, flag),
+            "--grace-secs" => grace_secs = parse_flag(value, flag),
+            "--image" => image = Some(value.clone()),
+            "--volume" => {
+                volumes.push(value.clone());
+                rest = &rest[2..];
+                continue;
+            }
+            "--publish" => {
+                ports.push(value.clone());
+                rest = &rest[2..];
+                continue;
+            }
+            other => {
+                eprintln!("unknown flag {other}");
+                exit(2);
+            }
+        }
+        rest = &rest[2..];
+    }
+    let Some(id) = id else {
+        eprintln!("service needs --id NAME");
+        exit(2);
+    };
+    let command: Vec<String> = match rest.split_first() {
+        Some((sep, command)) if sep == "--" => command.to_vec(),
+        _ => {
+            eprintln!("service needs `-- CMD...`");
+            exit(2);
+        }
+    };
+    ClientRequest::SubmitService {
+        id,
+        owner,
+        desired,
+        cpus,
+        memory_mib: mem_mib,
+        lifetime_secs: lifetime,
+        command,
+        volumes,
+        ports,
+        grace_secs,
+        image,
+    }
 }
 
 fn submit_request(args: &[String]) -> ClientRequest {
@@ -612,6 +686,11 @@ fn print_response(response: ServerResponse) {
             } else {
                 println!("request {request} admitted as lease {lease}");
             }
+        }
+        ServerResponse::ServiceRegistered { id, desired } => {
+            println!(
+                "service {id} registered, desired {desired} members; reconciliation runs with maintenance"
+            );
         }
         ServerResponse::Status { queue_len, leases } => {
             println!("queue: {queue_len}");

@@ -180,6 +180,19 @@ pub struct NodeService {
     restart_last_at: BTreeMap<RequestId, u64>,
     /// Restarted request id -> original request id.
     restart_root: BTreeMap<RequestId, RequestId>,
+    /// Desired service groups above the kernel: reconciliation compiles
+    /// each group into ordinary member submissions. Durable product state.
+    service_groups: BTreeMap<String, crate::workload::ServiceGroup>,
+    /// Request ids belonging to each group's members, across replacement
+    /// generations; the index is rebuilt on restore from `group_members`.
+    group_members: BTreeMap<String, std::collections::BTreeSet<RequestId>>,
+    /// Reverse index: request id -> owning group. Durable alongside the
+    /// group sets so member lineage survives controller restarts.
+    member_groups: BTreeMap<RequestId, String>,
+    /// Replacement attempts per group; durable so caps survive restarts.
+    group_restarts: BTreeMap<String, u32>,
+    /// Cluster time of each group's last replacement round (backoff).
+    group_last_restart: BTreeMap<String, u64>,
     next_request_id: u64,
     /// Next lease id; recovered from the log on replay.
     next_lease: u64,
@@ -222,6 +235,13 @@ pub struct ServiceState {
     /// Restart lineage: each restarted request id points at the original,
     /// so caps and backoff survive id churn across generations.
     pub restart_root: BTreeMap<RequestId, RequestId>,
+    /// Desired service groups above the kernel, with their member index.
+    pub service_groups: BTreeMap<String, crate::workload::ServiceGroup>,
+    pub group_members: BTreeMap<String, std::collections::BTreeSet<RequestId>>,
+    pub member_groups: BTreeMap<RequestId, String>,
+    /// Group replacement accounting, durable across controller restarts.
+    pub group_restarts: BTreeMap<String, u32>,
+    pub group_last_restart: BTreeMap<String, u64>,
     pub next_lease: u64,
     pub next_request_id: u64,
     pub next_session: u64,
@@ -938,6 +958,11 @@ impl NodeService {
             restart_counts: BTreeMap::new(),
             restart_last_at: BTreeMap::new(),
             restart_root: BTreeMap::new(),
+            service_groups: BTreeMap::new(),
+            group_members: BTreeMap::new(),
+            member_groups: BTreeMap::new(),
+            group_restarts: BTreeMap::new(),
+            group_last_restart: BTreeMap::new(),
             next_request_id: 1,
             next_lease: 1,
             pending: VecDeque::new(),
@@ -1167,6 +1192,11 @@ impl NodeService {
             restart_counts: self.restart_counts.clone(),
             restart_last_at: self.restart_last_at.clone(),
             restart_root: self.restart_root.clone(),
+            service_groups: self.service_groups.clone(),
+            group_members: self.group_members.clone(),
+            member_groups: self.member_groups.clone(),
+            group_restarts: self.group_restarts.clone(),
+            group_last_restart: self.group_last_restart.clone(),
             next_lease: self.next_lease,
             next_request_id: self.next_request_id,
             next_session: self.next_session,
@@ -1203,6 +1233,11 @@ impl NodeService {
         self.restart_counts = state.restart_counts;
         self.restart_last_at = state.restart_last_at;
         self.restart_root = state.restart_root;
+        self.service_groups = state.service_groups;
+        self.group_members = state.group_members;
+        self.member_groups = state.member_groups;
+        self.group_restarts = state.group_restarts;
+        self.group_last_restart = state.group_last_restart;
         self.next_lease = state.next_lease;
     }
 
@@ -1282,6 +1317,156 @@ impl NodeService {
     /// spin, with exponential backoff between attempts (1s doubling to a
     /// 60s ceiling). Run-once workloads are never restarted. Leases whose
     /// backoff has not elapsed stay pending for a later tick.
+    /// Register or update a desired service group. The group is
+    /// controller-local product state: reconciliation compiles it into
+    /// ordinary member submissions, so no group semantics enter resource
+    /// authority. Re-registering the same id replaces the template and
+    /// desired count; existing member leases stay owned until reconciliation
+    /// observes them dead or the group is scaled down.
+    pub fn register_service_group(&mut self, group: crate::workload::ServiceGroup) {
+        self.service_groups.insert(group.id.clone(), group);
+    }
+
+    /// Remove a group's desired state. Members already running keep their
+    /// leases until ordinary lifetime/revoke semantics end them; only future
+    /// reconciliation stops.
+    pub fn remove_service_group(&mut self, group: &str) {
+        self.service_groups.remove(group);
+        if let Some(members) = self.group_members.remove(group) {
+            for member in members {
+                self.member_groups.remove(&member);
+            }
+        }
+    }
+
+    /// Desired groups registered with the controller.
+    pub fn service_groups(&self) -> impl Iterator<Item = &crate::workload::ServiceGroup> {
+        self.service_groups.values()
+    }
+
+    /// Live (non-terminal) member leases of one group, by member request
+    /// lineage. Observation only: it never feeds resource authority.
+    pub fn group_member_leases(&self, group: &str) -> Vec<LeaseId> {
+        let Some(members) = self.group_members.get(group) else {
+            return Vec::new();
+        };
+        self.cluster
+            .leases
+            .values()
+            .filter(|lease| {
+                !matches!(
+                    lease.state,
+                    archon_kernel::LeaseState::Released
+                        | archon_kernel::LeaseState::Expired
+                        | archon_kernel::LeaseState::Revoked
+                        | archon_kernel::LeaseState::Failed
+                )
+            })
+            .filter(|lease| {
+                self.requests
+                    .get(&lease.id)
+                    .is_some_and(|(workload, _)| members.contains(&workload.resources.id))
+            })
+            .map(|lease| lease.id)
+            .collect()
+    }
+
+    /// Reconcile every group's desired member count against live member
+    /// leases, submitting replacements for dead or missing members. Dead
+    /// members leave the group index; replacements carry fresh request ids
+    /// and lineage into the group's restart accounting, so a permanently
+    /// broken member cannot respawn unbounded. Returns the submitted
+    /// replacement request ids.
+    pub fn reconcile_service_groups(&mut self) -> Vec<RequestId> {
+        const MAX_RESTARTS: u32 = 5;
+        const BACKOFF_CAP_SECS: u64 = 60;
+        let now = self.cluster.now;
+        let mut submitted = Vec::new();
+        let groups: Vec<crate::workload::ServiceGroup> =
+            self.service_groups.values().cloned().collect();
+        for group in groups {
+            // Drop dead members from the index; queued or live-leased members
+            // count toward the desired total.
+            let live: Vec<RequestId> = self
+                .group_members
+                .get(&group.id)
+                .map(|members| {
+                    members
+                        .iter()
+                        .copied()
+                        .filter(|id| self.member_live(*id))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(members) = self.group_members.get_mut(&group.id) {
+                *members = live.iter().copied().collect();
+                for id in members.iter() {
+                    self.member_groups.insert(*id, group.id.clone());
+                }
+            }
+            let shortfall = group.desired.saturating_sub(live.len());
+            if shortfall == 0 {
+                continue;
+            }
+            // Replacement caps and backoff anchor on the group id, not on
+            // any member: member replacement churns request ids, and the
+            // group is the durable desired-state owner.
+            let count = self.group_restarts.entry(group.id.clone()).or_insert(0);
+            if *count >= MAX_RESTARTS * group.desired as u32 {
+                eprintln!("archon: group {} exceeded replacement cap", group.id);
+                continue;
+            }
+            let last_at = self.group_last_restart.get(&group.id).copied().unwrap_or(0);
+            let delay = (1u64 << (*count).min(6)).min(BACKOFF_CAP_SECS);
+            if now < last_at.saturating_add(delay) {
+                continue; // backoff: a later maintenance round reconciles
+            }
+            for _ in 0..shortfall {
+                self.group_restarts
+                    .entry(group.id.clone())
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+                let member_id = RequestId::from_u64(self.next_request_id);
+                self.next_request_id += 1;
+                let member = group.member(member_id);
+                self.member_groups.insert(member_id, group.id.clone());
+                self.group_members
+                    .entry(group.id.clone())
+                    .or_default()
+                    .insert(member_id);
+                self.submit(member, group.owner);
+                submitted.push(member_id);
+            }
+            self.group_last_restart.insert(group.id.clone(), now);
+        }
+        submitted
+    }
+
+    /// Whether a group member still counts toward its desired count: queued
+    /// for admission, or admitted to a lease that has not gone terminal.
+    /// Terminal-lease members are dead; a naturally completed batch member
+    /// never restarts through group reconciliation.
+    fn member_live(&self, request: RequestId) -> bool {
+        if self.queue.iter().any(|queued| queued.request.id == request) {
+            return true;
+        }
+        self.requests
+            .values()
+            .any(|(workload, _)| workload.resources.id == request)
+            && self.cluster.leases.values().any(|lease| {
+                !matches!(
+                    lease.state,
+                    archon_kernel::LeaseState::Released
+                        | archon_kernel::LeaseState::Expired
+                        | archon_kernel::LeaseState::Revoked
+                        | archon_kernel::LeaseState::Failed
+                ) && self
+                    .requests
+                    .get(&lease.id)
+                    .is_some_and(|(workload, _)| workload.resources.id == request)
+            })
+    }
+
     pub fn take_restarts(&mut self) -> Vec<(WorkloadSpec, OwnerId)> {
         const MAX_RESTARTS: u32 = 5;
         const BACKOFF_CAP_SECS: u64 = 60;
