@@ -35,6 +35,20 @@ struct SubmitSpec {
     gpus: u64,
 }
 
+/// Resource/execution wire fields shared by single submits and service-group
+/// member templates.
+struct WorkloadWire {
+    cpus: u64,
+    memory_mib: u64,
+    lifetime_secs: u64,
+    command: Vec<String>,
+    volumes: Vec<String>,
+    ports: Vec<String>,
+    grace_secs: u32,
+    image: Option<String>,
+    gpus: u64,
+}
+
 /// How the control plane reaches its execution agents.
 pub enum AgentLink {
     /// Execute on this machine; cgroup root enables kernel enforcement.
@@ -558,15 +572,17 @@ impl ControlPlane {
         self.next_request += 1;
         let mut request = match self.compile_workload(
             id,
-            cpus,
-            memory_mib,
-            lifetime_secs,
-            command,
-            volumes,
-            ports,
-            grace_secs,
-            image,
-            gpus,
+            WorkloadWire {
+                cpus,
+                memory_mib,
+                lifetime_secs,
+                command,
+                volumes,
+                ports,
+                grace_secs,
+                image,
+                gpus,
+            },
         ) {
             Ok(workload) => workload,
             Err(reason) => return ServerResponse::Error { reason },
@@ -593,16 +609,19 @@ impl ControlPlane {
     fn compile_workload(
         &self,
         id: archon_kernel::RequestId,
-        cpus: u64,
-        memory_mib: u64,
-        lifetime_secs: u64,
-        command: Vec<String>,
-        volumes: Vec<String>,
-        ports: Vec<String>,
-        grace_secs: u32,
-        image: Option<String>,
-        gpus: u64,
+        wire: WorkloadWire,
     ) -> Result<archon_node::workload::WorkloadSpec, String> {
+        let WorkloadWire {
+            cpus,
+            memory_mib,
+            lifetime_secs,
+            command,
+            volumes,
+            ports,
+            grace_secs,
+            image,
+            gpus,
+        } = wire;
         if command.is_empty() && image.is_none() {
             return Err("empty command".into());
         }
@@ -641,7 +660,7 @@ impl ControlPlane {
                     },
                 )
                 .collect(),
-            ports: match ports
+            ports: ports
                 .iter()
                 .map(|spec| match spec.split_once(':') {
                     Some((host, container)) => {
@@ -664,11 +683,7 @@ impl ControlPlane {
                         })
                         .map_err(|_| "invalid port spec (expected [host:]container)".to_string()),
                 })
-                .collect::<Result<Vec<_>, String>>()
-            {
-                Ok(ports) => ports,
-                Err(reason) => return Err(reason),
-            },
+                .collect::<Result<Vec<_>, String>>()?,
             grace_secs,
         };
         Ok(archon_node::workload::WorkloadSpec {
@@ -715,15 +730,17 @@ impl ControlPlane {
         // the service's own fresh ids so replacement lineage stays coherent.
         let template = match self.compile_workload(
             archon_kernel::RequestId::from_u64(0),
-            cpus,
-            memory_mib,
-            lifetime_secs,
-            command,
-            volumes,
-            ports,
-            grace_secs,
-            image,
-            0,
+            WorkloadWire {
+                cpus,
+                memory_mib,
+                lifetime_secs,
+                command,
+                volumes,
+                ports,
+                grace_secs,
+                image,
+                gpus: 0,
+            },
         ) {
             Ok(workload) => workload,
             Err(reason) => return ServerResponse::Error { reason },
