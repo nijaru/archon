@@ -353,6 +353,9 @@ fn service_group_registers_runs_and_replaces_over_the_wire() {
             id: "web".into(),
             owner: 1,
             desired: 2,
+            max: None,
+            min: None,
+            per_machine: false,
             cpus: 1,
             memory_mib: 0,
             lifetime_secs: 3_600,
@@ -386,6 +389,9 @@ fn service_group_registers_runs_and_replaces_over_the_wire() {
             id: "bad".into(),
             owner: 1,
             desired: 0,
+            max: None,
+            min: None,
+            per_machine: false,
             cpus: 1,
             memory_mib: 0,
             lifetime_secs: 3_600,
@@ -394,6 +400,65 @@ fn service_group_registers_runs_and_replaces_over_the_wire() {
             ports: vec![],
             grace_secs: 0,
             image: None,
+        },
+    );
+    assert!(matches!(response, ServerResponse::Error { .. }));
+
+    // Bounded-elastic groups steer their target over the wire; scale-down
+    // runs through maintenance here only, so the wire round proves the
+    // mutation and its bounds.
+    let mut scaler = open_client(&addr, None);
+    let response = roundtrip(
+        &mut scaler,
+        ClientRequest::SubmitService {
+            id: "pool".into(),
+            owner: 1,
+            desired: 1,
+            max: Some(2),
+            min: Some(1),
+            per_machine: false,
+            cpus: 1,
+            memory_mib: 0,
+            lifetime_secs: 3_600,
+            command: vec!["sleep".into(), "30".into()],
+            volumes: vec![],
+            ports: vec![],
+            grace_secs: 0,
+            image: None,
+        },
+    );
+    let ServerResponse::ServiceRegistered { id, desired } = response else {
+        panic!("expected ServiceRegistered, got {response:?}");
+    };
+    assert_eq!(id, "pool");
+    assert_eq!(desired, 1);
+    let response = roundtrip(
+        &mut scaler,
+        ClientRequest::ScaleService {
+            id: "pool".into(),
+            target: 2,
+        },
+    );
+    let ServerResponse::Scaled { id, target } = response else {
+        panic!("expected Scaled, got {response:?}");
+    };
+    assert_eq!(id, "pool");
+    assert_eq!(target, 2);
+    // Out-of-bounds scaling is refused without touching the group.
+    let response = roundtrip(
+        &mut scaler,
+        ClientRequest::ScaleService {
+            id: "pool".into(),
+            target: 3,
+        },
+    );
+    assert!(matches!(response, ServerResponse::Error { .. }));
+    // Scaling a per-machine or fixed group is refused as well.
+    let response = roundtrip(
+        &mut scaler,
+        ClientRequest::ScaleService {
+            id: "web".into(),
+            target: 1,
         },
     );
     assert!(matches!(response, ServerResponse::Error { .. }));

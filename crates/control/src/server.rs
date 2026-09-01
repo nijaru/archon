@@ -35,6 +35,18 @@ struct SubmitSpec {
     gpus: u64,
 }
 
+/// Group fields for SubmitService: identity, owner, and cardinality policy
+/// alongside the shared workload wire fields.
+struct ServiceSpec {
+    id: String,
+    owner: u64,
+    desired: u32,
+    max: Option<u32>,
+    min: Option<u32>,
+    per_machine: bool,
+    wire: WorkloadWire,
+}
+
 /// Resource/execution wire fields shared by single submits and service-group
 /// member templates.
 struct WorkloadWire {
@@ -496,6 +508,9 @@ impl ControlPlane {
                 id,
                 owner,
                 desired,
+                max,
+                min,
+                per_machine,
                 cpus,
                 memory_mib,
                 lifetime_secs,
@@ -504,19 +519,26 @@ impl ControlPlane {
                 ports,
                 grace_secs,
                 image,
-            } => self.submit_service(
+            } => self.submit_service(ServiceSpec {
                 id,
                 owner,
                 desired,
-                cpus,
-                memory_mib,
-                lifetime_secs,
-                command,
-                volumes,
-                ports,
-                grace_secs,
-                image,
-            ),
+                max,
+                min,
+                per_machine,
+                wire: WorkloadWire {
+                    cpus,
+                    memory_mib,
+                    lifetime_secs,
+                    command,
+                    volumes,
+                    ports,
+                    grace_secs,
+                    image,
+                    gpus: 0,
+                },
+            }),
+            ClientRequest::ScaleService { id, target } => self.scale_service(id, target),
             ClientRequest::Status => self.status(),
             ClientRequest::Revoke { lease } => self.revoke(lease),
             ClientRequest::Logs { lease } => {
@@ -707,51 +729,47 @@ impl ControlPlane {
     /// reconciliation round so the first members are submitted now rather
     /// than at the next maintenance tick. Later rounds run in `maintain`.
     #[allow(clippy::too_many_arguments)]
-    fn submit_service(
-        &mut self,
-        id: String,
-        owner: u64,
-        desired: u32,
-        cpus: u64,
-        memory_mib: u64,
-        lifetime_secs: u64,
-        command: Vec<String>,
-        volumes: Vec<String>,
-        ports: Vec<String>,
-        grace_secs: u32,
-        image: Option<String>,
-    ) -> ServerResponse {
-        if desired == 0 {
-            return ServerResponse::Error {
-                reason: "desired member count must be positive".into(),
-            };
+    fn submit_service(&mut self, spec: ServiceSpec) -> ServerResponse {
+        let ServiceSpec {
+            id,
+            owner,
+            desired,
+            max,
+            min,
+            per_machine,
+            wire,
+        } = spec;
+        let cardinality = if per_machine {
+            archon_node::workload::Cardinality::PerMachine
+        } else if let (Some(min), Some(max)) = (min, max) {
+            archon_node::workload::Cardinality::Elastic {
+                min: min as usize,
+                target: desired as usize,
+                max: max as usize,
+            }
+        } else {
+            archon_node::workload::Cardinality::Fixed(desired as usize)
+        };
+        if let Err(reason) = cardinality.validate() {
+            return ServerResponse::Error { reason };
         }
         // Reserve no member ids here: reconciliation compiles members with
         // the service's own fresh ids so replacement lineage stays coherent.
-        let template = match self.compile_workload(
-            archon_kernel::RequestId::from_u64(0),
-            WorkloadWire {
-                cpus,
-                memory_mib,
-                lifetime_secs,
-                command,
-                volumes,
-                ports,
-                grace_secs,
-                image,
-                gpus: 0,
-            },
-        ) {
+        let template = match self.compile_workload(archon_kernel::RequestId::from_u64(0), wire) {
             Ok(workload) => workload,
             Err(reason) => return ServerResponse::Error { reason },
         };
-        self.service
-            .register_service_group(archon_node::workload::ServiceGroup {
-                id: id.clone(),
-                owner: OwnerId::from_u64(owner),
-                desired: desired as usize,
-                template,
-            });
+        if let Err(reason) =
+            self.service
+                .register_service_group(archon_node::workload::ServiceGroup {
+                    id: id.clone(),
+                    owner: OwnerId::from_u64(owner),
+                    cardinality,
+                    template,
+                })
+        {
+            return ServerResponse::Error { reason };
+        }
         for member in self.service.reconcile_service_groups() {
             match self.service.admit_one() {
                 Ok(Some(admitted)) if admitted != member => continue,
@@ -761,7 +779,40 @@ impl ControlPlane {
                 }
             }
         }
+        let machines = self
+            .service
+            .cluster
+            .graph
+            .nodes_of_class(archon_kernel::ResourceClass::Machine)
+            .len() as u32;
+        let desired = match cardinality {
+            archon_node::workload::Cardinality::PerMachine => machines,
+            _ => desired,
+        };
         ServerResponse::ServiceRegistered { id, desired }
+    }
+
+    /// Steer a bounded-elastic group's target within its bounds. The
+    /// mutation is desired-state only; reconciliation applies it.
+    fn scale_service(&mut self, id: String, target: u32) -> ServerResponse {
+        match self.service.scale_service_group(&id, target as usize) {
+            Ok(applied) => {
+                for member in self.service.reconcile_service_groups() {
+                    match self.service.admit_one() {
+                        Ok(Some(admitted)) if admitted != member => continue,
+                        Ok(_) => {}
+                        Err(err) => {
+                            eprintln!("archon: service member admission failed: {err}");
+                        }
+                    }
+                }
+                ServerResponse::Scaled {
+                    id,
+                    target: applied as u32,
+                }
+            }
+            Err(reason) => ServerResponse::Error { reason },
+        }
     }
 
     fn lease_of_request(&self) -> u64 {

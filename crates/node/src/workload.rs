@@ -71,7 +71,7 @@ impl From<Request> for WorkloadSpec {
 }
 
 /// Desired service-member group above the resource kernel: one member
-/// template plus a fixed desired count. The group is product-level desired
+/// template plus a cardinality policy. The group is product-level desired
 /// state only — reconciliation compiles it into ordinary member
 /// submissions, one independent Lease per member, so group semantics never
 /// enter resource authority, placement, or the kernel command log.
@@ -80,11 +80,58 @@ pub struct ServiceGroup {
     /// Group identity, stable across member replacement and restarts.
     pub id: String,
     pub owner: archon_kernel::OwnerId,
-    /// Desired member count to maintain.
-    pub desired: usize,
+    /// Cardinality policy the controller maintains for the group.
+    pub cardinality: Cardinality,
     /// Member template: resource request plus execution intent. Each
     /// compiled member gets its own request id and Lease.
     pub template: WorkloadSpec,
+}
+
+/// How many members a group wants, and what drives changes:
+/// fixed counts stay put, elastic bounds are steered by an explicit target
+/// within [min, max], and per-machine groups follow the eligible machine
+/// set. Only death replacements consume the group's restart cap; deliberate
+/// cardinality changes (scaling) do not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum Cardinality {
+    /// Run exactly this many members.
+    Fixed(usize),
+    /// Maintain `target` members, steerable within [min, max] by scaling.
+    Elastic {
+        min: usize,
+        target: usize,
+        max: usize,
+    },
+    /// One member on each machine able to host the template.
+    PerMachine,
+}
+
+impl Cardinality {
+    /// Current desired member count given the present machine set.
+    /// Per-machine groups want as many members as machines; the scheduler
+    /// decides per machine whether a pinned member can actually place.
+    pub fn desired_count(&self, machines: usize) -> usize {
+        match *self {
+            Cardinality::Fixed(count) => count,
+            Cardinality::Elastic { target, .. } => target,
+            Cardinality::PerMachine => machines,
+        }
+    }
+
+    /// Elastic bounds must admit at least one member and hold
+    /// min <= target <= max; other modes are always well-formed.
+    pub fn validate(&self) -> Result<(), String> {
+        match *self {
+            Cardinality::Fixed(0) => Err("fixed cardinality must be positive".into()),
+            Cardinality::Elastic { min, target, max }
+                if min == 0 || min > target || target > max =>
+            {
+                Err("elastic cardinality needs 1 <= min <= target <= max".into())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl ServiceGroup {

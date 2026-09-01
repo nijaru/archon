@@ -35,13 +35,23 @@ pub enum ClientRequest {
         #[serde(default)]
         gpus: u64,
     },
-    /// Register a desired service group: one member template plus a fixed
-    /// desired count, maintained by controller reconciliation. Re-submitting
-    /// the same id replaces the template/desired count.
+    /// Register a desired service group: one member template plus a
+    /// cardinality policy, maintained by controller reconciliation.
+    /// Re-submitting the same id replaces the template/cardinality.
+    /// Absent cardinality fields mean fixed desired count.
     SubmitService {
         id: String,
         owner: u64,
         desired: u32,
+        /// Upper bound for bounded-elastic groups; requires `--min` too.
+        #[serde(default)]
+        max: Option<u32>,
+        /// Lower bound for bounded-elastic groups; `desired` is the target.
+        #[serde(default)]
+        min: Option<u32>,
+        /// One member per eligible machine instead of a fixed count.
+        #[serde(default)]
+        per_machine: bool,
         cpus: u64,
         memory_mib: u64,
         lifetime_secs: u64,
@@ -58,6 +68,11 @@ pub enum ClientRequest {
         /// OCI image reference; the command runs inside a container.
         #[serde(default)]
         image: Option<String>,
+    },
+    /// Steer a bounded-elastic group's target member count within bounds.
+    ScaleService {
+        id: String,
+        target: u32,
     },
     Status,
     Revoke {
@@ -93,7 +108,12 @@ pub enum ServerResponse {
     /// runs with maintenance.
     ServiceRegistered {
         id: String,
+        /// Current target member count, or 0 for per-machine groups.
         desired: u32,
+    },
+    Scaled {
+        id: String,
+        target: u32,
     },
     Status {
         queue_len: usize,
