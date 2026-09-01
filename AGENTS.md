@@ -29,6 +29,7 @@ Never recreate a repository-local `ai/` tree and do not copy product/design/road
 | Fencing/recovery authority | centralized `design/lease-fencing.md` |
 | Scope/complexity/performance expansion | centralized `design/scope-simplicity-performance.md` |
 | Linux/datacenter/coexistence/handoff | centralized `design/deployment-and-adoption.md` |
+| Inference runtime / Engine integration | centralized `design/inference-runtime-boundary.md` |
 | Device/provider enforcement | centralized `design/device-enforcement.md` |
 | License claims | centralized `design/LICENSE_BOUNDARY.md` |
 
@@ -52,6 +53,7 @@ Follow centralized `PLAN.md`. Current sequence:
 - Reuse Linux cgroups/namespaces/eBPF, OCI/KVM, CDI/VFIO/SR-IOV, vendor drivers, networking, and storage systems unless evidence requires replacement.
 - Machine provisioning is not currently an Archon responsibility.
 - Kubernetes, Slurm, Flux, Ray, MPI, and similar systems are integrations, bounded nested workloads, or outer authorities during explicitly delegated evaluation—not competing owners of the same exclusive resource.
+- Inference/training runtimes remain workload-local systems: they may describe resource/topology requirements and performance alternatives, but they do not become Archon resource authorities and Archon does not absorb their model/state semantics.
 - Unsupported enforcement must fail explicitly; never silently weaken an accepted resource/isolation contract.
 - Do not add mandatory infrastructure because an incumbent uses it.
 - Do not scaffold speculative long-term components or recreate deleted Go model/endpoint/replica/Postgres/NATS/ConnectRPC surfaces.
