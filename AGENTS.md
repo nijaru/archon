@@ -33,7 +33,8 @@ During current private R&D, work directly on `main`. Do not open pull requests u
 | Fencing/recovery authority | centralized `design/lease-fencing.md` |
 | Scope/complexity/performance expansion | centralized `design/scope-simplicity-performance.md` |
 | Linux/datacenter/coexistence/handoff | centralized `design/deployment-and-adoption.md` |
-| Inference runtime / Engine integration | centralized `design/inference-runtime-boundary.md` |
+| Generic adaptive workload-runtime resource planning / resizing / safe transitions | centralized `design/adaptive-runtime-resource-contract.md` |
+| Inference runtime / Engine specialization | centralized `design/inference-runtime-boundary.md` |
 | Device/provider enforcement | centralized `design/device-enforcement.md` |
 | License claims | centralized `design/LICENSE_BOUNDARY.md` |
 
@@ -50,6 +51,8 @@ Follow centralized `PLAN.md`. Current sequence:
 5. optimize only measured limits;
 6. stabilize schemas, deployment identity/security, install/diagnostics, then pilot.
 
+Engine is the primary adjacent project now. Do not interrupt Engine work to implement speculative Archon integration; update Archon implementation only when its own roadmap or a real Engine/Training/runtime consumer demonstrates the need.
+
 ## Architecture guardrails
 
 - Keep the resource/workload model broad and Archon's ownership boundary narrow.
@@ -57,7 +60,9 @@ Follow centralized `PLAN.md`. Current sequence:
 - Reuse Linux cgroups/namespaces/eBPF, OCI/KVM, CDI/VFIO/SR-IOV, vendor drivers, networking, and storage systems unless evidence requires replacement.
 - Machine provisioning is not currently an Archon responsibility.
 - Kubernetes, Slurm, Flux, Ray, MPI, and similar systems are integrations, bounded nested workloads, or outer authorities during explicitly delegated evaluation—not competing owners of the same exclusive resource.
-- Inference/training runtimes remain workload-local systems: they may describe resource/topology requirements and performance alternatives, but they do not become Archon resource authorities and Archon does not absorb their model/state semantics.
+- Adaptive runtimes may describe alternative resource/topology/residency plans, pressure, checkpoint/drain readiness, and performance estimates; these remain advisory until ordinary Allocation/Lease/Binding transitions grant authority.
+- Inference/training runtimes remain workload-local systems: Archon does not absorb their model/state/execution semantics.
+- Runtime resource changes should use accountable additional/replacement Lease units plus prepare/switch/drain semantics rather than hidden in-place ownership mutation unless a proven Provider primitive preserves the same authority guarantees.
 - Unsupported enforcement must fail explicitly; never silently weaken an accepted resource/isolation contract.
 - Do not add mandatory infrastructure because an incumbent uses it.
 - Do not scaffold speculative long-term components or recreate deleted Go model/endpoint/replica/Postgres/NATS/ConnectRPC surfaces.
@@ -69,7 +74,7 @@ Follow centralized `PLAN.md`. Current sequence:
 - Stale binding fences and agent sessions are rejected at enforcement boundaries.
 - Partial preparation reaches active ownership or explicit failure.
 - Resource reuse occurs only after prior bindings are closed/fenced.
-- Telemetry cannot grant resource authority.
+- Telemetry, runtime recommendations, and performance forecasts cannot grant resource authority.
 - Simulator and production share pure resource-decision logic where applicable.
 - Small deployments do not inherit unnecessary datacenter complexity.
 
