@@ -7,6 +7,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_os = "linux")]
@@ -22,6 +23,7 @@ pub struct CgroupGroup {
     path: PathBuf,
 }
 
+#[cfg(target_os = "linux")]
 static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl CgroupGroup {
@@ -50,6 +52,7 @@ impl CgroupGroup {
         Ok(group)
     }
 
+    #[cfg(target_os = "linux")]
     /// Create one empty, uniquely-named probe group. Device capability proof
     /// attaches its BPF program here before deleting the group again.
     pub(crate) fn create_probe(root: &str, limits: &LeaseLimits) -> Result<Self, String> {
