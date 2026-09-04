@@ -1,9 +1,18 @@
 use archon_kernel::{
     CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
-use archon_sim::{World, tiny_graph};
+use archon_sim::{ScaleParams, World, measure_scale, tiny_graph};
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--measure") {
+        // Repeatable scale report for PLAN §5 evidence. Wall-clock figures
+        // are informational only; structural figures are deterministic.
+        for (machines, requests) in [(10, 30), (40, 120), (160, 480)] {
+            let report = measure_scale(&ScaleParams { machines, requests });
+            println!("{report}");
+        }
+        return;
+    }
     let mut world = World::new();
     let graph = tiny_graph(2);
     world
