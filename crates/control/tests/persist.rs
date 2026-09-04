@@ -80,6 +80,9 @@ impl AgentClient for EnforcingTestExecutor {
                 running: self.running.contains(&lease),
                 exit_code: None,
             },
+            AgentRequest::EnumerateBindings => AgentResponse::BindingsEnumerated {
+                endpoints: Vec::new(),
+            },
             AgentRequest::Logs { lease } => AgentResponse::Logs {
                 lease,
                 output: String::new(),

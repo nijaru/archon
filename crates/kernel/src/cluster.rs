@@ -464,6 +464,11 @@ impl Cluster {
             Command::SetNodeHealth { node, health } => self.set_node_health(*node, health.clone()),
             Command::SetNodeState { node, state } => self.set_node_state(*node, *state),
             Command::RebindSession { binding, session } => self.rebind_session(*binding, *session),
+            Command::AdvanceEndpointFence {
+                node,
+                provider,
+                fence,
+            } => self.advance_endpoint_fence(*node, *provider, *fence),
             Command::QuarantineNode { node } => self.quarantine_node(*node),
             Command::UnquarantineNode { node } => self.unquarantine_node(*node),
         }
@@ -1540,6 +1545,28 @@ impl Cluster {
         self.require_session(binding.node, session)?;
         if let Some(binding) = self.bindings.get_mut(&id) {
             binding.agent_session = session;
+        }
+        Ok(Vec::new())
+    }
+
+    /// Raise the exclusive fence watermark for (provider, node) to cover a
+    /// fence the endpoint already accepted without a committed Binding.
+    /// Never lowers the watermark; idempotent at the same value.
+    fn advance_endpoint_fence(
+        &mut self,
+        node: NodeId,
+        provider: crate::ids::ProviderId,
+        fence: u64,
+    ) -> Result<Vec<Effect>, Error> {
+        if self.graph.node(node).is_none() {
+            return Err(Error::UnknownNode(node));
+        }
+        if fence == 0 {
+            return Err(Error::Invalid("endpoint fence watermark must be positive"));
+        }
+        let watermark = self.last_fence.entry((provider, node)).or_insert(0);
+        if fence > *watermark {
+            *watermark = fence;
         }
         Ok(Vec::new())
     }

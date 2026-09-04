@@ -140,6 +140,18 @@ pub enum Command {
         binding: BindingId,
         session: u64,
     },
+    /// Record an endpoint fence the controller observed but never opened a
+    /// Binding for (reported by binding enumeration): raise the per-
+    /// (provider, node) fence watermark so the next exclusive OpenBinding
+    /// strictly exceeds what the endpoint has already accepted. Occupies
+    /// no claims and changes no Binding state; it is a watermark fact for
+    /// fence uniqueness, the same uniqueness `open_binding` enforces for
+    /// bindings it opens itself.
+    AdvanceEndpointFence {
+        node: NodeId,
+        provider: crate::ids::ProviderId,
+        fence: u64,
+    },
     QuarantineNode {
         node: NodeId,
     },

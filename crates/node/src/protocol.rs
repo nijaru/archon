@@ -206,6 +206,11 @@ pub enum AgentRequest {
     Status { lease: u64 },
     /// A lease's captured output. Read-only like Status.
     Logs { lease: u64 },
+    /// Read-only enumeration of every provider endpoint this agent holds:
+    /// node, provider, scope, open binding id, accepted fence, phase. The
+    /// controller reconciles stray generations from the full list rather
+    /// than per-lease status answers.
+    EnumerateBindings,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -272,6 +277,30 @@ pub enum AgentResponse {
         lease: u64,
         output: String,
     },
+    /// Every endpoint the agent currently holds, in endpoint-key order.
+    /// Read-only: the controller compares this against kernel Binding
+    /// records and fences unexpected open generations itself.
+    BindingsEnumerated {
+        endpoints: Vec<EnumeratedEndpoint>,
+    },
+}
+
+/// One provider endpoint as the agent sees it: the endpoint-key identity
+/// plus its open binding generation and fence/phase state.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnumeratedEndpoint {
+    pub node: u64,
+    pub provider: u64,
+    pub scope: BindingScope,
+    /// Open binding id; `None` when the endpoint holds no generation.
+    pub binding: Option<u64>,
+    /// Whether the endpoint currently holds this generation open. An
+    /// endpoint may remember a high accepted fence while closed (Idle).
+    pub open: bool,
+    /// Highest fence this endpoint has accepted.
+    pub accepted_fence: u64,
+    /// Idle, Prepared, or Active as the endpoint reports it.
+    pub phase: archon_kernel::EndpointPhase,
 }
 
 pub fn write_frame<T: serde::Serialize>(

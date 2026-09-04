@@ -40,6 +40,14 @@ struct FakeState {
     activates: u32,
     prepares: u32,
     fences: u32,
+    /// Endpoint picture for EnumerateBindings: (node, binding, open,
+    /// accepted_fence). One entry per open/held endpoint generation.
+    endpoints: Vec<(u64, u64, bool, u64)>,
+    /// Count EnumerateBindings requests served.
+    enumerations: u32,
+    /// Count stray fences the controller asked for (binding ids may be
+    /// unknown to the kernel).
+    stray_fences: Vec<u64>,
 }
 
 /// An agent endpoint whose live-workload answers are scripted. Serves any
@@ -97,6 +105,16 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                         AgentRequest::StartExecution { lease, .. } => {
                             AgentResponse::ExecutionStarted { lease }
                         }
+                        AgentRequest::Fence {
+                            binding, lease: 0, ..
+                        } => {
+                            // Stray-generation fence: the endpoint's own
+                            // accepted fence with no committed lease.
+                            let mut state = shared.lock().unwrap();
+                            state.stray_fences.push(binding);
+                            state.fences += 1;
+                            AgentResponse::Fenced { binding }
+                        }
                         AgentRequest::Fence { binding, .. } => {
                             shared.lock().unwrap().fences += 1;
                             AgentResponse::Fenced { binding }
@@ -111,6 +129,30 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                                 running: state.running,
                                 exit_code: state.exit_code,
                             }
+                        }
+                        AgentRequest::EnumerateBindings => {
+                            let mut state = shared.lock().unwrap();
+                            state.enumerations += 1;
+                            let endpoints = state
+                                .endpoints
+                                .iter()
+                                .map(|(node, binding, open, fence)| {
+                                    archon_node::protocol::EnumeratedEndpoint {
+                                        node: *node,
+                                        provider: 1,
+                                        scope: archon_kernel::BindingScope::Exclusive,
+                                        binding: (*binding).into(),
+                                        open: *open,
+                                        accepted_fence: *fence,
+                                        phase: if *open {
+                                            archon_kernel::EndpointPhase::Active
+                                        } else {
+                                            archon_kernel::EndpointPhase::Idle
+                                        },
+                                    }
+                                })
+                                .collect();
+                            AgentResponse::BindingsEnumerated { endpoints }
                         }
                         other => other.failed_response(),
                     };
@@ -346,6 +388,173 @@ fn restart_fails_partially_prepared_leases_without_activation() {
         state.lock().unwrap().activates,
         0,
         "a failed preparation must not execute anything"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Read the exclusive binding the first lease opened, for scripting a
+/// truthful endpoint picture.
+fn first_lease_binding(
+    service: &NodeService,
+) -> Option<(archon_kernel::BindingId, archon_kernel::NodeId, u64)> {
+    service
+        .cluster
+        .bindings
+        .values()
+        .find(|record| record.lease == LeaseId::from_u64(1))
+        .map(|record| (record.id, record.node, record.fence))
+}
+
+#[test]
+fn restart_fences_stray_open_generation_from_enumeration() {
+    let dir = std::env::temp_dir().join(format!("archon-recovery-stray-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("log.jsonl");
+
+    let (addr, state) = spawn_fake_agent();
+
+    // First generation: one workload admitted and activated.
+    let mut first = NodeService::new();
+    first.set_command_sink(Some(logged_sink(&path)));
+    register(&mut first, &addr, "inst-stray");
+    submit_sleep(&mut first, 1);
+    state.lock().unwrap().running = true;
+    settle(&mut first, 5);
+    let (binding, node, fence) = first_lease_binding(&first).expect("lease 1 opened a binding");
+
+    // The endpoint still enforces that generation, but the controller log
+    // that survives the crash ends the lease with the fence ack lost:
+    // the kernel holds the binding open while the lease is terminal.
+    // Dropping without settling captures exactly that mid-teardown crash.
+    first.revoke(LeaseId::from_u64(1)).expect("revoke");
+    drop(first);
+
+    let commands = read_log(&path);
+    let mut recovered = NodeService::new();
+    recovered.replay(commands).expect("replay");
+
+    // The agent reports the generation still open at the accepted fence.
+    state.lock().unwrap().endpoints = vec![(node.as_u64(), binding.as_u64(), true, fence)];
+    state.lock().unwrap().running = false; // member already gone
+    register(&mut recovered, &addr, "inst-stray");
+    settle(&mut recovered, 5);
+
+    assert!(
+        !recovered.cluster.occupies(LeaseId::from_u64(1)),
+        "stray generation fenced from enumeration frees claims"
+    );
+    assert!(
+        recovered
+            .take_recovery_events()
+            .iter()
+            .any(|event| matches!(
+                event,
+                archon_node::service::RecoveryEvent::StrayFenced { binding: b, .. } if *b == binding
+            )),
+        "enumeration recorded the stray fence decision"
+    );
+    assert!(
+        state.lock().unwrap().fences >= 1,
+        "the stray generation fence reached the agent"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn restart_frees_claims_the_endpoint_already_closed() {
+    let dir = std::env::temp_dir().join(format!("archon-recovery-closed-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("log.jsonl");
+
+    let (addr, state) = spawn_fake_agent();
+
+    let mut first = NodeService::new();
+    first.set_command_sink(Some(logged_sink(&path)));
+    register(&mut first, &addr, "inst-closed");
+    submit_sleep(&mut first, 1);
+    state.lock().unwrap().running = true;
+    settle(&mut first, 5);
+    let (binding, node, fence) = first_lease_binding(&first).expect("lease 1 opened a binding");
+
+    // Lease revoked; the endpoint processed the fence, but the
+    // acknowledgement was lost before the kernel could record the close.
+    // Dropping without settling captures exactly that mid-teardown crash.
+    first.revoke(LeaseId::from_u64(1)).expect("revoke");
+    drop(first);
+
+    let commands = read_log(&path);
+    let mut recovered = NodeService::new();
+    recovered.replay(commands).expect("replay");
+
+    // Endpoint reports the generation closed at its accepted fence.
+    state.lock().unwrap().endpoints = vec![(node.as_u64(), binding.as_u64(), false, fence)];
+    state.lock().unwrap().running = false;
+    register(&mut recovered, &addr, "inst-closed");
+    settle(&mut recovered, 5);
+
+    assert!(
+        !recovered.cluster.occupies(LeaseId::from_u64(1)),
+        "agent-proven close frees claims without expiry or a new fence"
+    );
+    let record = recovered
+        .cluster
+        .bindings
+        .get(&binding)
+        .expect("binding record survives");
+    assert_eq!(
+        record.state,
+        archon_kernel::BindingState::Fenced,
+        "the close is recorded as a fence at the accepted generation"
+    );
+    assert!(
+        !state
+            .lock()
+            .unwrap()
+            .stray_fences
+            .contains(&binding.as_u64()),
+        "no pointless fence was sent to a closed endpoint"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn restart_fences_unknown_open_generation_the_kernel_never_committed() {
+    let dir = std::env::temp_dir().join(format!("archon-recovery-unknown-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("log.jsonl");
+
+    let (addr, state) = spawn_fake_agent();
+
+    // A clean controller generation with one ordinary workload.
+    let mut first = NodeService::new();
+    first.set_command_sink(Some(logged_sink(&path)));
+    register(&mut first, &addr, "inst-unk");
+    submit_sleep(&mut first, 1);
+    state.lock().unwrap().running = true;
+    settle(&mut first, 5);
+    let (_, node, _) = first_lease_binding(&first).expect("lease 1 opened a binding");
+
+    let commands = read_log(&path);
+    let mut recovered = NodeService::new();
+    recovered.replay(commands).expect("replay");
+
+    // The endpoint holds an open generation whose binding id was never
+    // committed by any controller generation — for example an effect
+    // applied just before the controller crashed mid-commit.
+    state.lock().unwrap().endpoints = vec![(node.as_u64(), 999, true, 42)];
+    state.lock().unwrap().running = true; // keep lease 1 adoptable
+    register(&mut recovered, &addr, "inst-unk");
+    settle(&mut recovered, 5);
+
+    assert!(
+        state.lock().unwrap().stray_fences.contains(&999),
+        "an open generation unknown to the kernel is fenced promptly"
+    );
+    // The adoptable workload itself is untouched by the stray cleanup.
+    assert_eq!(
+        recovered.cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Active,
+        "stray cleanup never disturbs provably-current work"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

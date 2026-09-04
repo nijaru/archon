@@ -76,6 +76,28 @@ impl ResourceProvider {
         self.apply(EndpointOp::Fence, generation)
     }
 
+    /// Read-only enumeration of every endpoint this agent holds, in
+    /// endpoint-key order. Used by reconcile: the controller compares the
+    /// full provider-side picture against its Binding records and fences
+    /// unexpected open generations.
+    pub(crate) fn enumerate(&self) -> Vec<crate::protocol::EnumeratedEndpoint> {
+        self.endpoints
+            .iter()
+            .map(|(key, endpoint)| crate::protocol::EnumeratedEndpoint {
+                node: endpoint.node.as_u64(),
+                provider: endpoint.provider.as_u64(),
+                scope: match key {
+                    EndpointKey::Exclusive { .. } => BindingScope::Exclusive,
+                    EndpointKey::IndependentShare { .. } => BindingScope::IndependentShare,
+                },
+                binding: endpoint.binding.map(|binding| binding.as_u64()),
+                open: endpoint.open,
+                accepted_fence: endpoint.accepted_fence,
+                phase: endpoint.phase,
+            })
+            .collect()
+    }
+
     fn endpoint_key(generation: EndpointGeneration) -> EndpointKey {
         match generation.scope {
             BindingScope::Exclusive => EndpointKey::Exclusive {

@@ -50,6 +50,15 @@ pub enum Tag {
         lease: LeaseId,
         machine: NodeId,
     },
+    /// One-time provider enumeration for a recovering machine.
+    Enumerate {
+        machine: NodeId,
+    },
+    /// A stray-generation fence dispatched from enumeration; the ack
+    /// settles the machine's stray cleanup.
+    StrayFence {
+        machine: NodeId,
+    },
     Probe {
         machine: NodeId,
     },

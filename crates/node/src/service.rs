@@ -126,6 +126,14 @@ pub enum RecoveryEvent {
         lease: LeaseId,
         machine: NodeId,
     },
+    /// An open endpoint generation the controller did not expect was
+    /// fenced from the agent's full binding enumeration: the binding was
+    /// unknown, its lease terminal, or its kernel record already closed.
+    StrayFenced {
+        machine: NodeId,
+        node: NodeId,
+        binding: BindingId,
+    },
 }
 
 pub struct NodeService {
@@ -211,6 +219,15 @@ pub struct NodeService {
     /// Bindings are still being proven against actual endpoint state.
     /// Each entry lists the Active Leases awaiting their proof query.
     recovering_machines: BTreeMap<NodeId, BTreeSet<LeaseId>>,
+    /// Machines whose binding enumeration is still outstanding after a
+    /// controller-restart recovery entry; the answer drives per-endpoint
+    /// reconcile decisions instead of lease-state guesses.
+    pending_enumerations: BTreeSet<NodeId>,
+    /// Open endpoint generations the controller fenced from enumeration
+    /// but whose fence acknowledgement is still in flight; the record fence
+    /// was already advanced so no new exclusive lease reuses that endpoint
+    /// before the stray close is proven.
+    stray_fences: BTreeSet<NodeId>,
     /// Active (Lease, machine) members whose recovery Status query is
     /// outstanding. Recovery authority is machine-local even when the Lease
     /// itself spans several agents.
@@ -484,6 +501,10 @@ impl NodeService {
         let recovering = !new_machine && prior_session.is_some_and(|prior| prior < floor);
         if recovering {
             self.recovering_machines.insert(machine, BTreeSet::new());
+            // Ask the agent for its full provider picture before deciding
+            // any binding: reconcile compares every open endpoint against
+            // kernel records rather than inferring from lease state.
+            self.request_enumeration(machine);
             eprintln!(
                 "archon: machine {machine} returned after restart; reconciling live bindings"
             );
@@ -508,11 +529,29 @@ impl NodeService {
                 .recovering_machines
                 .get(&machine)
                 .is_some_and(BTreeSet::is_empty)
+            && self.machine_recovery_settled(machine)
         {
             // No live bindings needed proof: restore health marks now.
             self.finish_machine_recovery(machine);
         }
         Ok(machine)
+    }
+
+    /// Whether a recovering machine's reconciliation has fully settled:
+    /// the binding enumeration answered and every stray-generation fence
+    /// it triggered was acknowledged. Health/quarantine marks may only
+    /// restore after the machine's endpoints are proven clean.
+    fn machine_recovery_settled(&self, machine: NodeId) -> bool {
+        !self.pending_enumerations.contains(&machine) && !self.stray_fences.contains(&machine)
+    }
+
+    fn request_enumeration(&mut self, machine: NodeId) {
+        let tag = Tag::Enumerate { machine };
+        if self.inflight.contains(&tag) {
+            return;
+        }
+        self.pending_enumerations.insert(machine);
+        self.dispatch(machine, tag, AgentRequest::EnumerateBindings);
     }
 
     fn missing_fact_writer_assignments(
@@ -698,6 +737,8 @@ impl NodeService {
     /// direction when some Binding could not be resolved.
     fn finish_machine_recovery(&mut self, machine: NodeId) {
         self.recovering_machines.remove(&machine);
+        self.pending_enumerations.remove(&machine);
+        self.stray_fences.remove(&machine);
         if let Err(err) = self.commit(Command::UnquarantineNode { node: machine }) {
             eprintln!("archon: machine {machine} stays quarantined after recovery: {err}");
         }
@@ -976,6 +1017,8 @@ impl NodeService {
             next_binding: 1,
             session_floor: 0,
             recovering_machines: BTreeMap::new(),
+            pending_enumerations: BTreeSet::new(),
+            stray_fences: BTreeSet::new(),
             recovering_members: BTreeSet::new(),
             recovery_events: Vec::new(),
             command_sink: None,
@@ -2295,12 +2338,198 @@ impl NodeService {
                 }
                 (Tag::Probe { machine }, Err(_)) => self.unreachable.push(*machine),
                 (Tag::Probe { .. }, Ok(_)) => {}
+                (Tag::Enumerate { machine }, reply) => {
+                    let machine = *machine;
+                    self.pending_enumerations.remove(&machine);
+                    match reply {
+                        Ok(AgentResponse::BindingsEnumerated { endpoints }) => {
+                            self.absorb_enumeration(machine, endpoints);
+                        }
+                        Ok(other) => {
+                            eprintln!(
+                                "archon: unexpected enumeration response from {machine}: {other:?}"
+                            );
+                        }
+                        Err(reason) => {
+                            eprintln!(
+                                "archon: binding enumeration for machine {machine} failed: {reason}"
+                            );
+                        }
+                    }
+                }
+                (Tag::StrayFence { machine }, reply) => {
+                    let machine = *machine;
+                    self.stray_fences.remove(&machine);
+                    match reply {
+                        Ok(AgentResponse::Fenced { .. }) => {}
+                        Ok(other) => {
+                            eprintln!(
+                                "archon: unexpected stray-fence response from {machine}: {other:?}"
+                            );
+                        }
+                        Err(reason) => {
+                            eprintln!(
+                                "archon: stray fence on machine {machine} unprovable: {reason}"
+                            );
+                        }
+                    }
+                    // The stray close is settled either way; a failed stray
+                    // fence leaves the watermark raised, so reuse still
+                    // cannot fall behind what the endpoint accepted.
+                    if self
+                        .recovering_machines
+                        .get(&machine)
+                        .is_some_and(BTreeSet::is_empty)
+                        && self.machine_recovery_settled(machine)
+                    {
+                        self.finish_machine_recovery(machine);
+                    }
+                }
             }
         }
         if !finished.is_empty() {
             self.pump()?;
         }
         Ok(finished)
+    }
+
+    /// Reconcile one machine from its agent's full endpoint enumeration.
+    /// For every endpoint the agent holds, its generation is compared
+    /// against kernel Binding records, per `design/lease-fencing.md`
+    /// session-and-reconcile:
+    ///
+    /// - open generation the kernel also expects open under a still-
+    ///   authoritative lease: left to that lease's ordinary recovery
+    ///   (Status proof and adoption); nothing to fix;
+    /// - open generation against a kernel Binding that exists but is no
+    ///   longer legitimately open (terminal lease or already-closed
+    ///   record): ordinary `FenceBinding` — the same held/stop-proof path
+    ///   as any other teardown, driven now from proof the endpoint still
+    ///   holds the generation, rather than at expiry;
+    /// - closed endpoint under an open kernel record: the agent proved
+    ///   the close; record it at the accepted fence and free claims;
+    /// - open generation unknown to the kernel (no Binding record): a
+    ///   true stray. Fence directly at the accepted fence — it closes the
+    ///   open generation per the Endpoint protocol — and raise the
+    ///   per-(provider, node) fence watermark so the next exclusive
+    ///   Binding strictly exceeds what this endpoint has accepted.
+    fn absorb_enumeration(
+        &mut self,
+        machine: NodeId,
+        endpoints: Vec<crate::protocol::EnumeratedEndpoint>,
+    ) {
+        let session = self.cluster.sessions.get(&machine).copied();
+        let mut fence_commands: Vec<Command> = Vec::new();
+        let mut closed_records: Vec<(BindingId, u64)> = Vec::new();
+        let mut strays: Vec<(NodeId, BindingId, u64, archon_kernel::ProviderId)> = Vec::new();
+        for endpoint in endpoints {
+            let node = NodeId::from_u64(endpoint.node);
+            if self.cluster.graph.machine_of(node) != Some(machine) {
+                continue;
+            }
+            let Some(binding) = endpoint.binding.map(archon_kernel::BindingId::from_u64) else {
+                continue;
+            };
+            let record = self.cluster.bindings.get(&binding);
+            let lease_expected_open = record.is_some_and(|record| {
+                !record.state.is_closed()
+                    && self.cluster.leases.get(&record.lease).is_some_and(|lease| {
+                        matches!(
+                            lease.state,
+                            archon_kernel::LeaseState::Active
+                                | archon_kernel::LeaseState::Preparing
+                        )
+                    })
+            });
+            if lease_expected_open {
+                continue;
+            }
+            match record {
+                Some(record) if !record.state.is_closed() => {
+                    if endpoint.open {
+                        // Kernel record open but no longer legitimately so:
+                        // ordinary fenced teardown, held until the member is
+                        // proven stopped exactly like any other close.
+                        fence_commands.push(Command::FenceBinding { binding });
+                        self.recovery_events.push(RecoveryEvent::StrayFenced {
+                            machine,
+                            node,
+                            binding,
+                        });
+                    } else {
+                        closed_records.push((binding, endpoint.accepted_fence));
+                    }
+                }
+                Some(_) => {
+                    if endpoint.open {
+                        // Kernel record closed while the endpoint still holds
+                        // the generation open: reopen it as a stray to close.
+                        fence_commands.push(Command::FenceBinding { binding });
+                        self.recovery_events.push(RecoveryEvent::StrayFenced {
+                            machine,
+                            node,
+                            binding,
+                        });
+                    }
+                }
+                None => {
+                    // Unknown binding id held open: the true stray path.
+                    let provider = self
+                        .cluster
+                        .graph
+                        .claim_bindings()
+                        .get(&node)
+                        .and_then(|dims| dims.values().next())
+                        .map(|contract| contract.provider)
+                        .unwrap_or_else(|| archon_kernel::ProviderId::from_u64(endpoint.provider));
+                    strays.push((node, binding, endpoint.accepted_fence, provider));
+                }
+            }
+        }
+        for command in fence_commands {
+            self.commit_lenient(command);
+        }
+        if let Some(session) = session {
+            for (binding, accepted_fence) in closed_records {
+                // The agent closed this generation itself (crash between
+                // close and acknowledgement). The endpoint's accepted fence
+                // is exactly the generation the binding record carries, so
+                // the ordinary Record command validates and frees claims.
+                self.commit_lenient(Command::RecordBindingFenced {
+                    binding,
+                    session,
+                    fence: accepted_fence,
+                });
+            }
+        }
+        let Some(session) = session else { return };
+        for (node, binding, accepted_fence, provider) in strays {
+            self.recovery_events.push(RecoveryEvent::StrayFenced {
+                machine,
+                node,
+                binding,
+            });
+            // Close the stray generation at its accepted fence, then raise
+            // the watermark so no future Binding reuses a fence the
+            // endpoint has already seen.
+            self.commit_lenient(Command::AdvanceEndpointFence {
+                node,
+                provider,
+                fence: accepted_fence,
+            });
+            let request = AgentRequest::Fence {
+                binding: binding.as_u64(),
+                lease: 0,
+                node: node.as_u64(),
+                provider: provider.as_u64(),
+                scope: archon_kernel::BindingScope::Exclusive,
+                session,
+                fence: accepted_fence,
+                epoch: self.cluster.epoch,
+            };
+            self.stray_fences.insert(machine);
+            self.dispatch(machine, Tag::StrayFence { machine }, request);
+        }
     }
 
     /// Advance pending work: absorb completions, send queued effects, and
@@ -2637,12 +2866,14 @@ impl NodeService {
     }
 
     /// Controller-restart reconciliation for one re-registered machine:
-    /// decide each live Binding from actual endpoint state rather than
-    /// assuming it. Active Leases get a Status proof query (answered in
-    /// [`NodeService::absorb`]); Preparing Leases fail — their prepare
+    /// active leases get a Status proof query (answered in
+    /// [`NodeService::absorb`]); preparing leases fail — their prepare
     /// deadline passed and partial preparation is unprovable; terminal
-    /// Leases' leftover open Bindings fence immediately so occupied claims
-    /// from before the restart become reusable only after fencing lands.
+    /// leases' leftover open Bindings are decided from the machine's
+    /// binding enumeration, not from lease state — an endpoint the agent
+    /// still holds open is fenced (after its member is proven stopped on
+    /// this machine), while an endpoint the agent already closed has its
+    /// claims freed by recording the close.
     fn route_recovery(
         &mut self,
         machine: NodeId,
@@ -2667,19 +2898,11 @@ impl NodeService {
                     preparing.insert(record.lease);
                 }
                 _ => {
-                    commands.push(Command::FenceBinding { binding });
-                    self.recovery_events
-                        .push(RecoveryEvent::TerminalBindingFenced {
-                            lease: record.lease,
-                            machine,
-                            binding,
-                        });
-                    // A terminal lease's leftover open Binding fences only
-                    // after its member is proven gone on this machine. The
-                    // Status proof below drives that: an exited member
-                    // records the stop; a still-running member is stopped
-                    // through the ordinary member-stop path once the fence
-                    // effect holds for the stop proof.
+                    // Terminal-lease bindings wait for the machine's binding
+                    // enumeration: the endpoint's real open/closed state, not
+                    // lease state, decides fence versus record-close. The
+                    // Status proof below still drives member-stop proof for
+                    // a still-running member before any fence lands.
                     if terminal_status.insert(record.lease)
                         && let Some(pending) = self.recovering_machines.get_mut(&machine)
                     {
@@ -2880,7 +3103,7 @@ impl NodeService {
             pending.remove(&lease);
             done = pending.is_empty();
         }
-        if done {
+        if done && self.machine_recovery_settled(machine) {
             self.finish_machine_recovery(machine);
         }
     }

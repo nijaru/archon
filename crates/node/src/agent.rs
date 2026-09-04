@@ -66,6 +66,9 @@ impl LeaseAgent {
                 lease,
                 output: self.execution.logs(LeaseId::from_u64(lease)),
             },
+            AgentRequest::EnumerateBindings => AgentResponse::BindingsEnumerated {
+                endpoints: self.provider.enumerate(),
+            },
             AgentRequest::Prepare {
                 binding,
                 node,
