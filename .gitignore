@@ -39,5 +39,6 @@ tmp/
 
 # Agent scratch and local task artifacts
 ai/tmp/
+.mem/
 .tasks/tmp/
 .tasks/

@@ -9,9 +9,8 @@ multiple-versions = "warn"
 unknown-registry = "deny"
 unknown-git = "deny"
 
-# Private pre-release core: license expressions are set at open-source
-# publication (AGPL-3.0-or-later core; Apache-2.0 schemas/SDKs/interfaces).
-# Workspace crates are unpublished, so license checks skip them.
+# Apache-2.0 workspace (see LICENSE). Workspace crates are unpublished,
+# so license checks skip them.
 [licenses]
 version = 2
 confidence-threshold = 0.0

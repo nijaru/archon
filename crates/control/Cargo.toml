@@ -2,7 +2,9 @@
 name = "archon-control"
 version = "0.0.0"
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
+description = "Archon persistent control plane: command log, admission, Cluster"
 
 [dependencies]
 archon-kernel = { path = "../kernel", features = ["serde"] }
