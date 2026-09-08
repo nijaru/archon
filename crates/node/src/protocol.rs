@@ -90,16 +90,72 @@ pub enum Greeting {
 }
 
 /// Resource limits derived from a lease's claims. Zero means unlimited.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseLimits {
     pub cpu_count: u64,
     pub memory_bytes: u64,
+    /// Physical placement under normalized host topology: the logical CPU
+    /// numbers and NUMA node numbers the lease's claims actually landed on.
+    /// Empty means no pinning (flat inventory or unenforced runtimes).
+    #[serde(default)]
+    pub placement: CpuPlacement,
+}
+
+/// cgroup-v2 cpuset values: logical CPU list and NUMA memory node list in
+/// sysfs list syntax ("0-3,8", "0").
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuPlacement {
+    #[serde(default)]
+    pub cpus: CpuList,
+    #[serde(default)]
+    pub mems: CpuList,
+}
+
+/// A validated, ordered sysfs-format list of numeric ranges.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuList {
+    /// Sorted, deduplicated CPU/NUMA numbers; serialized as ranges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub numbers: Vec<u32>,
+}
+
+impl CpuList {
+    pub fn is_empty(&self) -> bool {
+        self.numbers.is_empty()
+    }
+
+    /// Render as a compact sysfs list: "0-3,8".
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        let mut iter = self.numbers.iter().copied().peekable();
+        while let Some(start) = iter.next() {
+            let mut end = start;
+            while iter.peek() == Some(&(end + 1)) {
+                end = iter.next().unwrap();
+            }
+            if !out.is_empty() {
+                out.push(',');
+            }
+            if start == end {
+                out.push_str(&start.to_string());
+            } else {
+                out.push_str(&format!("{start}-{end}"));
+            }
+        }
+        out
+    }
+}
+
+impl CpuPlacement {
+    pub fn is_empty(&self) -> bool {
+        self.cpus.is_empty() && self.mems.is_empty()
+    }
 }
 
 impl LeaseLimits {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn is_empty(&self) -> bool {
-        self.cpu_count == 0 && self.memory_bytes == 0
+        self.cpu_count == 0 && self.memory_bytes == 0 && self.placement.is_empty()
     }
 }
 

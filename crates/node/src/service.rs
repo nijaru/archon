@@ -23,7 +23,8 @@ use crate::dispatch::{
     AgentHandle, AgentReply, Delivery, EffectPhase, Inbox, Job, Tag, direct_job, spawn_worker,
 };
 use crate::protocol::{
-    AgentRequest, AgentResponse, ExecutionCapabilities, LeaseLimits, read_frame, write_frame,
+    AgentRequest, AgentResponse, CpuList, CpuPlacement, ExecutionCapabilities, LeaseLimits,
+    read_frame, write_frame,
 };
 use crate::runtime::ProcessRuntime;
 use crate::workload::WorkloadSpec;
@@ -2848,13 +2849,18 @@ impl NodeService {
 
     /// CPU and memory claims of a lease enforced by one machine. A distributed
     /// Lease may span several agents; no agent may receive another machine's
-    /// resource budget as if it were locally granted.
+    /// resource budget as if it were locally granted. Under normalized host
+    /// topology the claim's NUMA ancestry also pins the member: the CPU list
+    /// is the claimed CPU leaves' logical numbers, the memory list the claimed
+    /// memory nodes' NUMA numbers. Flat-inventory claims carry no placement.
     fn lease_limits_on_machine(
         &self,
         lease: LeaseId,
         machine: NodeId,
     ) -> Result<LeaseLimits, Error> {
         let mut limits = LeaseLimits::default();
+        let mut cpus = Vec::new();
+        let mut mems = Vec::new();
         let claims = &self
             .cluster
             .leases
@@ -2869,14 +2875,47 @@ impl NodeService {
             match self.cluster.graph.node(claim.node).map(|node| node.kind) {
                 Some(ResourceClass::Cpu) => {
                     limits.cpu_count += quantity_get(&claim.quantity, CapacityDimension::Count);
+                    if let Some(number) = self.host_leaf_number(claim.node, "cpu/") {
+                        cpus.push(number);
+                    }
                 }
                 Some(ResourceClass::Memory) => {
                     limits.memory_bytes += quantity_get(&claim.quantity, CapacityDimension::Bytes);
+                    if let Some(number) = self.host_leaf_number(claim.node, "memory") {
+                        mems.push(number);
+                    }
                 }
                 _ => {}
             }
         }
+        cpus.sort_unstable();
+        cpus.dedup();
+        mems.sort_unstable();
+        mems.dedup();
+        limits.placement = CpuPlacement {
+            cpus: CpuList { numbers: cpus },
+            mems: CpuList { numbers: mems },
+        };
         Ok(limits)
+    }
+
+    /// Logical number of a normalized host leaf from its stable id:
+    /// `numa/0/cpu/7` -> CPU 7; `numa/2/memory` -> NUMA 2. Flat-inventory
+    /// nodes carry no host id and return None.
+    fn host_leaf_number(&self, node: NodeId, leaf_kind: &str) -> Option<u32> {
+        let host_id = self
+            .cluster
+            .graph
+            .node(node)?
+            .attrs
+            .get(crate::discover::HOST_ID_ATTR)?;
+        let (numa, leaf) = host_id.rsplit_once('/')?;
+        let numa = numa.strip_prefix("numa/")?;
+        match leaf_kind {
+            "cpu" => leaf.strip_prefix("cpu/")?.parse().ok(),
+            "memory" if leaf == "memory" => numa.parse().ok(),
+            _ => None,
+        }
     }
 
     /// Enqueue one asynchronous agent call toward `machine`, tagged for

@@ -11,6 +11,8 @@ use std::time::Duration;
 use archon_kernel::LeaseId;
 
 use crate::protocol::LeaseLimits;
+#[cfg(target_os = "linux")]
+use crate::protocol::{CpuList, CpuPlacement};
 
 #[cfg(target_os = "linux")]
 use crate::cgroup::CgroupGroup;
@@ -126,24 +128,32 @@ impl ProcessRuntime {
                 root,
                 &LeaseLimits {
                     cpu_count: 1,
-                    memory_bytes: 0,
+                    ..Default::default()
                 },
             );
             let memory_limit = probe_process_limit(
                 root,
                 &LeaseLimits {
-                    cpu_count: 0,
                     memory_bytes: 1 << 20,
+                    ..Default::default()
                 },
             );
             let device_isolation = probe_device_isolation(root);
+            // Placement proof: write a real (host-valid) cpuset/mems pair
+            // into a probe group. Only a host that actually honors these
+            // writes may claim placement enforcement; the values come from
+            // the process's own affinity/mempolicy so the write cannot
+            // fail merely for naming offline CPUs.
+            let (placement_cpus, placement_mems) = host_affinity();
+            let physical_cpu_placement = probe_placement(root, placement_cpus, placement_mems);
+            let numa_memory_placement = physical_cpu_placement;
             crate::protocol::RuntimeCapabilities {
                 available: true,
                 cpu_limit,
                 memory_limit,
                 device_isolation,
-                physical_cpu_placement: false,
-                numa_memory_placement: false,
+                physical_cpu_placement,
+                numa_memory_placement,
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -407,6 +417,82 @@ fn probe_device_isolation(root: &str) -> bool {
         .unwrap_or_else(|_| Ok(()));
     let cleanup = group.destroy();
     filter.is_ok() && process.is_ok() && cleanup.is_ok()
+}
+
+/// The probe's own affinity and memory policy, as sysfs lists: what the
+/// kernel currently lets this process run on. Probing placement with
+/// these values can only fail when the cpuset controller is unusable,
+/// never because the probe named a CPU the host does not have.
+#[cfg(target_os = "linux")]
+fn host_affinity() -> (CpuList, CpuList) {
+    (sched_affinity_list(), numa_mems_list())
+}
+
+#[cfg(target_os = "linux")]
+fn sched_affinity_list() -> CpuList {
+    let set = unsafe {
+        let mut set = std::mem::zeroed::<libc::cpu_set_t>();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) != 0 {
+            return CpuList::default();
+        }
+        set
+    };
+    let mut numbers = Vec::new();
+    for number in 0..libc::CPU_SETSIZE as u32 {
+        if unsafe { libc::CPU_ISSET(number as usize, &set) } {
+            numbers.push(number);
+        }
+    }
+    CpuList { numbers }
+}
+
+#[cfg(target_os = "linux")]
+fn numa_mems_list() -> CpuList {
+    // The process's current NUMA memory nodes. get_mempolicy is the
+    // authoritative query; fall back to every node the kernel exposes.
+    let mut mask = 0usize;
+    unsafe {
+        let mut mode = 0i32;
+        if libc::syscall(
+            libc::SYS_get_mempolicy,
+            &mut mode as *mut i32,
+            &mut mask as *mut usize,
+            std::mem::size_of::<usize>() * 8,
+            0 as *mut libc::c_void,
+            2u64, // MPOL_F_MEMS_ALLOWED
+        ) == 0
+        {
+            let mut numbers = Vec::new();
+            for node in 0..(std::mem::size_of::<usize>() * 8) as u32 {
+                if mask & (1 << node) != 0 {
+                    numbers.push(node);
+                }
+            }
+            return CpuList { numbers };
+        }
+    }
+    // Fallback: all online NUMA nodes.
+    let numbers = std::fs::read_to_string("/sys/devices/system/node/online")
+        .ok()
+        .and_then(|list| crate::discover::parse_cpu_list(list.trim()).ok())
+        .unwrap_or_default();
+    CpuList { numbers }
+}
+
+#[cfg(target_os = "linux")]
+fn probe_placement(root: &str, cpus: CpuList, mems: CpuList) -> bool {
+    if cpus.is_empty() || mems.is_empty() {
+        return false;
+    }
+    let limits = LeaseLimits {
+        placement: CpuPlacement { cpus, mems },
+        ..Default::default()
+    };
+    let Ok(group) = CgroupGroup::create_probe(root, &limits) else {
+        return false;
+    };
+    let cleanup = group.destroy();
+    cleanup.is_ok()
 }
 
 /// Poll `check` every 100 ms until it returns true or `budget` elapses.

@@ -85,6 +85,16 @@ impl CgroupGroup {
             // effectively larger, unaccounted allocation.
             self.write("memory.swap.max", "0")?;
         }
+        // Normalized placement: pin the member to exactly the CPUs and NUMA
+        // nodes its claims landed on. Both files exist only when the cpuset
+        // controller is enabled, which enable_controllers did from the same
+        // limits; a missing file is a configuration bug, not a skip.
+        if !limits.placement.cpus.is_empty() {
+            self.write("cpuset.cpus", &limits.placement.cpus.render())?;
+        }
+        if !limits.placement.mems.is_empty() {
+            self.write("cpuset.mems", &limits.placement.mems.render())?;
+        }
         Ok(())
     }
 
@@ -149,6 +159,9 @@ fn enable_controllers(root: &Path, limits: &LeaseLimits) -> Result<(), String> {
     }
     if limits.memory_bytes > 0 {
         required.push("+memory");
+    }
+    if !limits.placement.cpus.is_empty() || !limits.placement.mems.is_empty() {
+        required.push("+cpuset");
     }
     if required.is_empty() {
         return Ok(());

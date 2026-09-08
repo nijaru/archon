@@ -301,12 +301,12 @@ fn distributed_activation_is_prepared_atomically_and_scoped_per_machine() {
                     machine,
                     limits,
                     devices,
-                } if machine == member => Some((*limits, devices)),
+                } if machine == member => Some((limits.clone(), devices)),
                 _ => None,
             })
             .collect();
         assert_eq!(starts.len(), 1, "one execution start per workload member");
-        let (limits, devices) = starts[0];
+        let (limits, devices) = &starts[0];
         assert_eq!(limits.cpu_count, 1);
         assert_eq!(limits.memory_bytes, GIB);
         assert_eq!(devices.len(), 1);

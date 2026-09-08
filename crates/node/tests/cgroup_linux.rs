@@ -196,6 +196,7 @@ fn first_instruction_runs_inside_the_lease_cgroup() {
             &LeaseLimits {
                 cpu_count: 1,
                 memory_bytes: 64 * (1 << 20),
+                ..Default::default()
             },
             &[],
         )
@@ -223,6 +224,68 @@ fn first_instruction_runs_inside_the_lease_cgroup() {
 }
 
 #[test]
+fn placement_limits_pin_the_lease_cpuset() {
+    let root = root("cpuset");
+    if !require_cgroup_writable("cpuset") {
+        return;
+    }
+    cleanup_root(&root);
+
+    // Pin to CPU 0 and NUMA node 0 (every enforcement host has both) and
+    // prove the child actually runs there: its own affinity/mempolicy must
+    // reflect the cgroup's cpuset, and the cgroup files must hold exactly
+    // what the limits said.
+    let mut runtime = ProcessRuntime::new().with_cgroup_root(root.clone());
+    let lease = LeaseId::from_u64(7);
+    let log = ProcessRuntime::log_dir().join("lease-7.log");
+    let _ = fs::remove_file(log);
+    let limits = LeaseLimits {
+        placement: archon_node::protocol::CpuPlacement {
+            cpus: archon_node::protocol::CpuList { numbers: vec![0] },
+            mems: archon_node::protocol::CpuList { numbers: vec![0] },
+        },
+        ..Default::default()
+    };
+    runtime
+        .activate(
+            lease,
+            &[
+                "sh".into(),
+                "-c".into(),
+                "grep -E '^(Cpus_allowed_list|Mems_allowed_list):' /proc/self/status".into(),
+            ],
+            &limits,
+            &[],
+        )
+        .expect("cpuset-pinned activation");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match runtime.status(lease) {
+            WorkStatus::Exited(_) => break,
+            WorkStatus::Running => std::thread::sleep(Duration::from_millis(20)),
+            WorkStatus::Gone => break,
+        }
+    }
+    let group = format!("{root}/lease-{}", lease.as_u64());
+    let cpus = fs::read_to_string(format!("{group}/cpuset.cpus")).expect("read cpuset.cpus");
+    let mems = fs::read_to_string(format!("{group}/cpuset.mems")).expect("read cpuset.mems");
+    assert_eq!(cpus.trim(), "0", "cgroup cpuset.cpus must be pinned");
+    assert_eq!(mems.trim(), "0", "cgroup cpuset.mems must be pinned");
+    let output = ProcessRuntime::read_log(lease);
+    assert!(
+        output.contains("Cpus_allowed_list:\t0"),
+        "child must run only on CPU 0: {output}"
+    );
+    assert!(
+        output.contains("Mems_allowed_list:\t0"),
+        "child must allocate only on NUMA 0: {output}"
+    );
+    runtime.terminate(lease).unwrap();
+    cleanup_root(&root);
+}
+
+#[test]
 fn failed_launch_removes_the_lease_cgroup() {
     let root = root("failed-launch");
     if !require_cgroup_writable("failed-launch") {
@@ -237,6 +300,7 @@ fn failed_launch_removes_the_lease_cgroup() {
         &LeaseLimits {
             cpu_count: 1,
             memory_bytes: 64 * (1 << 20),
+            ..Default::default()
         },
         &[],
     );

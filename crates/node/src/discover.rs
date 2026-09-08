@@ -98,12 +98,31 @@ pub struct DeviceSpec {
 }
 
 fn description_with_devices(devices: Vec<DeviceSpec>) -> MachineDescription {
+    let host_nodes = host_topology();
     MachineDescription {
         instance_id: String::new(),
         name: hostname(),
-        cpus: std::thread::available_parallelism().map_or(1, |n| n.get()) as u64,
-        memory_bytes: total_memory_bytes(),
-        host_nodes: Vec::new(),
+        // A normalized inventory is authoritative for CPU count and memory
+        // bytes: the summary fields exist for the flat legacy shape, so keep
+        // them consistent with what the graph will actually advertise.
+        cpus: if host_nodes.is_empty() {
+            std::thread::available_parallelism().map_or(1, |n| n.get()) as u64
+        } else {
+            host_nodes
+                .iter()
+                .filter(|spec| spec.kind == ResourceClass::Cpu)
+                .count() as u64
+        },
+        memory_bytes: if host_nodes.is_empty() {
+            total_memory_bytes()
+        } else {
+            host_nodes
+                .iter()
+                .filter(|spec| spec.kind == ResourceClass::Memory)
+                .map(|spec| quantity_get(&spec.capacity, CapacityDimension::Bytes))
+                .sum()
+        },
+        host_nodes,
         devices,
     }
 }
@@ -351,6 +370,141 @@ fn declared_devices() -> Vec<DeviceSpec> {
         .collect()
 }
 
+/// Authoritative normalized host topology as `HostNodeSpec`s: NUMA nodes as
+/// structural parents, per-logical-CPU count=1 leaves, one memory node per
+/// NUMA node. Linux sysfs is the source (see
+/// `ai/research/hwloc-evaluation-2026-09-08.md` for the libhwloc decision);
+/// any host where sysfs cannot yield the full normalized inventory reports
+/// the flat legacy shape instead of partial topology, because a partially
+/// normalized inventory would place CPU/memory claims without their NUMA
+/// containment facts.
+#[cfg(target_os = "linux")]
+fn host_topology() -> Vec<HostNodeSpec> {
+    match host_topology_fallible() {
+        Ok(specs) => specs,
+        Err(reason) => {
+            eprintln!("archon: normalized host topology unavailable: {reason}");
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn host_topology_fallible() -> Result<Vec<HostNodeSpec>, String> {
+    let node_dir = std::fs::read_dir("/sys/devices/system/node")
+        .map_err(|err| format!("read /sys/devices/system/node: {err}"))?;
+    let mut numa_nodes: Vec<(String, Vec<u32>, String)> = Vec::new();
+    for entry in node_dir.flatten() {
+        let name = entry.file_name();
+        let Some(node) = name.to_str().and_then(|n| n.strip_prefix("node")) else {
+            continue;
+        };
+        if node.parse::<u32>().is_err() {
+            continue;
+        }
+        let path = entry.path();
+        let cpulist = path.join("cpulist");
+        let cpus = std::fs::read_to_string(&cpulist)
+            .map_err(|err| format!("read {}: {err}", cpulist.display()))?;
+        let cpus =
+            parse_cpu_list(cpus.trim()).map_err(|err| format!("{}: {err}", cpulist.display()))?;
+        if cpus.is_empty() {
+            return Err(format!("{} reports no CPUs", path.display()));
+        }
+        numa_nodes.push((format!("numa/{node}"), cpus, node.to_string()));
+    }
+    if numa_nodes.is_empty() {
+        return Err("sysfs reports no NUMA nodes".into());
+    }
+    numa_nodes.sort_by(|left, right| left.0.cmp(&right.0));
+
+    // NUMA meminfo (not /proc/meminfo MemTotal) is the authoritative per-node
+    // byte capacity: the two disagree under kernel reservations, and the
+    // normalized memory nodes must sum to what they advertise, not to
+    // MemTotal.
+    let mut specs = Vec::new();
+    for (id, cpus, sysfs_node) in &numa_nodes {
+        specs.push(HostNodeSpec {
+            id: id.clone(),
+            kind: ResourceClass::Numa,
+            parent: None,
+            attrs: Attrs::new(),
+            capacity: Quantity::new(),
+        });
+        let meminfo_path = format!("/sys/devices/system/node/node{sysfs_node}/meminfo");
+        let meminfo = std::fs::read_to_string(&meminfo_path)
+            .map_err(|err| format!("read {meminfo_path}: {err}"))?;
+        let kib = meminfo
+            .lines()
+            .find_map(|line| {
+                // "Node 0 MemTotal:       32595068 kB": number and unit are
+                // separate fields; match the label, not a position.
+                let mut fields = line.split_whitespace();
+                let label = fields.next()?;
+                let _node = fields.next()?;
+                let metric = fields.next()?;
+                if label != "Node" || metric != "MemTotal:" {
+                    return None;
+                }
+                fields.next()?.parse::<u64>().ok()
+            })
+            .ok_or_else(|| format!("parse {meminfo_path} MemTotal"))?;
+        let bytes = kib
+            .checked_mul(1024)
+            .ok_or_else(|| format!("{meminfo_path} MemTotal overflows"))?;
+        specs.push(HostNodeSpec {
+            id: format!("{id}/memory"),
+            kind: ResourceClass::Memory,
+            parent: Some(id.clone()),
+            attrs: Attrs::new(),
+            capacity: qty(CapacityDimension::Bytes, bytes),
+        });
+        for cpu in cpus {
+            specs.push(HostNodeSpec {
+                id: format!("{id}/cpu/{cpu}"),
+                kind: ResourceClass::Cpu,
+                parent: Some(id.clone()),
+                attrs: Attrs::new(),
+                capacity: qty(CapacityDimension::Count, 1),
+            });
+        }
+    }
+    Ok(specs)
+}
+
+/// Expand a sysfs cpulist ("0-3,8,10-11") into individual CPU numbers.
+#[cfg(target_os = "linux")]
+pub(crate) fn parse_cpu_list(list: &str) -> Result<Vec<u32>, String> {
+    let mut cpus = Vec::new();
+    for part in list.split(',').filter(|part| !part.is_empty()) {
+        let (start, end) = match part.split_once('-') {
+            Some((start, end)) => (start, end),
+            None => (part, part),
+        };
+        let start: u32 = start
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid CPU range {part:?}"))?;
+        let end: u32 = end
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid CPU range {part:?}"))?;
+        if end < start {
+            return Err(format!("inverted CPU range {part:?}"));
+        }
+        for cpu in start..=end {
+            cpus.push(cpu);
+        }
+    }
+    Ok(cpus)
+}
+
+/// Non-Linux hosts keep the flat legacy inventory until a real host provider
+/// for them exists (see the hwloc evaluation for the candidate producer).
+#[cfg(not(target_os = "linux"))]
+fn host_topology() -> Vec<HostNodeSpec> {
+    Vec::new()
+}
 fn total_memory_bytes() -> u64 {
     #[cfg(target_os = "macos")]
     {
@@ -946,6 +1100,56 @@ pub fn discover() -> (LocalMachine, Vec<Node>, Vec<Edge>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_sysfs_cpulists() {
+        assert_eq!(parse_cpu_list("0-3").unwrap(), vec![0, 1, 2, 3]);
+        assert_eq!(
+            parse_cpu_list("0-3,8,10-11").unwrap(),
+            vec![0, 1, 2, 3, 8, 10, 11]
+        );
+        assert_eq!(parse_cpu_list("5").unwrap(), vec![5]);
+        assert_eq!(parse_cpu_list("").unwrap(), Vec::<u32>::new());
+        assert!(parse_cpu_list("3-0").is_err(), "inverted range");
+        assert!(parse_cpu_list("x-y").is_err(), "garbage");
+    }
+
+    /// A normalized producer output must always survive validation: NUMA
+    /// parents, count=1 CPU leaves, byte memory nodes, summary fields that
+    /// agree with the specs. Failures here mean real agents fall back to
+    /// flat topology or registration refuses.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn produced_host_topology_validates_when_available() {
+        let specs = match host_topology_fallible() {
+            Ok(specs) => specs,
+            Err(reason) => {
+                // Containers/CI may lack sysfs nodes; only a full success is
+                // provable here, and that is what production hosts run.
+                eprintln!("skipping: no normalized host topology: {reason}");
+                return;
+            }
+        };
+        assert!(!specs.is_empty());
+        let description = description_with_devices(Vec::new());
+        assert!(!description.host_nodes.is_empty());
+        validate_machine_description(&description).expect("produced host topology must validate");
+        // Every CPU leaf must sit under a NUMA parent: partial containment
+        // would place claims without locality facts.
+        let parents: std::collections::BTreeSet<_> = specs
+            .iter()
+            .filter(|spec| spec.kind == ResourceClass::Numa)
+            .map(|spec| spec.id.clone())
+            .collect();
+        assert!(!parents.is_empty());
+        for spec in &specs {
+            if spec.kind == ResourceClass::Cpu {
+                let parent = spec.parent.as_ref().expect("cpu under NUMA");
+                assert!(parents.contains(parent), "{parent} must exist");
+            }
+        }
+    }
 
     #[test]
     fn parses_nvidia_identity_and_capabilities() {
