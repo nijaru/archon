@@ -4,24 +4,36 @@ Rust-first distributed resource OS. Archon is the resource/scheduling authority 
 
 ## Persistent context
 
-Durable project context is centralized at:
+Primary orientation is this repository: `README.md`, `CONTRIBUTING.md`,
+the crate sources, and the verification gates below. They are the
+contract every contributor shares.
 
-`~/github/nijaru/agent-context/projects/github.com/nijaru/archon/ai/`
+The maintainer additionally keeps durable product/design/roadmap context
+in a private context checkout (locally symlinked as `ai/`, excluded from
+git). When it is present, the maintainer session workflow below applies.
+When it is absent — any public clone — work from the repository alone
+and do not invent roadmap or architecture prose.
 
-Never recreate a repository-local `ai/` tree and do not copy product/design/roadmap prose into this repository.
+Never recreate a repository-local `ai/` tree and do not copy private
+product/design/roadmap prose into this repository.
 
 ## Current repository workflow
 
-During current private R&D, work directly on `main`. Do not open pull requests unless the user explicitly asks for one.
+The maintainer works directly on `main` during R&D. External
+contributors work from forks and pull requests per `CONTRIBUTING.md`.
+Agents: do not open pull requests unless the user explicitly asks for one.
 
 ## Session start
 
-1. Read centralized `brief.md`.
-2. Read only the canonical context file relevant to the task.
-3. Run `tk ready` if using the project task tracker.
-4. Check `git status` before editing.
+1. Check `git status` before editing; preserve unrelated work.
+2. Maintainer sessions with the private context checkout present: read
+   `ai/brief.md`, then only the canonical context file relevant to the
+   task (load map below), and run `tk ready` if using the project task
+   tracker.
 
 ## Context load map
+
+Maintainer-only; requires the private context checkout.
 
 | Task | Read |
 |---|---|
@@ -42,7 +54,7 @@ Do not load `archive/` during ordinary work.
 
 ## Current implementation order
 
-Follow centralized `PLAN.md`. Current sequence:
+Maintainer sequencing (private `PLAN.md`). Current sequence:
 
 1. production-safe controller/agent restart reconciliation;
 2. real accelerator discovery/attachment/workload proof;
