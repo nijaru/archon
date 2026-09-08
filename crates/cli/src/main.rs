@@ -4,10 +4,6 @@
 //!   persistent command log, admission, the Cluster.
 //! - `archon agent --listen ADDR [--cgroup-root PATH]` — node agent: execute
 //!   leases as real processes on this machine.
-//! - `archon demo [--remote ADDR]` — walking-skeleton demo. Needs a
-//!   CPU-enforcement-capable machine (Linux with a delegated cgroup v2
-//!   subtree via `ARCHON_CGROUP_ROOT`); otherwise it refuses loudly rather
-//!   than run the lease unenforced.
 //! - `archon -c ADDR submit|status|revoke` — client.
 
 use std::net::{TcpListener, TcpStream};
@@ -17,7 +13,6 @@ use std::time::Duration;
 
 use archon_control::api::{ClientRequest, ServerResponse, read_response, write_frame};
 use archon_node::protocol::{read_request, write_response};
-use archon_node::service::NodeService;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -41,11 +36,6 @@ fn main() {
     match (args.first().map(String::as_str), connect) {
         (Some("serve"), _) => serve(&args[1..]),
         (Some("agent"), _) => agent(&args[1..]),
-        (Some("demo"), _) => demo(
-            args.get(1)
-                .and_then(|arg| arg.strip_prefix("--remote="))
-                .map(String::from),
-        ),
         (Some("submit"), connect)
         | (Some("service"), connect)
         | (Some("scale"), connect)
@@ -88,7 +78,7 @@ where
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon demo [--remote ADDR]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR service --id NAME [--replicas N | --min N --target N --max N | --per-machine] [--owner N] [--cpus N] [--mem-mib N] -- CMD...\n  archon -c ADDR scale --id NAME --target N\n  archon -c ADDR status | logs LEASE\n  archon -c ADDR revoke LEASE"
+        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR service --id NAME [--replicas N | --min N --target N --max N | --per-machine] [--owner N] [--cpus N] [--mem-mib N] -- CMD...\n  archon -c ADDR scale --id NAME --target N\n  archon -c ADDR status | logs LEASE\n  archon -c ADDR revoke LEASE"
     );
     exit(2);
 }
@@ -385,121 +375,6 @@ fn build_runtime(cgroup_root: &Option<String>) -> archon_node::runtime::ProcessR
     #[cfg(not(target_os = "linux"))]
     let _ = cgroup_root;
     archon_node::runtime::ProcessRuntime::new()
-}
-
-// --- demo ----------------------------------------------------------------
-
-fn demo(remote: Option<String>) {
-    let mut service = match &remote {
-        Some(addr) => {
-            let mut service = NodeService::new();
-            if let Err(err) = service.register_remote(addr) {
-                fail(format!("cannot connect to remote agent at {addr}: {err}"));
-            }
-            eprintln!("archon: connected to remote agent at {addr}");
-            service
-        }
-        None => {
-            let cgroup_root = std::env::var("ARCHON_CGROUP_ROOT").ok();
-            NodeService::local(cgroup_root)
-        }
-    };
-    print_machine(&service);
-
-    // Submit a real workload: sleep 5 under a 30-second lease.
-    let request = archon_node::workload::WorkloadSpec {
-        resources: archon_kernel::Request {
-            id: archon_kernel::RequestId::from_u64(1),
-            class: archon_kernel::RequestClass::Batch,
-            needs: vec![archon_kernel::Need {
-                kind: archon_kernel::ResourceClass::Cpu,
-                quantity: archon_kernel::qty(archon_kernel::CapacityDimension::Count, 1),
-                filters: vec![],
-            }],
-            topology: vec![],
-            preferences: vec![],
-            data: vec![],
-            machine_local: true,
-            lifetime: 30,
-            priority: 1,
-        },
-        execution: archon_node::workload::ExecutionSpec {
-            command: vec!["sleep".into(), "5".into()],
-            image: None,
-            storage: vec![],
-            ports: vec![],
-            grace_secs: 0,
-        },
-        keep_alive: false,
-    };
-    service.submit(request, archon_kernel::OwnerId::from_u64(1));
-    service.tick().expect("tick");
-    let admitted = service.admit_one().expect("admit");
-    if admitted.is_none() {
-        // Lease authority requires proven enforcement: a machine whose
-        // runtime only reports lifecycle execution can never hold a CPU
-        // lease. Refuse loudly instead of running the lease unenforced.
-        fail(
-            "no machine with CPU enforcement capability admitted request 1; on Linux, \
-             delegate a cgroup v2 subtree and set ARCHON_CGROUP_ROOT (or pass --cgroup-root \
-             to serve/agent); refusing to run the lease unenforced",
-        );
-    }
-    assert_eq!(admitted, Some(archon_kernel::RequestId::from_u64(1)));
-    let lease = archon_kernel::LeaseId::from_u64(1);
-    assert!(
-        service.is_running(lease),
-        "sleep must be running under the lease"
-    );
-    let where_ = remote.as_ref().map_or("locally", |addr| addr.as_str());
-    println!("archon: lease 1 active — `sleep 5` is running as a real process on {where_}");
-
-    // Revoke: the lease fences and the process dies immediately.
-    std::thread::sleep(Duration::from_millis(500));
-    service.revoke(lease).expect("revoke");
-    assert!(
-        !service.is_running(lease),
-        "process must die with the lease"
-    );
-    println!("archon: lease 1 revoked — process terminated");
-    println!("archon: walking skeleton complete");
-}
-
-fn print_machine(service: &NodeService) {
-    let machine = service
-        .cluster
-        .graph
-        .nodes_of_class(archon_kernel::ResourceClass::Machine)
-        .first()
-        .copied();
-    if let Some(machine) = machine {
-        let name = service
-            .cluster
-            .graph
-            .node(machine)
-            .and_then(|node| node.attrs.get("name"))
-            .cloned()
-            .unwrap_or_else(|| "machine".into());
-        let memory = service
-            .cluster
-            .graph
-            .nodes_of_class(archon_kernel::ResourceClass::Memory)
-            .first()
-            .and_then(|node| service.cluster.graph.node(*node))
-            .and_then(|node| {
-                node.capacity
-                    .iter()
-                    .find(|(dimension, _)| **dimension == archon_kernel::CapacityDimension::Bytes)
-                    .map(|(_, amount)| amount / (1 << 30))
-            })
-            .unwrap_or(0);
-        let cpus = service
-            .cluster
-            .graph
-            .nodes_of_class(archon_kernel::ResourceClass::Cpu)
-            .len();
-        println!("archon: discovered {name} ({cpus} cpus, {memory} GiB)");
-    }
 }
 
 // --- client --------------------------------------------------------------

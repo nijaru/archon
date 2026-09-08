@@ -15,7 +15,7 @@ The implementation is lab-proven and is not yet a production-scale claim.
 ## Prerequisites
 
 - A stable Rust toolchain (`rust-toolchain.toml` pins the channel; `rustup` picks it up automatically).
-- Linux for CPU/memory/device enforcement: lease authority requires proven enforcement capability, so a machine without a usable cgroup v2 subtree can register but never holds a lease. macOS builds and runs the control plane, tests, simulator, and client, but cannot enforce — the demo refuses loudly there instead of running work unenforced.
+- Linux for CPU/memory/device enforcement: lease authority requires proven enforcement capability, so a machine without a usable cgroup v2 subtree can register but never holds a lease. macOS builds and runs the control plane, tests, simulator, and client, but cannot enforce.
 
 ## Quickstart
 
@@ -28,12 +28,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p archon-sim
 ```
 
-Run the walking-skeleton demo (needs an enforcement-capable machine, see above):
-
-```text
-cargo run -p archon-cli -- demo
-```
-
 Run a control plane with a dial-in agent (three terminals):
 
 ```text
@@ -42,6 +36,9 @@ cargo run -p archon-cli -- agent --register 127.0.0.1:9000 --id node-1
 cargo run -p archon-cli -- -c 127.0.0.1:9000 submit -- sleep 30
 cargo run -p archon-cli -- -c 127.0.0.1:9000 status
 ```
+
+The lease admits once an enforcement-capable agent registers; without
+one the request waits in the queue, visible via `status`.
 
 All client↔controller and controller↔agent links use encrypted Noise transport. Configure the same shared secret with `--token-file` or `ARCHON_TOKEN` for PSK authentication; without a token the current development mode is encrypted but unauthenticated.
 
