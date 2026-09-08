@@ -96,7 +96,7 @@ pub struct ServiceGroup {
 #[serde(tag = "mode", rename_all = "kebab-case")]
 pub enum Cardinality {
     /// Run exactly this many members.
-    Fixed(usize),
+    Fixed { count: usize },
     /// Maintain `target` members, steerable within [min, max] by scaling.
     Elastic {
         min: usize,
@@ -113,7 +113,7 @@ impl Cardinality {
     /// decides per machine whether a pinned member can actually place.
     pub fn desired_count(&self, machines: usize) -> usize {
         match *self {
-            Cardinality::Fixed(count) => count,
+            Cardinality::Fixed { count } => count,
             Cardinality::Elastic { target, .. } => target,
             Cardinality::PerMachine => machines,
         }
@@ -123,7 +123,7 @@ impl Cardinality {
     /// min <= target <= max; other modes are always well-formed.
     pub fn validate(&self) -> Result<(), String> {
         match *self {
-            Cardinality::Fixed(0) => Err("fixed cardinality must be positive".into()),
+            Cardinality::Fixed { count: 0 } => Err("fixed cardinality must be positive".into()),
             Cardinality::Elastic { min, target, max }
                 if min == 0 || min > target || target > max =>
             {

@@ -63,8 +63,13 @@ impl ExecutionSupervisor {
     ) -> Result<(), String> {
         let result = if start.image.is_empty() {
             // Processes share the host filesystem and network; mounts and
-            // ports are container-only concerns. Device claims are enforced
-            // by the process executor's cgroup-device filter.
+            // ports are container-only concerns. Refuse rather than run a
+            // workload that silently drops its requested spec.
+            if !start.storage.is_empty() || !start.ports.is_empty() {
+                return Err("volumes and published ports need an OCI image".into());
+            }
+            // Device claims are enforced by the process executor's
+            // cgroup-device filter.
             self.process
                 .activate(lease, start.command, start.limits, start.devices)
         } else {

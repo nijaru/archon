@@ -660,3 +660,33 @@ fn slow_agent_logs_do_not_stall_the_control_plane() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn torn_log_tail_truncates_instead_of_failing_boot() {
+    use archon_kernel::NodeId;
+
+    let path = temp_log("torn");
+    let first = serde_json::to_string(&Command::QuarantineNode {
+        node: NodeId::from_u64(7),
+    })
+    .unwrap();
+    // A crash mid-append leaves a torn tail after complete lines.
+    std::fs::write(&path, format!("{first}\n{{\"QuarantineNod")).expect("write torn log");
+
+    let commands = archon_control::log::CommandLog::read(&path).expect("torn tail truncates");
+    assert_eq!(commands.len(), 1, "complete prefix must survive");
+    let after = std::fs::read(&path).expect("read truncated log");
+    assert_eq!(
+        after,
+        format!("{first}\n").into_bytes(),
+        "torn bytes must be removed so later appends stay parseable"
+    );
+
+    // Corruption in the middle is still a hard error, never masked.
+    std::fs::write(&path, format!("{first}\nnot json\n{first}\n")).expect("write corrupt log");
+    assert!(
+        archon_control::log::CommandLog::read(&path).is_err(),
+        "mid-file corruption must fail"
+    );
+    let _ = std::fs::remove_file(&path);
+}

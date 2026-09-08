@@ -796,6 +796,14 @@ impl ControlPlane {
                 .collect::<Result<Vec<_>, String>>()?,
             grace_secs,
         };
+        // The process executor shares the host filesystem and network:
+        // mounts and published ports only exist inside a container. Refuse
+        // up front rather than admit work whose spec cannot be honored.
+        if execution.image.is_none()
+            && (!execution.storage.is_empty() || !execution.ports.is_empty())
+        {
+            return Err("volumes and published ports need an OCI image (--image)".into());
+        }
         Ok(archon_node::workload::WorkloadSpec {
             resources: Request {
                 id,
@@ -836,7 +844,9 @@ impl ControlPlane {
                 max: max as usize,
             }
         } else {
-            archon_node::workload::Cardinality::Fixed(desired as usize)
+            archon_node::workload::Cardinality::Fixed {
+                count: desired as usize,
+            }
         };
         if let Err(reason) = cardinality.validate() {
             return ServerResponse::Error { reason };

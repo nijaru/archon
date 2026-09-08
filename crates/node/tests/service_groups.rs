@@ -161,7 +161,7 @@ fn group_replaces_dead_members_up_to_desired_count() {
         .register_service_group(ServiceGroup {
             id: "web".into(),
             owner: OwnerId::from_u64(7),
-            cardinality: Cardinality::Fixed(2),
+            cardinality: Cardinality::Fixed { count: 2 },
             template: template(0, 1),
         })
         .expect("register");
@@ -238,7 +238,7 @@ fn group_replacement_is_capped_and_durable_across_restart() {
         .register_service_group(ServiceGroup {
             id: "cap".into(),
             owner: OwnerId::from_u64(1),
-            cardinality: Cardinality::Fixed(1),
+            cardinality: Cardinality::Fixed { count: 1 },
             template: template(0, 1),
         })
         .expect("register");
@@ -292,7 +292,7 @@ fn group_members_never_double_restart_through_keep_alive() {
         .register_service_group(ServiceGroup {
             id: "solo".into(),
             owner: OwnerId::from_u64(1),
-            cardinality: Cardinality::Fixed(1),
+            cardinality: Cardinality::Fixed { count: 1 },
             template: {
                 let mut spec = template(0, 1);
                 spec.keep_alive = true; // even a keep-alive template yields
@@ -486,7 +486,7 @@ fn malformed_cardinality_is_refused_up_front() {
     };
     assert!(
         service
-            .register_service_group(broken(Cardinality::Fixed(0)))
+            .register_service_group(broken(Cardinality::Fixed { count: 0 }))
             .is_err()
     );
     assert!(
@@ -536,4 +536,25 @@ fn machine_of(service: &NodeService, lease: LeaseId) -> NodeId {
                 .find_map(|claim| service.cluster.graph.machine_of(claim.node))
         })
         .expect("lease has a machine")
+}
+
+#[test]
+fn cardinality_survives_snapshot_serialization() {
+    // Fixed used to be a newtype variant, which serde cannot serialize in
+    // an internally tagged enum: compaction failed whenever a fixed group
+    // existed and snapshots silently never happened. Every variant must
+    // round-trip.
+    for cardinality in [
+        Cardinality::Fixed { count: 2 },
+        Cardinality::Elastic {
+            min: 1,
+            target: 2,
+            max: 3,
+        },
+        Cardinality::PerMachine,
+    ] {
+        let json = serde_json::to_string(&cardinality).expect("serialize cardinality");
+        let back: Cardinality = serde_json::from_str(&json).expect("deserialize cardinality");
+        assert_eq!(back, cardinality);
+    }
 }
