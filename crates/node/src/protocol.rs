@@ -308,6 +308,15 @@ pub fn write_frame<T: serde::Serialize>(
     message: &T,
 ) -> std::io::Result<()> {
     let payload = serde_json::to_vec(message).expect("serialize frame");
+    // The reader refuses anything larger; failing here keeps a huge
+    // response an explicit error instead of an unreadable frame (and
+    // avoids truncating the length prefix on 32-bit targets).
+    if payload.len() > MAX_FRAME {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame exceeds MAX_FRAME",
+        ));
+    }
     stream.write_all(&(payload.len() as u32).to_le_bytes())?;
     stream.write_all(&payload)
 }

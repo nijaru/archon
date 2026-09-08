@@ -247,6 +247,13 @@ pub struct NodeService {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServiceState {
     pub requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,
+    /// Queued-but-unadmitted work. Restored on snapshot recovery so a
+    /// restart never silently drops submitted requests. Absent (defaulted)
+    /// in snapshots written before queue persistence existed.
+    #[serde(default)]
+    pub queue: Vec<Queued>,
+    #[serde(default)]
+    pub queued_workloads: BTreeMap<RequestId, WorkloadSpec>,
     pub restart_handled: std::collections::BTreeSet<LeaseId>,
     pub restart_counts: BTreeMap<RequestId, u32>,
     /// Cluster time of each request's last restart, backing exponential
@@ -1048,6 +1055,12 @@ impl NodeService {
     /// Session numbering resumes above the highest replayed session — a
     /// restarted controller must never hand out an old generation.
     pub fn replay(&mut self, commands: impl IntoIterator<Item = Command>) -> Result<(), Error> {
+        // Wall-clock revalidation is skipped while replaying: each command
+        // was validated when committed, and the clock has moved on since.
+        // Without this, replaying a naturally expired lease at the default
+        // clock rejects the committed expiry and bricks recovery.
+        self.cluster.set_replaying(true);
+        let mut result = Ok(());
         for command in commands {
             // Recover every id high-water mark from the log before new
             // work allocates colliding ids.
@@ -1065,8 +1078,13 @@ impl NodeService {
                 }
                 _ => {}
             }
-            self.commit(command)?;
+            if let Err(err) = self.commit(command) {
+                result = Err(err);
+                break;
+            }
         }
+        self.cluster.set_replaying(false);
+        result?;
         // Replayed commands re-emit their historical effects (stale
         // Prepares, Activates, Reconciles). They were delivered once,
         // before the restart; delivering them again would re-execute or
@@ -1236,6 +1254,14 @@ impl NodeService {
         self.history.clone()
     }
 
+    /// Drop in-process command history, e.g. after compaction snapshots
+    /// it. The durable log file is the recovery source; without this a
+    /// long-lived controller grows both histories without bound.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        self.cluster.log.clear();
+    }
+
     /// Drain material controller-restart reconciliation outcomes observed
     /// since the previous call. Recovery events explain decisions but never
     /// participate in authority, replay, or ServiceState restoration.
@@ -1248,6 +1274,8 @@ impl NodeService {
     pub fn state_snapshot(&self) -> ServiceState {
         ServiceState {
             requests: self.requests.clone(),
+            queue: self.queue.clone(),
+            queued_workloads: self.queued_workloads.clone(),
             restart_handled: self.restart_handled.clone(),
             restart_counts: self.restart_counts.clone(),
             restart_last_at: self.restart_last_at.clone(),
@@ -1277,6 +1305,8 @@ impl NodeService {
     /// Restore controller-side state captured by [`NodeService::state_snapshot`].
     pub fn restore_state(&mut self, state: ServiceState) {
         self.next_request_id = state.next_request_id;
+        self.queue = state.queue;
+        self.queued_workloads = state.queued_workloads;
         self.next_session = state.next_session;
         self.next_binding = state.next_binding;
         self.requests = state.requests;
@@ -1301,6 +1331,11 @@ impl NodeService {
         self.group_last_restart = state.group_last_restart;
         self.member_pins = state.member_pins;
         self.next_lease = state.next_lease;
+    }
+
+    /// Next request id, for crash-safe id allocation across restarts.
+    pub fn next_request_id(&self) -> u64 {
+        self.next_request_id
     }
 
     /// Queue depth, for status reporting.

@@ -423,3 +423,240 @@ fn replay_recovers_id_high_water_marks() {
         .admit_one()
         .expect("post-replay admission must not collide with reused binding ids");
 }
+
+#[test]
+fn replay_recovers_naturally_expired_leases() {
+    let path = temp_log("expire-replay");
+    let mut service = logged_service(&path);
+    submit_sleep(&mut service, 1, 60);
+    let lease = LeaseId::from_u64(1);
+
+    // Let the lease expire naturally: the expiry commits to the log, so a
+    // later restart must replay it instead of choking on the clock.
+    service.cluster.set_now(61);
+    service.expire_due().expect("expire");
+    assert_eq!(
+        service.cluster.leases[&lease].state,
+        LeaseState::Expired,
+        "lease must expire in the live plane"
+    );
+
+    let commands = archon_control::log::CommandLog::read(&path).expect("read log");
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::ExpireLease { .. })),
+        "expiry must be logged"
+    );
+    let mut recovered = NodeService::new();
+    recovered
+        .replay(commands)
+        .expect("replay must accept committed expiries");
+    assert_eq!(
+        recovered.cluster.leases[&lease].state,
+        LeaseState::Expired,
+        "replay must reproduce the expiry"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+fn submit_request() -> ClientRequest {
+    ClientRequest::Submit {
+        owner: 1,
+        cpus: 1,
+        memory_mib: 0,
+        lifetime_secs: 3_600,
+        command: vec!["sleep".into(), "30".into()],
+        keep_alive: false,
+        volumes: vec![],
+        ports: vec![],
+        grace_secs: 0,
+        image: None,
+        gpus: 0,
+    }
+}
+
+fn queue_len_of(response: ServerResponse) -> usize {
+    match response {
+        ServerResponse::Status { queue_len, .. } => queue_len,
+        other => panic!("expected Status, got {other:?}"),
+    }
+}
+
+#[test]
+fn snapshot_preserves_queued_work_across_restarts() {
+    let dir = std::env::temp_dir().join(format!("archon-queue-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let log = dir.join("cluster.jsonl");
+
+    // No agent: the submit stays queued. The first mutation snapshots.
+    let mut plane =
+        ControlPlane::boot(archon_control::server::AgentLink::None, log.clone(), 10_000)
+            .expect("boot");
+    match plane.handle(submit_request()) {
+        ServerResponse::Submitted {
+            request: 1,
+            lease: 0,
+        } => {}
+        other => panic!("expected queued submit, got {other:?}"),
+    }
+    assert!(log.with_added_extension("snapshot").exists());
+
+    drop(plane);
+    let mut plane =
+        ControlPlane::boot(archon_control::server::AgentLink::None, log.clone(), 10_000)
+            .expect("reboot");
+    assert_eq!(
+        queue_len_of(plane.handle(ClientRequest::Status)),
+        1,
+        "restart must not drop queued work"
+    );
+    // The restored queue id stays reserved: the next submit is fresh.
+    match plane.handle(submit_request()) {
+        ServerResponse::Submitted { request: 2, .. } => {}
+        other => panic!("expected fresh request id 2, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn boot_rejects_unknown_snapshot_versions() {
+    let dir = std::env::temp_dir().join(format!("archon-snapver-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let log = dir.join("cluster.jsonl");
+
+    let mut plane =
+        ControlPlane::boot(archon_control::server::AgentLink::None, log.clone(), 10_000)
+            .expect("boot");
+    plane.handle(submit_request());
+    plane.compact().expect("compact");
+    drop(plane);
+
+    let snapshot = log.with_added_extension("snapshot");
+    let content = std::fs::read_to_string(&snapshot).expect("read snapshot");
+    assert!(content.contains("\"version\":1"));
+    std::fs::write(
+        &snapshot,
+        content.replacen("\"version\":1", "\"version\":2", 1),
+    )
+    .expect("corrupt version");
+    let err = match ControlPlane::boot(archon_control::server::AgentLink::None, log.clone(), 10_000)
+    {
+        Ok(_) => panic!("unknown snapshot version must fail boot"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("unsupported snapshot version"),
+        "unexpected error: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A test agent that answers everything except Logs, which it sits on.
+/// Proves a slow agent cannot stall the rest of the control plane.
+struct MuteLogsExecutor {
+    inner: EnforcingTestExecutor,
+}
+
+impl AgentClient for MuteLogsExecutor {
+    fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
+        if matches!(request, AgentRequest::Logs { .. }) {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+        self.inner.call(request)
+    }
+}
+
+fn spawn_mute_agent() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mute agent");
+    let addr = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        let Ok((stream, _)) = listener.accept() else {
+            return;
+        };
+        let Ok(mut stream) = archon_node::transport::establish_responder(stream, None) else {
+            return;
+        };
+        let _ = read_greeting(&mut stream);
+        let mut executor = MuteLogsExecutor {
+            inner: EnforcingTestExecutor::default(),
+        };
+        while let Ok(request) = read_request(&mut stream) {
+            let response = executor
+                .call(request)
+                .unwrap_or_else(|reason| AgentResponse::Failed { binding: 0, reason });
+            if write_response(&mut stream, &response).is_err() {
+                break;
+            }
+        }
+    });
+    addr
+}
+
+fn connect_client(addr: &str) -> archon_node::transport::SecureStream {
+    let stream = TcpStream::connect(addr).expect("connect");
+    let mut stream = archon_node::transport::establish_initiator(stream, None).unwrap();
+    write_frame(&mut stream, &archon_control::api::Greeting::Client).unwrap();
+    stream
+}
+
+#[test]
+fn slow_agent_logs_do_not_stall_the_control_plane() {
+    use std::sync::{Arc, Mutex};
+
+    let dir = std::env::temp_dir().join(format!("archon-mute-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let log = dir.join("cluster.jsonl");
+
+    let agent_addr = spawn_mute_agent();
+    let link = archon_control::server::AgentLink::Remote {
+        addr: agent_addr,
+        token: None,
+    };
+    let plane = Arc::new(Mutex::new(
+        ControlPlane::boot(link, log.clone(), 0).expect("boot"),
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap().to_string();
+    {
+        let plane = plane.clone();
+        std::thread::spawn(move || ControlPlane::serve(&plane, listener));
+    }
+
+    // Admit one lease onto the mute agent so Logs has a live target.
+    let mut submitter = connect_client(&addr);
+    write_frame(&mut submitter, &submit_request()).unwrap();
+    let lease = match read_response(&mut submitter).unwrap() {
+        ServerResponse::Submitted { lease, .. } => lease,
+        other => panic!("expected submit, got {other:?}"),
+    };
+    assert_ne!(lease, 0, "mute agent must admit the lease");
+
+    // This Logs call blocks up to the 10s agent timeout on its own thread.
+    let mut stuck = connect_client(&addr);
+    write_frame(&mut stuck, &ClientRequest::Logs { lease }).unwrap();
+
+    // Meanwhile status must answer promptly: the plane lock is not held
+    // while waiting for the agent.
+    let mut probing = connect_client(&addr);
+    let start = Instant::now();
+    write_frame(&mut probing, &ClientRequest::Status).unwrap();
+    match read_response(&mut probing).unwrap() {
+        ServerResponse::Status { .. } => {}
+        other => panic!("expected status, got {other:?}"),
+    }
+    assert!(
+        start.elapsed() < Duration::from_secs(8),
+        "status must not wait for the stuck logs call"
+    );
+
+    // The stuck call itself still resolves as a timeout error.
+    match read_response(&mut stuck).unwrap() {
+        ServerResponse::Error { reason } => assert!(reason.contains("timed out"), "{reason}"),
+        other => panic!("expected timeout error, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

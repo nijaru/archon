@@ -110,6 +110,9 @@ impl ControlPlane {
         if restored {
             let envelope: SnapshotEnvelope =
                 serde_json::from_reader(std::fs::File::open(&snapshot_path)?)?;
+            if envelope.version != 1 {
+                return Err(format!("unsupported snapshot version {}", envelope.version).into());
+            }
             service.restore(envelope.cluster, envelope.state);
         }
 
@@ -167,13 +170,18 @@ impl ControlPlane {
             }
         }
 
+        // Request ids must clear every id the restored state already
+        // holds (leases, queue, and service-group members), not just the
+        // leased ones: reusing a live queued id would admit one request
+        // twice under two leases.
         let next_request = service
             .cluster
             .leases
             .keys()
             .map(|id| id.as_u64() + 1)
             .max()
-            .unwrap_or(1);
+            .unwrap_or(1)
+            .max(service.next_request_id());
         eprintln!(
             "archon: {}boot, replayed {replayed} commands, {live} live leases await agent reconciliation",
             if restored {
@@ -248,10 +256,25 @@ impl ControlPlane {
             let _ = dir.sync_all();
         }
         std::fs::write(&self.log_path, b"")?;
+        self.service.clear_history();
         self.commands_since_compaction
             .store(0, std::sync::atomic::Ordering::Relaxed);
         eprintln!("archon: compacted command log into snapshot");
         Ok(())
+    }
+
+    /// Young deployments have no snapshot yet: persist desired state on
+    /// the first mutation so any later restart recovers the queue and
+    /// service groups from the snapshot instead of only the kernel log.
+    /// Submits are infrequent, so the synchronous write costs nothing;
+    /// a failure degrades to today's behavior and never fails the submit.
+    fn ensure_snapshot(&mut self) {
+        if self.compact_every > 0
+            && !Self::snapshot_path(&self.log_path).exists()
+            && let Err(err) = self.compact()
+        {
+            eprintln!("archon: initial snapshot failed: {err}");
+        }
     }
 
     /// Require token-authenticated links: connections complete a Noise
@@ -373,7 +396,7 @@ impl ControlPlane {
         // Every link runs a Noise XXpsk3 handshake first: the shared token
         // is the PSK, proven on both sides without ever crossing the wire.
         // A wrong token fails the handshake before any frame is read.
-        let token = this.lock().unwrap().token.clone();
+        let token = Self::lock_plane(this).token.clone();
         let mut stream = match archon_node::transport::establish_responder(stream, token.as_deref())
         {
             Ok(stream) => stream,
@@ -422,24 +445,89 @@ impl ControlPlane {
                         }
                     };
                 if let Err(err) =
-                    this.lock()
-                        .unwrap()
-                        .register_dial_in(executor, description, capabilities)
+                    Self::lock_plane(this).register_dial_in(executor, description, capabilities)
                 {
                     eprintln!("archon: agent {peer} registration failed: {err}");
                 } else {
-                    eprintln!("archon: agent {peer} disconnected");
+                    eprintln!(
+                        "archon: agent {peer} registered; connection handed to the agent worker"
+                    );
                 }
             }
             crate::api::Greeting::Client => {
                 eprintln!("archon: client connected from {peer}");
                 while let Ok(request) = crate::api::read_request(&mut stream) {
-                    let response = this.lock().unwrap().tick_and_handle(request);
+                    // A Logs request waits on an agent round trip: resolve
+                    // it without holding the plane lock, so a slow or dead
+                    // agent cannot stall every other client, registration,
+                    // or the driver thread.
+                    let response = if let ClientRequest::Logs { lease } = request {
+                        Self::logs_without_lock(this, lease)
+                    } else {
+                        Self::lock_plane(this).tick_and_handle(request)
+                    };
                     if crate::api::write_response(&mut stream, &response).is_err() {
                         break;
                     }
                 }
                 eprintln!("archon: client {peer} disconnected");
+            }
+        }
+    }
+
+    /// Resolve one Logs request off-lock: grab the agent reply channel
+    /// under the lock, wait for the agent without it, and only re-lock
+    /// for the local-file fallback when no agent holds the lease.
+    fn logs_without_lock(
+        plane: &std::sync::Arc<std::sync::Mutex<Self>>,
+        lease: u64,
+    ) -> ServerResponse {
+        let receiver = Self::lock_plane(plane)
+            .service
+            .request_logs(LeaseId::from_u64(lease));
+        match receiver {
+            Some(receiver) => Self::logs_reply_to_response(
+                lease,
+                receiver.recv_timeout(std::time::Duration::from_secs(10)),
+            ),
+            None => Self::lock_plane(plane).handle(ClientRequest::Logs { lease }),
+        }
+    }
+
+    /// Map one agent Logs round trip onto the client response. Shared by
+    /// the off-lock path and the in-lock handler so the two cannot drift.
+    fn logs_reply_to_response(
+        lease: u64,
+        reply: Result<
+            Result<archon_node::protocol::AgentResponse, String>,
+            std::sync::mpsc::RecvTimeoutError,
+        >,
+    ) -> ServerResponse {
+        match reply {
+            Ok(Ok(archon_node::protocol::AgentResponse::Logs { output, .. })) => {
+                ServerResponse::Logs { lease, output }
+            }
+            Ok(Ok(other)) => ServerResponse::Error {
+                reason: format!("expected Logs, got {other:?}"),
+            },
+            Ok(Err(reason)) => ServerResponse::Error { reason },
+            Err(_) => ServerResponse::Error {
+                reason: "timed out waiting for agent logs".into(),
+            },
+        }
+    }
+
+    /// Lock the plane for connection handling. A poisoned mutex means a
+    /// previous holder panicked mid-mutation, so authority state may be
+    /// half-applied: fail-stop rather than serve from it.
+    fn lock_plane(
+        this: &std::sync::Arc<std::sync::Mutex<Self>>,
+    ) -> std::sync::MutexGuard<'_, Self> {
+        match this.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                eprintln!("archon: control-plane lock poisoned; fail-stop");
+                std::process::exit(1);
             }
         }
     }
@@ -544,22 +632,14 @@ impl ControlPlane {
             ClientRequest::Logs { lease } => {
                 // Resolve the agent call under the lock, then wait for the
                 // reply outside it so a slow agent cannot stall the plane.
+                // (The connection handler keeps the lock-free path in
+                // `logs_without_lock`; this arm covers direct callers.)
                 let reply = self.service.request_logs(LeaseId::from_u64(lease));
                 match reply {
-                    Some(receiver) => {
-                        match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
-                            Ok(Ok(archon_node::protocol::AgentResponse::Logs {
-                                output, ..
-                            })) => ServerResponse::Logs { lease, output },
-                            Ok(Ok(other)) => ServerResponse::Error {
-                                reason: format!("expected Logs, got {other:?}"),
-                            },
-                            Ok(Err(reason)) => ServerResponse::Error { reason },
-                            Err(_) => ServerResponse::Error {
-                                reason: "timed out waiting for agent logs".into(),
-                            },
-                        }
-                    }
+                    Some(receiver) => Self::logs_reply_to_response(
+                        lease,
+                        receiver.recv_timeout(std::time::Duration::from_secs(10)),
+                    ),
                     None => match self.service.lease_logs(LeaseId::from_u64(lease)) {
                         Ok(output) => ServerResponse::Logs { lease, output },
                         Err(err) => ServerResponse::Error {
@@ -611,6 +691,7 @@ impl ControlPlane {
         };
         request.keep_alive = keep_alive;
         self.service.submit(request, OwnerId::from_u64(owner));
+        self.ensure_snapshot();
         match self.service.admit_one() {
             Ok(Some(_)) => ServerResponse::Submitted {
                 request: id.as_u64(),
@@ -674,14 +755,21 @@ impl ControlPlane {
             image,
             storage: volumes
                 .iter()
-                .filter_map(|spec| spec.split_once(':'))
-                .map(
-                    |(host_path, mount_path)| archon_node::workload::StorageMount {
+                .map(|spec| {
+                    let (host_path, mount_path) = spec.split_once(':').ok_or_else(|| {
+                        "invalid volume spec (expected host_path:mount_path)".to_string()
+                    })?;
+                    if host_path.is_empty() || mount_path.is_empty() {
+                        return Err(
+                            "invalid volume spec (expected host_path:mount_path)".to_string()
+                        );
+                    }
+                    Ok(archon_node::workload::StorageMount {
                         host_path: host_path.into(),
                         mount_path: mount_path.into(),
-                    },
-                )
-                .collect(),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
             ports: ports
                 .iter()
                 .map(|spec| match spec.split_once(':') {
@@ -770,6 +858,7 @@ impl ControlPlane {
         {
             return ServerResponse::Error { reason };
         }
+        self.ensure_snapshot();
         for member in self.service.reconcile_service_groups() {
             match self.service.admit_one() {
                 Ok(Some(admitted)) if admitted != member => continue,
@@ -779,14 +868,10 @@ impl ControlPlane {
                 }
             }
         }
-        let machines = self
-            .service
-            .cluster
-            .graph
-            .nodes_of_class(archon_kernel::ResourceClass::Machine)
-            .len() as u32;
+        // Per-machine groups have no fixed target: report 0 (not a stale
+        // machine count) per the API contract.
         let desired = match cardinality {
-            archon_node::workload::Cardinality::PerMachine => machines,
+            archon_node::workload::Cardinality::PerMachine => 0,
             _ => desired,
         };
         ServerResponse::ServiceRegistered { id, desired }

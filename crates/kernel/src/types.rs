@@ -401,6 +401,8 @@ pub struct Request {
 
 /// A queued request carries the owner that submitted it and the submit time,
 /// so admission can enforce per-owner budgets and break deterministic ties.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Queued {
     pub request: Request,
     pub owner: crate::ids::OwnerId,

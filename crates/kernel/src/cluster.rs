@@ -85,6 +85,11 @@ pub struct Cluster {
     pub epoch: u64,
     pub now: u64,
     pub agreed: bool,
+    /// True while replaying history: wall-clock revalidation is skipped
+    /// because each replayed decision was already validated when it was
+    /// committed. Never serialized; fresh clusters start outside replay.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing))]
+    replaying: bool,
     pub graph: Graph,
     /// In-process history of applied commands. Recovery replays the
     /// durable JSONL log instead, so this never enters snapshots.
@@ -117,6 +122,7 @@ impl Default for Cluster {
             epoch: 1,
             now: 0,
             agreed: true,
+            replaying: false,
             graph: Graph::new(),
             log: Vec::new(),
             leases: BTreeMap::new(),
@@ -139,6 +145,13 @@ impl Cluster {
 
     pub fn set_agreement(&mut self, agreed: bool) {
         self.agreed = agreed;
+    }
+
+    /// Enter or leave history replay. While set, time-gated transitions
+    /// accept their committed outcomes without re-checking the wall clock,
+    /// which has moved on since the original decision.
+    pub fn set_replaying(&mut self, replaying: bool) {
+        self.replaying = replaying;
     }
 
     /// Returns the authoritative control state for a known node. Graph nodes
@@ -180,9 +193,14 @@ impl Cluster {
     /// those events.
     pub fn replay(commands: &[Command]) -> Result<Self, Error> {
         let mut cluster = Self::new();
+        cluster.set_replaying(true);
         for command in commands {
-            cluster.apply(command.clone())?;
+            if let Err(err) = cluster.apply(command.clone()) {
+                cluster.set_replaying(false);
+                return Err(err);
+            }
         }
+        cluster.set_replaying(false);
         Ok(cluster)
     }
 
@@ -646,7 +664,7 @@ impl Cluster {
                 return Err(Error::Quarantined(claim.node));
             }
         }
-        if self.now >= lease.expires_at {
+        if !self.replaying && self.now >= lease.expires_at {
             return Err(Error::LeaseExpired { lease: id });
         }
         let except = BTreeSet::from([id]);
@@ -806,11 +824,12 @@ impl Cluster {
             }
         }
         let now = self.now;
+        let replaying = self.replaying;
         let (expires_at, prepare_deadline) = (lease.expires_at, lease.prepare_deadline);
-        if now >= expires_at {
+        if !replaying && now >= expires_at {
             return Err(Error::LeaseExpired { lease: id });
         }
-        if now > prepare_deadline {
+        if !replaying && now > prepare_deadline {
             return Err(Error::PrepareDeadlinePassed { lease: id });
         }
         if let Some(parent_id) = parent {
@@ -972,7 +991,7 @@ impl Cluster {
         ) {
             return Err(Error::LeaseState { lease: id, state });
         }
-        if now < expires_at {
+        if !self.replaying && now < expires_at {
             return Err(Error::ExpireNotDue);
         }
         let mut effects = Vec::new();
@@ -1047,6 +1066,7 @@ impl Cluster {
             return Err(Error::NotAgreed);
         }
         let now = self.now;
+        let replaying = self.replaying;
         let lease = self.leases.get_mut(&id).ok_or(Error::UnknownLease(id))?;
         if !matches!(lease.state, LeaseState::Active | LeaseState::Reserved) {
             return Err(Error::LeaseState {
@@ -1054,7 +1074,11 @@ impl Cluster {
                 state: lease.state,
             });
         }
-        if new_expires_at <= lease.expires_at || new_expires_at <= now {
+        if new_expires_at == lease.expires_at {
+            // Retry of a committed renewal: already in effect.
+            return Ok(Vec::new());
+        }
+        if new_expires_at <= lease.expires_at || (!replaying && new_expires_at <= now) {
             return Err(Error::RenewNotLater);
         }
         lease.expires_at = new_expires_at;
