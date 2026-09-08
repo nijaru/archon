@@ -4,7 +4,10 @@
 //!   persistent command log, admission, the Cluster.
 //! - `archon agent --listen ADDR [--cgroup-root PATH]` — node agent: execute
 //!   leases as real processes on this machine.
-//! - `archon demo [--remote ADDR]` — walking-skeleton demo.
+//! - `archon demo [--remote ADDR]` — walking-skeleton demo. Needs a
+//!   CPU-enforcement-capable machine (Linux with a delegated cgroup v2
+//!   subtree via `ARCHON_CGROUP_ROOT`); otherwise it refuses loudly rather
+//!   than run the lease unenforced.
 //! - `archon -c ADDR submit|status|revoke` — client.
 
 use std::net::{TcpListener, TcpStream};
@@ -432,6 +435,16 @@ fn demo(remote: Option<String>) {
     service.submit(request, archon_kernel::OwnerId::from_u64(1));
     service.tick().expect("tick");
     let admitted = service.admit_one().expect("admit");
+    if admitted.is_none() {
+        // Lease authority requires proven enforcement: a machine whose
+        // runtime only reports lifecycle execution can never hold a CPU
+        // lease. Refuse loudly instead of running the lease unenforced.
+        fail(
+            "no machine with CPU enforcement capability admitted request 1; on Linux, \
+             delegate a cgroup v2 subtree and set ARCHON_CGROUP_ROOT (or pass --cgroup-root \
+             to serve/agent); refusing to run the lease unenforced",
+        );
+    }
     assert_eq!(admitted, Some(archon_kernel::RequestId::from_u64(1)));
     let lease = archon_kernel::LeaseId::from_u64(1);
     assert!(
