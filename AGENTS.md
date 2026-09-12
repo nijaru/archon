@@ -45,7 +45,8 @@ Maintainer-only; requires the private context checkout.
 | Fencing/recovery authority | centralized `design/lease-fencing.md` |
 | Scope/complexity/performance expansion | centralized `design/scope-simplicity-performance.md` |
 | Linux/datacenter/coexistence/handoff | centralized `design/deployment-and-adoption.md` |
-| Generic adaptive workload-runtime resource planning / resizing / safe transitions | centralized `design/adaptive-runtime-resource-contract.md` |
+| Generic adaptive workload-runtime resource planning | centralized `design/adaptive-runtime-resource-contract.md` |
+| Transactional resource reconfiguration | centralized `design/resource-transition-protocol.md` |
 | Inference runtime / Engine specialization | centralized `design/inference-runtime-boundary.md` |
 | Device/provider enforcement | centralized `design/device-enforcement.md` |
 | License claims | centralized `design/LICENSE_BOUNDARY.md` |
@@ -54,16 +55,17 @@ Do not load `archive/` during ordinary work.
 
 ## Current implementation order
 
-Maintainer sequencing (private `PLAN.md`). Current sequence:
+Maintainer sequencing lives in the private `PLAN.md`. The current phase is
+bounded thesis validation rather than breadth-first productionization:
 
-1. production-safe controller/agent restart reconciliation;
-2. real accelerator discovery/attachment/workload proof;
-3. mixed long-running + batch + distributed + accelerator workload proof;
-4. scale/overhead/utilization baselines;
-5. optimize only measured limits;
-6. stabilize schemas, deployment identity/security, install/diagnostics, then pilot.
+1. clean only architecture debt required by the active proof;
+2. prove source→target resource transitions with deterministic failure injection;
+3. build the mixed heterogeneous thesis benchmark against static/restart baselines;
+4. pressure-test the same resource contract with a synthetic runtime, then real Engine/other runtime consumers when available;
+5. make a go/no-go decision before HA, broad integrations, or enterprise/platform breadth;
+6. resume production hardening and pilots only if the thesis is supported by measured evidence.
 
-Engine is the primary adjacent project now. Do not interrupt Engine work to implement speculative Archon integration; update Archon implementation only when its own roadmap or a real Engine/Training/runtime consumer demonstrates the need.
+Engine is the primary adjacent project now. Do not interrupt Engine work to implement speculative Archon integration; update Archon implementation only when the active Archon proof plan or a real Engine/Training/runtime consumer demonstrates the need.
 
 ## Architecture guardrails
 
