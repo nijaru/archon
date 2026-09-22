@@ -83,7 +83,6 @@ pub struct ControlPlane {
     /// Compact after this many journal records (0 = never).
     compact_every: u64,
     compacted_sequence: u64,
-    next_request: u64,
     /// When set, every connection must present this token in its Greeting.
     token: Option<String>,
 }
@@ -131,6 +130,22 @@ impl ControlPlane {
                     }
                     if sequence != 0 {
                         return Err("legacy command after sequenced controller state".into());
+                    }
+                    if restored
+                        && matches!(
+                            &command,
+                            archon_kernel::Command::OpenLease { .. }
+                                | archon_kernel::Command::ReserveLease { .. }
+                        )
+                    {
+                        // A v1 snapshot may still contain this admission's queued
+                        // payload or a group without its new member. Kernel-only
+                        // records cannot prove which request became this lease.
+                        return Err(
+                            "cannot recover legacy workload lineage: lease admission after \
+                             a version-1 snapshot requires operator reconciliation"
+                                .into(),
+                        );
                     }
                     service.replay([command])?;
                 }
@@ -202,18 +217,6 @@ impl ControlPlane {
             }
         }
 
-        // Request ids must clear every id the restored state already
-        // holds (leases, queue, and service-group members), not just the
-        // leased ones: reusing a live queued id would admit one request
-        // twice under two leases.
-        let next_request = service
-            .cluster
-            .leases
-            .keys()
-            .map(|id| id.as_u64() + 1)
-            .max()
-            .unwrap_or(1)
-            .max(service.next_request_id());
         eprintln!(
             "archon: {}boot, replayed {replayed} commands, {live} live leases await agent reconciliation",
             if restored {
@@ -231,7 +234,6 @@ impl ControlPlane {
             journal_sequence: self_counter,
             compact_every,
             compacted_sequence,
-            next_request,
         })
     }
 
@@ -705,8 +707,9 @@ impl ControlPlane {
                 reason: "empty command".into(),
             };
         }
-        let id = RequestId::from_u64(self.next_request);
-        self.next_request += 1;
+        // Submission and group/restart reconciliation share the service's
+        // id allocator. Successful submit advances its durable high-water mark.
+        let id = RequestId::from_u64(self.service.next_request_id());
         let mut request = match self.compile_workload(
             id,
             WorkloadWire {

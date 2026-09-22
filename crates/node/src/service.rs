@@ -1094,6 +1094,10 @@ impl NodeService {
                 | Command::PromoteLease { lease, .. }
                 | Command::OpenLease { lease, .. } => {
                     self.next_lease = self.next_lease.max(lease.as_u64() + 1);
+                    // Legacy command-only logs have no workload id metadata.
+                    // Preserve their previous best-effort request-id floor;
+                    // controller journal replay restores the exact state afterward.
+                    self.next_request_id = self.next_request_id.max(lease.as_u64() + 1);
                 }
                 _ => {}
             }

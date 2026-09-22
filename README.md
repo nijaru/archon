@@ -54,16 +54,18 @@ reconciliation, not blind re-execution.
 `--compact-every N` bounds the journal between snapshots; `0` disables compaction,
 not durability. Keep the log and its adjacent `.snapshot` file together.
 Snapshot replay cursors make an interrupted log truncation safe, and recovery
-truncates an incomplete final journal record before appending again. Corruption
-in a complete record fails boot.
+truncates an incomplete final journal record before appending again. Malformed
+complete records and gaps in journal sequence numbers fail boot.
 
 This single-controller R&D format copies full controller metadata per journal
 record and is intended for small workloads, not high submission rates or
 unbounded retained history. Older kernel-only logs and version-1 snapshots can
 be read, but cannot recover desired state that the old controller never wrote
-or resolve an old version-1 compaction overlap. New snapshots use version 2;
-older binaries cannot read them. Use one controller per log; concurrent writers
-are unsupported.
+or resolve an old version-1 compaction overlap. A legacy lease admission after a
+version-1 snapshot is refused because its workload lineage cannot be proven;
+preserve those files for operator reconciliation rather than discarding the log.
+New snapshots use version 2; older binaries cannot read them. Use one controller
+per log; concurrent writers are unsupported.
 
 ## Status
 

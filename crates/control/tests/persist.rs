@@ -590,10 +590,16 @@ fn service_updates_and_members_are_journaled_without_compaction() {
         target: 4,
     });
     assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 4);
+    // Group reconciliation and direct submissions share the same request-id owner,
+    // including before any reboot has reconstructed high-water marks.
+    assert!(matches!(
+        plane.handle(submit_request()),
+        ServerResponse::Submitted { request: 5, .. }
+    ));
     drop(plane);
     let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
     plane.maintain();
-    assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 4);
+    assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 5);
     let records = archon_control::log::CommandLog::read_records(&path).unwrap();
     let archon_control::log::LogRecord::Controller(last) = records.last().unwrap() else {
         panic!()
@@ -610,7 +616,7 @@ fn service_updates_and_members_are_journaled_without_compaction() {
     ));
     assert!(matches!(
         plane.handle(submit_request()),
-        ServerResponse::Submitted { request: 5, .. }
+        ServerResponse::Submitted { request: 6, .. }
     ));
     let _ = std::fs::remove_file(path);
 }
@@ -697,6 +703,71 @@ fn controller_journal_discards_incomplete_tail_before_next_append() {
         drop(plane);
         let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
         assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 2);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn legacy_snapshot_requires_provable_post_snapshot_workload_lineage() {
+    #[derive(serde::Serialize)]
+    struct LegacySnapshot {
+        version: u32,
+        cluster: archon_kernel::Cluster,
+        state: archon_node::service::ServiceState,
+    }
+
+    for admit_after_snapshot in [false, true] {
+        let path = temp_log(&format!("legacy-admission-{admit_after_snapshot}"));
+        let snapshot = path.with_added_extension("snapshot");
+        let mut service = logged_service(&path);
+        service.submit(
+            archon_node::workload::WorkloadSpec::resource_only(Request {
+                id: RequestId::from_u64(1),
+                class: RequestClass::Batch,
+                needs: vec![Need {
+                    kind: ResourceClass::Cpu,
+                    quantity: qty(CapacityDimension::Count, 1),
+                    filters: vec![],
+                }],
+                topology: vec![],
+                preferences: vec![],
+                data: vec![],
+                lifetime: 3600,
+                priority: 1,
+                machine_local: true,
+            }),
+            OwnerId::from_u64(1),
+        );
+        // Old ensure_snapshot() captured the queued intent, before admission.
+        std::fs::write(
+            &snapshot,
+            serde_json::to_vec(&LegacySnapshot {
+                version: 1,
+                cluster: service.cluster.clone(),
+                state: service.state_snapshot(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(&path, b"").unwrap();
+        if admit_after_snapshot {
+            assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+        }
+        drop(service);
+
+        let recovered =
+            ControlPlane::boot(archon_control::server::AgentLink::None, path.clone(), 0);
+        if admit_after_snapshot {
+            let error = match recovered {
+                Err(error) => error,
+                Ok(_) => panic!("legacy replay must not retain an already-admitted queued copy"),
+            };
+            assert!(error.to_string().contains("legacy workload lineage"));
+        } else {
+            let mut recovered = recovered.expect("unambiguous legacy snapshot remains readable");
+            assert_eq!(queue_len_of(recovered.handle(ClientRequest::Status)), 1);
+        }
+        let _ = std::fs::remove_file(snapshot);
         let _ = std::fs::remove_file(path);
     }
 }
