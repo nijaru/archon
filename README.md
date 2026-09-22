@@ -42,6 +42,29 @@ one the request waits in the queue, visible via `status`.
 
 All client↔controller and controller↔agent links use encrypted Noise transport. Configure the same shared secret with `--token-file` or `ARCHON_TOKEN` for PSK authentication; without a token the current development mode is encrypted but unauthenticated.
 
+## Controller persistence
+
+The `--log` journal synchronously persists accepted submissions, service
+registration/updates and scale targets, queued payloads, and admitted workload
+lineage before acknowledging them or dispatching their execution effects.
+A journal write failure terminates the controller rather than accepting volatile
+work. Restart restores desired state; live leases still require agent
+reconciliation, not blind re-execution.
+
+`--compact-every N` bounds the journal between snapshots; `0` disables compaction,
+not durability. Keep the log and its adjacent `.snapshot` file together.
+Snapshot replay cursors make an interrupted log truncation safe, and recovery
+truncates an incomplete final journal record before appending again. Corruption
+in a complete record fails boot.
+
+This single-controller R&D format copies full controller metadata per journal
+record and is intended for small workloads, not high submission rates or
+unbounded retained history. Older kernel-only logs and version-1 snapshots can
+be read, but cannot recover desired state that the old controller never wrote
+or resolve an old version-1 compaction overlap. New snapshots use version 2;
+older binaries cannot read them. Use one controller per log; concurrent writers
+are unsupported.
+
 ## Status
 
 What works today: exclusive leases over a resource graph, controller/agent restart reconciliation with fencing, native process and OCI container execution, service groups with fixed/elastic/per-machine cardinality, accelerator device claims, a persistent control-plane command log, and a deterministic simulator with fault-injection proof tests.

@@ -17,6 +17,7 @@ use archon_kernel::{
 };
 
 type CommandSink = Box<dyn FnMut(&Command) + Send>;
+pub type DurableSink = Box<dyn FnMut(Option<&Command>, &ServiceState) + Send>;
 
 use crate::agent::LeaseAgent;
 use crate::dispatch::{
@@ -236,9 +237,9 @@ pub struct NodeService {
     /// Material restart-recovery decisions waiting for an observer. This is
     /// controller-local telemetry and is intentionally absent from ServiceState.
     recovery_events: Vec<RecoveryEvent>,
-    /// Observes every command applied to the cluster; the control plane
-    /// persists them here.
+    /// Kernel-only command observer used by replay tests and embedders.
     command_sink: Option<CommandSink>,
+    durable_sink: Option<DurableSink>,
     /// Every applied command since construction; tests and debugging use
     /// this, the durable log remains the control plane's.
     history: Vec<Command>,
@@ -1030,6 +1031,7 @@ impl NodeService {
             recovering_members: BTreeSet::new(),
             recovery_events: Vec::new(),
             command_sink: None,
+            durable_sink: None,
             history: Vec::new(),
         }
     }
@@ -1044,11 +1046,27 @@ impl NodeService {
         self.session_floor
     }
 
-    /// Persist every command applied to the cluster (kernel commands and
-    /// agent records alike). Detach while replaying a log: replayed
-    /// commands are already persisted.
+    /// Observe every applied kernel command, including agent records. This
+    /// does not capture workload intent; controllers use `set_durable_sink`.
+    /// Detach while replaying already persisted commands.
     pub fn set_command_sink(&mut self, sink: Option<CommandSink>) {
         self.command_sink = sink;
+    }
+
+    /// Persist matching kernel/controller boundaries before effects or acceptance.
+    /// A sink failure must not return: the controller cannot continue with
+    /// volatile authority. The server sink terminates on I/O failure.
+    pub fn set_durable_sink(&mut self, sink: Option<DurableSink>) {
+        self.durable_sink = sink;
+    }
+
+    fn persist(&mut self, command: Option<&Command>) {
+        if self.durable_sink.is_some() {
+            let state = self.state_snapshot();
+            if let Some(sink) = &mut self.durable_sink {
+                sink(command, &state);
+            }
+        }
     }
 
     /// Rebuild cluster state from a persisted command log without delivering
@@ -1104,7 +1122,11 @@ impl NodeService {
     /// Submit workload intent. Only the nested resource Request enters the
     /// scheduler; execution and desired-state policy stay controller-local.
     pub fn submit(&mut self, workload: impl Into<WorkloadSpec>, owner: OwnerId) {
-        let workload = workload.into();
+        self.enqueue(workload.into(), owner);
+        self.persist(None);
+    }
+
+    fn enqueue(&mut self, workload: WorkloadSpec, owner: OwnerId) {
         let request = workload.resources.clone();
         self.next_request_id = self.next_request_id.max(request.id.as_u64() + 1);
         self.queued_workloads.insert(request.id, workload);
@@ -1232,7 +1254,14 @@ impl NodeService {
             .unwrap_or_else(|| WorkloadSpec::resource_only(admission.request.clone()));
         self.requests.insert(lease, (workload, admission.owner));
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
-        self.commit(Command::OpenLease {
+        // The OpenLease record must carry the post-admission queue and payload.
+        let queue_index = self
+            .queue
+            .iter()
+            .position(|entry| entry.request.id == request_id)
+            .expect("admission came from queue");
+        let queued = self.queue.remove(queue_index);
+        if let Err(err) = self.commit(Command::OpenLease {
             lease,
             owner: admission.owner,
             allocation: admission.allocation,
@@ -1240,8 +1269,15 @@ impl NodeService {
             expires_at,
             prepare_deadline: self.cluster.now.saturating_add(20),
             priority: admission.request.priority,
-        })?;
-        self.dequeue(&request_id);
+        }) {
+            self.queue.insert(queue_index, queued);
+            let (workload, _) = self
+                .requests
+                .remove(&lease)
+                .expect("admission payload inserted");
+            self.queued_workloads.insert(request_id, workload);
+            return Err(err);
+        }
         self.open_enforced_bindings(lease)?;
         self.pump()?;
         // Activation waits for every binding's Prepare ack; a lease without
@@ -1431,6 +1467,7 @@ impl NodeService {
     ) -> Result<(), String> {
         group.cardinality.validate()?;
         self.service_groups.insert(group.id.clone(), group);
+        self.persist(None);
         Ok(())
     }
 
@@ -1455,6 +1492,7 @@ impl NodeService {
             ));
         }
         group.cardinality = crate::workload::Cardinality::Elastic { min, target, max };
+        self.persist(None);
         Ok(target)
     }
 
@@ -1470,6 +1508,7 @@ impl NodeService {
                 self.member_pins.remove(&member);
             }
         }
+        self.persist(None);
     }
 
     /// Desired groups registered with the controller.
@@ -1616,7 +1655,7 @@ impl NodeService {
                                     .entry(group.id.clone())
                                     .or_default()
                                     .insert(member_id);
-                                self.submit(member, group.owner);
+                                self.enqueue(member, group.owner);
                                 submitted.push(member_id);
                             }
                             self.group_last_restart.insert(group.id.clone(), now);
@@ -1709,13 +1748,14 @@ impl NodeService {
                     .entry(group.id.clone())
                     .or_default()
                     .insert(member_id);
-                self.submit(member, group.owner);
+                self.enqueue(member, group.owner);
                 submitted.push(member_id);
             }
             if allowed_replacement > 0 {
                 self.group_last_restart.insert(group.id.clone(), now);
             }
         }
+        self.persist(None);
         submitted
     }
 
@@ -1765,6 +1805,20 @@ impl NodeService {
                         .get(&lease.id)
                         .is_some_and(|(workload, _)| workload.resources.id == request)
             })
+    }
+
+    /// Atomically retain all restart payloads with their updated lineage.
+    pub fn queue_restarts(&mut self) -> Vec<RequestId> {
+        let restarts = self.take_restarts();
+        let ids = restarts
+            .iter()
+            .map(|(workload, _)| workload.resources.id)
+            .collect();
+        for (workload, owner) in restarts {
+            self.enqueue(workload, owner);
+        }
+        self.persist(None);
+        ids
     }
 
     pub fn take_restarts(&mut self) -> Vec<(WorkloadSpec, OwnerId)> {
@@ -2039,10 +2093,6 @@ impl NodeService {
         }
     }
 
-    fn dequeue(&mut self, request_id: &RequestId) {
-        self.queue.retain(|queued| queued.request.id != *request_id);
-    }
-
     fn validate_allocation_bindings(&self, allocation: &Allocation) -> Result<(), Error> {
         for claim in &allocation.claims {
             let node = self
@@ -2110,6 +2160,7 @@ impl NodeService {
         if let Some(sink) = &mut self.command_sink {
             sink(&command);
         }
+        self.persist(Some(&command));
         self.pending.extend(effects);
         Ok(())
     }

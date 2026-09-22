@@ -490,7 +490,7 @@ fn snapshot_preserves_queued_work_across_restarts() {
     std::fs::create_dir_all(&dir).expect("mkdir");
     let log = dir.join("cluster.jsonl");
 
-    // No agent: the submit stays queued. The first mutation snapshots.
+    // No agent: the submit stays queued. Compaction is not needed for durability.
     let mut plane =
         ControlPlane::boot(archon_control::server::AgentLink::None, log.clone(), 10_000)
             .expect("boot");
@@ -501,6 +501,7 @@ fn snapshot_preserves_queued_work_across_restarts() {
         } => {}
         other => panic!("expected queued submit, got {other:?}"),
     }
+    plane.compact().expect("compact");
     assert!(log.with_added_extension("snapshot").exists());
 
     drop(plane);
@@ -521,6 +522,255 @@ fn snapshot_preserves_queued_work_across_restarts() {
 }
 
 #[test]
+fn journal_preserves_multiple_submits_and_compaction_overlap() {
+    use archon_control::server::AgentLink;
+    for threshold in [0, 1, 10_000] {
+        let path = temp_log(&format!("journal-{threshold}"));
+        let snapshot = path.with_added_extension("snapshot");
+        let _ = std::fs::remove_file(&snapshot);
+        let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), threshold).unwrap();
+        for id in 1..=4 {
+            assert!(matches!(plane.handle(submit_request()),
+                ServerResponse::Submitted { request, lease: 0 } if request == id));
+            if id == 1 {
+                plane.compact().unwrap();
+            }
+        }
+        // Snapshot rename succeeded, but a crash prevented log truncation.
+        let old_log = std::fs::read(&path).unwrap();
+        plane.compact().unwrap();
+        std::fs::write(&path, old_log).unwrap();
+        drop(plane);
+        let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), threshold).unwrap();
+        assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 4);
+        assert!(matches!(
+            plane.handle(submit_request()),
+            ServerResponse::Submitted {
+                request: 5,
+                lease: 0
+            }
+        ));
+        plane.maintain();
+        drop(plane);
+        let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), threshold).unwrap();
+        assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 5);
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(snapshot);
+    }
+}
+
+#[test]
+fn service_updates_and_members_are_journaled_without_compaction() {
+    use archon_control::server::AgentLink;
+    let path = temp_log("journal-services");
+    let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+    for desired in [1, 2] {
+        assert!(matches!(
+            plane.handle(ClientRequest::SubmitService {
+                id: "workers".into(),
+                owner: 1,
+                desired,
+                min: Some(1),
+                max: Some(5),
+                per_machine: false,
+                cpus: 1,
+                memory_mib: 0,
+                lifetime_secs: 3600,
+                command: vec!["sleep".into(), desired.to_string()],
+                volumes: vec![],
+                ports: vec![],
+                grace_secs: 0,
+                image: None,
+            }),
+            ServerResponse::ServiceRegistered { .. }
+        ));
+    }
+    plane.handle(ClientRequest::ScaleService {
+        id: "workers".into(),
+        target: 4,
+    });
+    assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 4);
+    drop(plane);
+    let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+    plane.maintain();
+    assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 4);
+    let records = archon_control::log::CommandLog::read_records(&path).unwrap();
+    let archon_control::log::LogRecord::Controller(last) = records.last().unwrap() else {
+        panic!()
+    };
+    let state = &last.state;
+    assert_eq!(state.group_members["workers"].len(), 4);
+    assert_eq!(
+        state.service_groups["workers"].template.execution.command,
+        vec!["sleep", "2"]
+    );
+    assert!(matches!(
+        state.service_groups["workers"].cardinality,
+        archon_node::workload::Cardinality::Elastic { target: 4, .. }
+    ));
+    assert!(matches!(
+        plane.handle(submit_request()),
+        ServerResponse::Submitted { request: 5, .. }
+    ));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn admitted_journal_boundary_has_payload_but_no_queued_copy() {
+    use std::sync::{Arc, Mutex};
+    let states = Arc::new(Mutex::new(Vec::new()));
+    let captured = states.clone();
+    let path = temp_log("admitted-journal");
+    let mut log = archon_control::log::CommandLog::open(&path).unwrap();
+    let mut sequence = 0;
+    let mut service = NodeService::new();
+    service.set_durable_sink(Some(Box::new(move |command, state| {
+        sequence += 1;
+        log.append_record(&archon_control::log::JournalRecord {
+            sequence,
+            command: command.cloned(),
+            state: state.clone(),
+        })
+        .unwrap();
+        if matches!(command, Some(Command::OpenLease { .. })) {
+            captured.lock().unwrap().push(state.clone());
+        }
+    })));
+    register_test_agent(&mut service);
+    submit_sleep(&mut service, 42, 3600);
+    drop(service);
+    let mut recovered =
+        ControlPlane::boot(archon_control::server::AgentLink::None, path.clone(), 0).unwrap();
+    assert_eq!(queue_len_of(recovered.handle(ClientRequest::Status)), 0);
+    assert!(matches!(
+        recovered.handle(submit_request()),
+        ServerResponse::Submitted {
+            request: 43,
+            lease: 0
+        }
+    ));
+    let old_log = std::fs::read(&path).unwrap();
+    recovered.compact().unwrap();
+    std::fs::write(&path, old_log).unwrap();
+    drop(recovered);
+    let mut recovered =
+        ControlPlane::boot(archon_control::server::AgentLink::None, path.clone(), 0)
+            .expect("pre-snapshot OpenLease and graph commands must not replay twice");
+    assert_eq!(queue_len_of(recovered.handle(ClientRequest::Status)), 1);
+    let states = states.lock().unwrap();
+    let state = &states[0];
+    assert!(state.queue.is_empty());
+    assert!(state.queued_workloads.is_empty());
+    assert_eq!(
+        state.requests[&LeaseId::from_u64(1)].0.resources.id,
+        RequestId::from_u64(42)
+    );
+    assert_eq!(
+        state.requests[&LeaseId::from_u64(1)].0.execution.command,
+        vec!["sleep", "30"]
+    );
+    assert_eq!(state.next_request_id, 43);
+    let _ = std::fs::remove_file(path.with_added_extension("snapshot"));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn controller_journal_discards_incomplete_tail_before_next_append() {
+    use archon_control::server::AgentLink;
+    use std::io::Write;
+    for tail in [b"{\"sequence\":".as_slice(), b"{}", b"  "] {
+        let path = temp_log("controller-tail");
+        let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+        plane.handle(submit_request());
+        drop(plane);
+        let intact = std::fs::read(&path).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(tail)
+            .unwrap();
+        let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), intact);
+        assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 1);
+        plane.handle(submit_request());
+        drop(plane);
+        let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+        assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 2);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn restart_batch_persists_payloads_with_lineage_in_one_boundary() {
+    use std::sync::{Arc, Mutex};
+    let mut service = NodeService::new();
+    register_test_agent(&mut service);
+    submit_sleep(&mut service, 1, 3600);
+    submit_sleep(&mut service, 2, 3600);
+    let mut state = service.state_snapshot();
+    assert_eq!(state.requests.len(), 2);
+    for (workload, _) in state.requests.values_mut() {
+        workload.keep_alive = true;
+    }
+    service.restore_state(state);
+    // Isolate controller restart accounting from agent failure detection.
+    for lease in service.cluster.leases.values_mut() {
+        lease.state = LeaseState::Failed;
+    }
+    service.cluster.set_now(100);
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let captured = records.clone();
+    service.set_durable_sink(Some(Box::new(move |command, state| {
+        assert!(command.is_none());
+        captured.lock().unwrap().push(state.clone());
+    })));
+    let ids = service.queue_restarts();
+    assert_eq!(ids.len(), 2);
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    let state = &records[0];
+    assert_eq!(state.queue.len(), 2);
+    assert_eq!(state.queued_workloads.len(), 2);
+    assert_eq!(state.restart_handled.len(), 2);
+    for (id, root) in &state.restart_root {
+        assert!(ids.contains(id));
+        assert_eq!(state.restart_counts[root], 1);
+        assert_eq!(state.restart_last_at[root], 100);
+    }
+    let mut recovered = NodeService::new();
+    recovered.restore(service.cluster.clone(), state.clone());
+    assert!(recovered.queue_restarts().is_empty());
+    assert_eq!(recovered.queue_len(), 2);
+}
+
+#[test]
+fn failing_durable_sink_prevents_acceptance_and_admission_effects() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let mut service = NodeService::new();
+    register_test_agent(&mut service);
+    service.set_durable_sink(Some(Box::new(|_, _| {
+        panic!("injected persistence failure")
+    })));
+    let failed = catch_unwind(AssertUnwindSafe(|| submit_sleep(&mut service, 1, 3600)));
+    assert!(failed.is_err(), "submission cannot report success");
+    assert!(service.cluster.leases.is_empty());
+    // A real sink exits rather than unwinding. Here unwinding lets the test
+    // inspect the failed boundary without adding a production failpoint.
+    service.set_durable_sink(Some(Box::new(|command, _| {
+        if matches!(command, Some(Command::OpenLease { .. })) {
+            panic!("injected command persistence failure");
+        }
+    })));
+    let failed = catch_unwind(AssertUnwindSafe(|| service.admit_one()));
+    assert!(failed.is_err());
+    assert!(
+        service.cluster.bindings.is_empty(),
+        "no Prepare can be dispatched"
+    );
+}
+
+#[test]
 fn boot_rejects_unknown_snapshot_versions() {
     let dir = std::env::temp_dir().join(format!("archon-snapver-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -536,10 +786,10 @@ fn boot_rejects_unknown_snapshot_versions() {
 
     let snapshot = log.with_added_extension("snapshot");
     let content = std::fs::read_to_string(&snapshot).expect("read snapshot");
-    assert!(content.contains("\"version\":1"));
+    assert!(content.contains("\"version\":2"));
     std::fs::write(
         &snapshot,
-        content.replacen("\"version\":1", "\"version\":2", 1),
+        content.replacen("\"version\":2", "\"version\":999", 1),
     )
     .expect("corrupt version");
     let err = match ControlPlane::boot(archon_control::server::AgentLink::None, log.clone(), 10_000)

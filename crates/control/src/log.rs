@@ -1,11 +1,35 @@
-//! Append-only command log: one JSON-encoded [`Command`] per line.
-//! Replay applies commands in order; the kernel's determinism does the rest.
+//! Append-only controller journal: one fsynced JSON record per line.
+//! Commands and their matching desired state share a record; metadata-only
+//! records persist acceptance without introducing workload semantics in the kernel.
+//! Legacy command-only logs remain readable.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
 use archon_kernel::Command;
+
+pub(crate) fn sync_parent(path: &Path) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    File::open(parent)?.sync_all()
+}
+
+/// One atomic controller boundary. Metadata-only records accept desired state;
+/// command records pair it with the corresponding kernel transition.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct JournalRecord {
+    pub sequence: u64,
+    pub command: Option<Command>,
+    pub state: archon_node::service::ServiceState,
+}
+
+pub enum LogRecord {
+    Controller(Box<JournalRecord>),
+    Legacy(Command),
+}
 
 pub struct CommandLog {
     file: File,
@@ -14,11 +38,21 @@ pub struct CommandLog {
 impl CommandLog {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
+        file.sync_all()?;
+        sync_parent(path)?;
         Ok(Self { file })
     }
 
     pub fn append(&mut self, command: &Command) -> std::io::Result<()> {
-        let mut line = serde_json::to_vec(command).expect("serialize command");
+        self.append_value(command)
+    }
+
+    pub fn append_record(&mut self, record: &JournalRecord) -> std::io::Result<()> {
+        self.append_value(record)
+    }
+
+    fn append_value(&mut self, value: &impl serde::Serialize) -> std::io::Result<()> {
+        let mut line = serde_json::to_vec(value)?;
         line.push(b'\n');
         self.file.write_all(&line)?;
         self.file.flush()?;
@@ -33,6 +67,16 @@ impl CommandLog {
     /// its fsync never completed, so no response could have acknowledged
     /// it. Corruption anywhere else stays a hard error.
     pub fn read(path: &Path) -> std::io::Result<Vec<Command>> {
+        Ok(Self::read_records(path)?
+            .into_iter()
+            .filter_map(|record| match record {
+                LogRecord::Controller(record) => record.command,
+                LogRecord::Legacy(command) => Some(command),
+            })
+            .collect())
+    }
+
+    pub fn read_records(path: &Path) -> std::io::Result<Vec<LogRecord>> {
         if !path.exists() {
             return Ok(Vec::new());
         }
@@ -46,35 +90,30 @@ impl CommandLog {
                 .position(|byte| *byte == b'\n')
                 .map(|index| line_start + index);
             let Some(end) = newline else {
-                let tail = &bytes[line_start..];
-                if tail.iter().all(|byte| byte.is_ascii_whitespace()) {
-                    break;
+                // Newline is the record boundary, even if the JSON itself
+                // happens to be complete. Remove the tail before appending.
+                if line_start < bytes.len() {
+                    let file = OpenOptions::new().write(true).open(path)?;
+                    file.set_len(line_start as u64)?;
+                    file.sync_all()?;
                 }
-                match serde_json::from_slice::<Command>(tail) {
-                    Ok(command) => {
-                        // Complete final line that just lost its newline;
-                        // unobservable in practice since append writes it.
-                        commands.push(command);
-                        break;
-                    }
-                    Err(_) => {
-                        eprintln!(
-                            "archon: truncating torn log tail at line {line_no}; \
-                             its append never completed"
-                        );
-                        OpenOptions::new()
-                            .write(true)
-                            .open(path)?
-                            .set_len(line_start as u64)?;
-                        break;
-                    }
-                }
+                break;
             };
             let line = &bytes[line_start..end];
             if !line.iter().all(|byte| byte.is_ascii_whitespace()) {
-                commands.push(serde_json::from_slice(line).map_err(|err| {
-                    std::io::Error::other(format!("corrupt log entry {line_no}: {err}"))
-                })?);
+                // Deserialize directly: serde's untagged intermediate form
+                // cannot represent the kernel's u128 resource quantities.
+                let record =
+                    serde_json::from_slice::<JournalRecord>(line)
+                        .map(|record| LogRecord::Controller(Box::new(record)))
+                        .or_else(|journal_error| {
+                            serde_json::from_slice::<Command>(line)
+                            .map(LogRecord::Legacy)
+                            .map_err(|legacy_error| std::io::Error::other(format!(
+                                "corrupt log entry {line_no}: {journal_error}; {legacy_error}"
+                            )))
+                        })?;
+                commands.push(record);
             }
             line_start = end + 1;
             line_no += 1;

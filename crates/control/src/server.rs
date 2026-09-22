@@ -6,17 +6,17 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 
 use archon_kernel::{
-    CapacityDimension, Command, LeaseId, Need, OwnerId, Request, RequestClass, RequestId,
-    ResourceClass, qty,
+    CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
 use archon_node::service::NodeService;
 
-/// A parsed client submission.
 /// One versioned snapshot generation: the cluster's decisions plus the
 /// controller-side state that outlives restarts.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SnapshotEnvelope {
     version: u32,
+    #[serde(default)]
+    sequence: u64,
     cluster: archon_kernel::Cluster,
     state: archon_node::service::ServiceState,
 }
@@ -78,11 +78,11 @@ use crate::log::CommandLog;
 pub struct ControlPlane {
     service: NodeService,
     log_path: PathBuf,
-    /// Commands appended since the last compaction; shared with the sink
-    /// closure that persists them.
-    commands_since_compaction: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Compact when the log exceeds this many commands (0 = never).
+    /// Last durable journal sequence, shared with the synchronous sink.
+    journal_sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Compact after this many journal records (0 = never).
     compact_every: u64,
+    compacted_sequence: u64,
     next_request: u64,
     /// When set, every connection must present this token in its Greeting.
     token: Option<String>,
@@ -101,24 +101,59 @@ impl ControlPlane {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut service = NodeService::new();
 
-        // A snapshot restores everything at compaction time; the log then
-        // replays only what happened since. One envelope file holds both
-        // parts, published atomically, so a crash mid-compaction leaves
-        // either the old complete generation or the new one.
+        // The snapshot cursor skips records already included in the atomic
+        // envelope, including an old log left by a crash before truncation.
         let snapshot_path = Self::snapshot_path(&log_path);
         let restored = snapshot_path.exists();
+        let mut sequence = 0;
+        let mut sequenced_snapshot = false;
         if restored {
             let envelope: SnapshotEnvelope =
                 serde_json::from_reader(std::fs::File::open(&snapshot_path)?)?;
-            if envelope.version != 1 {
+            if envelope.version != 1 && envelope.version != 2 {
                 return Err(format!("unsupported snapshot version {}", envelope.version).into());
             }
+            sequenced_snapshot = envelope.version == 2;
+            sequence = envelope.sequence;
             service.restore(envelope.cluster, envelope.state);
         }
 
-        let self_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let commands = CommandLog::read(&log_path)?;
-        let first_boot = !restored && commands.is_empty();
+        let records = CommandLog::read_records(&log_path)?;
+        let first_boot = !restored && records.is_empty();
+        let replayed = records.len();
+        let compacted_sequence = sequence;
+        for record in records {
+            match record {
+                crate::log::LogRecord::Legacy(command) => {
+                    // Version 2 snapshots include the entire legacy prefix.
+                    if sequenced_snapshot {
+                        continue;
+                    }
+                    if sequence != 0 {
+                        return Err("legacy command after sequenced controller state".into());
+                    }
+                    service.replay([command])?;
+                }
+                crate::log::LogRecord::Controller(record) => {
+                    if record.sequence <= compacted_sequence {
+                        continue;
+                    }
+                    if record.sequence
+                        != sequence
+                            .checked_add(1)
+                            .ok_or("journal sequence exhausted")?
+                    {
+                        return Err("non-contiguous controller journal".into());
+                    }
+                    if let Some(command) = record.command {
+                        service.replay([command])?;
+                    }
+                    service.restore_state(record.state);
+                    sequence = record.sequence;
+                }
+            }
+        }
+        let self_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(sequence));
 
         // The link registers at most once per boot: a remote agent serves
         // one controller connection, so registering twice would deadlock
@@ -127,7 +162,7 @@ impl ControlPlane {
         if first_boot && !matches!(link, AgentLink::None) {
             // The graph of record enters the log on first boot so restarts
             // replay it instead of rediscovering.
-            service.set_command_sink(Some(Self::make_sink(&log_path, self_counter.clone())));
+            service.set_durable_sink(Some(Self::make_sink(&log_path, self_counter.clone())));
             match &link {
                 AgentLink::Local { cgroup_root } => {
                     service.register_local(cgroup_root.clone())?;
@@ -141,18 +176,15 @@ impl ControlPlane {
                 AgentLink::None => {}
             }
             registered = true;
-            service.set_command_sink(None);
+            service.set_durable_sink(None);
         }
-
-        let replayed = commands.len();
-        service.replay(commands)?;
 
         // Recovery policy: replay restores authoritative state, but ownership
         // of live work is not assumed. Each agent re-registers with a fresh
         // monotonic session; registration queries the machine's actual
         // endpoint state and adopts only provably-current bindings, fencing
         // or revoking everything else before its claims can be reused.
-        service.set_command_sink(Some(Self::make_sink(&log_path, self_counter.clone())));
+        service.set_durable_sink(Some(Self::make_sink(&log_path, self_counter.clone())));
         let live = service.live_lease_count();
 
         // Register this process's own execution path (local dev or the
@@ -196,8 +228,9 @@ impl ControlPlane {
             service,
             token: None,
             log_path,
-            commands_since_compaction: self_counter,
+            journal_sequence: self_counter,
             compact_every,
+            compacted_sequence,
             next_request,
         })
     }
@@ -211,7 +244,7 @@ impl ControlPlane {
     fn make_sink(
         log_path: &std::path::Path,
         counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    ) -> Box<dyn FnMut(&Command) + Send> {
+    ) -> archon_node::service::DurableSink {
         // One handle for the sink's lifetime: append-mode writes still land
         // at end-of-file after compaction truncates the file, so the
         // per-command flush keeps its crash-safety without reopening per
@@ -226,11 +259,26 @@ impl ControlPlane {
                 std::process::exit(2);
             }
         };
-        Box::new(move |command: &Command| {
-            if let Err(err) = log.append(command) {
+        let mut last_state = Vec::new();
+        Box::new(move |command, state| {
+            let encoded_state = serde_json::to_vec(state).expect("serialize controller state");
+            if command.is_none() && encoded_state == last_state {
+                return;
+            }
+            let sequence = counter
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .checked_add(1)
+                .expect("journal sequence exhausted");
+            let record = crate::log::JournalRecord {
+                sequence,
+                command: command.cloned(),
+                state: state.clone(),
+            };
+            if let Err(err) = log.append_record(&record) {
                 eprintln!("archon: cannot append command log: {err}");
                 std::process::exit(2);
             }
+            last_state = encoded_state;
             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })
     }
@@ -240,7 +288,10 @@ impl ControlPlane {
     /// only what came after it.
     pub fn compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let envelope = SnapshotEnvelope {
-            version: 1,
+            version: 2,
+            sequence: self
+                .journal_sequence
+                .load(std::sync::atomic::Ordering::Relaxed),
             cluster: self.service.cluster.clone(),
             state: self.service.state_snapshot(),
         };
@@ -250,31 +301,16 @@ impl ControlPlane {
         let file = std::fs::File::open(&tmp)?;
         file.sync_all()?;
         std::fs::rename(&tmp, &path)?;
-        if let Some(dir) = path.parent()
-            && let Ok(dir) = std::fs::File::open(dir)
-        {
-            let _ = dir.sync_all();
-        }
-        std::fs::write(&self.log_path, b"")?;
+        crate::log::sync_parent(&path)?;
+        let log = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.log_path)?;
+        log.set_len(0)?;
+        log.sync_all()?;
         self.service.clear_history();
-        self.commands_since_compaction
-            .store(0, std::sync::atomic::Ordering::Relaxed);
+        self.compacted_sequence = envelope.sequence;
         eprintln!("archon: compacted command log into snapshot");
         Ok(())
-    }
-
-    /// Young deployments have no snapshot yet: persist desired state on
-    /// the first mutation so any later restart recovers the queue and
-    /// service groups from the snapshot instead of only the kernel log.
-    /// Submits are infrequent, so the synchronous write costs nothing;
-    /// a failure degrades to today's behavior and never fails the submit.
-    fn ensure_snapshot(&mut self) {
-        if self.compact_every > 0
-            && !Self::snapshot_path(&self.log_path).exists()
-            && let Err(err) = self.compact()
-        {
-            eprintln!("archon: initial snapshot failed: {err}");
-        }
     }
 
     /// Require token-authenticated links: connections complete a Noise
@@ -315,9 +351,8 @@ impl ControlPlane {
             }
         }
         self.service.probe_agents();
-        for (request, owner) in self.service.take_restarts() {
-            eprintln!("archon: restarting keep-alive request {}", request.id);
-            self.service.submit(request, owner);
+        for request in self.service.queue_restarts() {
+            eprintln!("archon: restarting keep-alive request {request}");
             match self.service.admit_one() {
                 Ok(Some(id)) => eprintln!("archon: restarted as request {id}"),
                 Ok(None) => {} // queued until capacity returns
@@ -337,11 +372,11 @@ impl ControlPlane {
             }
             let _ = member;
         }
-        let since = self
-            .commands_since_compaction
+        let sequence = self
+            .journal_sequence
             .load(std::sync::atomic::Ordering::Relaxed);
         if self.compact_every > 0
-            && since >= self.compact_every
+            && sequence - self.compacted_sequence >= self.compact_every
             && let Err(err) = self.compact()
         {
             eprintln!("archon: compaction failed: {err}");
@@ -691,7 +726,6 @@ impl ControlPlane {
         };
         request.keep_alive = keep_alive;
         self.service.submit(request, OwnerId::from_u64(owner));
-        self.ensure_snapshot();
         match self.service.admit_one() {
             Ok(Some(_)) => ServerResponse::Submitted {
                 request: id.as_u64(),
@@ -868,7 +902,6 @@ impl ControlPlane {
         {
             return ServerResponse::Error { reason };
         }
-        self.ensure_snapshot();
         for member in self.service.reconcile_service_groups() {
             match self.service.admit_one() {
                 Ok(Some(admitted)) if admitted != member => continue,
