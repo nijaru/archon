@@ -53,19 +53,17 @@ Maintainer-only; requires the private context checkout.
 
 Do not load `archive/` during ordinary work.
 
-## Current implementation order
+## Current work gate
 
-Maintainer sequencing lives in the private `PLAN.md`. The current phase is
-bounded thesis validation rather than breadth-first productionization:
+Feature expansion and speculative integrations are parked. Preserve the existing
+resource-authority kernel; perform scoped maintenance when requested. Do not start
+sandbox hosting, resource-transition implementation, or broad productionization merely
+because a retained design describes it.
 
-1. clean only architecture debt required by the active proof;
-2. prove source→target resource transitions with deterministic failure injection;
-3. build the mixed heterogeneous thesis benchmark against static/restart baselines;
-4. pressure-test the same resource contract with a synthetic runtime, then real Engine/other runtime consumers when available;
-5. make a go/no-go decision before HA, broad integrations, or enterprise/platform breadth;
-6. resume production hardening and pilots only if the thesis is supported by measured evidence.
-
-Engine is the primary adjacent project now. Do not interrupt Engine work to implement speculative Archon integration; update Archon implementation only when the active Archon proof plan or a real Engine/Training/runtime consumer demonstrates the need.
+Resume expansion only after a concrete workload/operator need and an explicit decision
+to run a bounded comparison against existing systems. A hosted agent requirement alone
+does not justify a new cluster scheduler. Maintainer sequencing and reconsideration
+criteria remain in private `PLAN.md`; independent runtimes must not depend on Archon.
 
 ## Architecture guardrails
 
