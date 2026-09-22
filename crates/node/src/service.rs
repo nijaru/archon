@@ -122,15 +122,16 @@ pub enum RecoveryEvent {
         machine: NodeId,
     },
     /// A terminal lease's leftover member resolved after controller
-    /// restart: an exited member proved itself gone; a running one is
-    /// being stopped through the member-stop path before its held fence.
+    /// restart: a known exit proved it gone; a running or unknown member
+    /// requires the member-stop path before its held fence can proceed.
     TerminalMemberResolved {
         lease: LeaseId,
         machine: NodeId,
     },
-    /// An open endpoint generation the controller did not expect was
-    /// fenced from the agent's full binding enumeration: the binding was
-    /// unknown, its lease terminal, or its kernel record already closed.
+    /// Enumeration requested a fence: the binding was unknown, its lease
+    /// terminal, or its kernel record already closed. Even a closed endpoint
+    /// takes this path while execution-stop proof is outstanding; this event
+    /// records the decision, not acknowledgement of the fence.
     StrayFenced {
         machine: NodeId,
         node: NodeId,
@@ -212,12 +213,7 @@ pub struct NodeService {
     pending: VecDeque<Effect>,
     next_session: u64,
     next_binding: u64,
-    /// First session value this controller process may issue. Recorded
-    /// sessions below this floor belong to a previous controller process:
-    /// a machine returning with such a session reconciles against real
-    /// endpoint state instead of blindly re-driving work.
-    session_floor: u64,
-    /// Machines re-registered after a controller restart whose live
+    /// Machines re-registered after a controller or agent restart whose live
     /// Bindings are still being proven against actual endpoint state.
     /// Each entry lists the Active Leases awaiting their proof query.
     recovering_machines: BTreeMap<NodeId, BTreeSet<LeaseId>>,
@@ -500,14 +496,10 @@ impl NodeService {
         self.execution_capabilities.insert(machine, capabilities);
         self.agents
             .insert(machine, spawn_worker(executor, self.inbox.clone()));
-        // A recorded session older than this controller process means the
-        // machine is returning after a controller restart: its live work
-        // must be adopted-or-fenced from real endpoint state, never blindly
-        // re-executed. Mid-flight re-registrations (fresh agent process)
-        // keep the re-drive path: the new agent holds nothing to adopt.
-        let floor = self.session_floor();
-        let prior_session = self.cluster.sessions.get(&machine).copied();
-        let recovering = !new_machine && prior_session.is_some_and(|prior| prior < floor);
+        // A replacement agent can lose execution handles while workloads
+        // survive. Every previously registered machine must prove ownership
+        // or stop before reuse, regardless of which process restarted.
+        let recovering = !new_machine && self.cluster.sessions.contains_key(&machine);
         if recovering {
             self.recovering_machines.insert(machine, BTreeSet::new());
             // Ask the agent for its full provider picture before deciding
@@ -518,10 +510,9 @@ impl NodeService {
                 "archon: machine {machine} returned after restart; reconciling live bindings"
             );
         } else if !new_machine {
-            // A known machine came back mid-flight: clear any quarantine
-            // and health marks before reconciliation re-drives its live
-            // work. Recovery defers these marks until its bindings resolve,
-            // because quarantine cannot lift while open bindings exist.
+            // Known inventory without a prior agent session has no agent
+            // ownership to recover. Registered machines defer these marks
+            // until reconciliation resolves their bindings.
             self.commit(Command::UnquarantineNode { node: machine })
                 .ok();
             self.commit(Command::SetNodeHealth {
@@ -1024,7 +1015,6 @@ impl NodeService {
             pending: VecDeque::new(),
             next_session: 1,
             next_binding: 1,
-            session_floor: 0,
             recovering_machines: BTreeMap::new(),
             pending_enumerations: BTreeSet::new(),
             stray_fences: BTreeSet::new(),
@@ -1034,16 +1024,6 @@ impl NodeService {
             durable_sink: None,
             history: Vec::new(),
         }
-    }
-
-    /// Lazily capture the first session this process can hand out: any
-    /// machine still carrying a lower session was registered by a previous
-    /// controller generation.
-    fn session_floor(&mut self) -> u64 {
-        if self.session_floor == 0 {
-            self.session_floor = self.next_session;
-        }
-        self.session_floor
     }
 
     /// Observe every applied kernel command, including agent records. This
@@ -2497,8 +2477,10 @@ impl NodeService {
     ///   record): ordinary `FenceBinding` — the same held/stop-proof path
     ///   as any other teardown, driven now from proof the endpoint still
     ///   holds the generation, rather than at expiry;
-    /// - closed endpoint under an open kernel record: the agent proved
-    ///   the close; record it at the accepted fence and free claims;
+    /// - closed endpoint under an open kernel record: record the close only
+    ///   if no program needs stop proof, or that proof is already present;
+    ///   otherwise use ordinary held teardown (endpoint closure alone does
+    ///   not prove execution stopped);
     /// - open generation unknown to the kernel (no Binding record): a
     ///   true stray. Fence directly at the accepted fence — it closes the
     ///   open generation per the Endpoint protocol — and raise the
@@ -2537,7 +2519,12 @@ impl NodeService {
             }
             match record {
                 Some(record) if !record.state.is_closed() => {
-                    if endpoint.open {
+                    let needs_stop = self
+                        .requests
+                        .get(&record.lease)
+                        .is_some_and(|(workload, _)| workload.execution.has_program())
+                        && !self.member_stop_proven(record.lease, machine);
+                    if endpoint.open || needs_stop {
                         // Kernel record open but no longer legitimately so:
                         // ordinary fenced teardown, held until the member is
                         // proven stopped exactly like any other close.
@@ -2653,9 +2640,9 @@ impl NodeService {
     }
 
     /// Whether a lease's member on one machine is proven stopped for the
-    /// machine's current Agent session. The stop is the only accepted proof:
-    /// cleared start observations after a restart must never imply a member
-    /// is gone.
+    /// machine's current Agent session. A stop acknowledgement or a known
+    /// recovered exit is required: cleared start observations or unknown
+    /// status after a restart must never imply a member is gone.
     fn member_stop_proven(&self, lease: LeaseId, machine: NodeId) -> bool {
         let Some(session) = self.cluster.sessions.get(&machine).copied() else {
             return false;
@@ -3031,7 +3018,7 @@ impl NodeService {
                     // enumeration: the endpoint's real open/closed state, not
                     // lease state, decides fence versus record-close. The
                     // Status proof below still drives member-stop proof for
-                    // a still-running member before any fence lands.
+                    // a running or unknown member before any fence lands.
                     if terminal_status.insert(record.lease)
                         && let Some(pending) = self.recovering_machines.get_mut(&machine)
                     {
@@ -3079,8 +3066,8 @@ impl NodeService {
             .insert((lease, machine), MemberStatus { running, exit_code });
         // A terminal lease recovers through member shutdown, not adoption:
         // an exited member records the stop proof (releasing held fences);
-        // a still-running member is stopped by the ordinary member-stop
-        // path, and its held fences proceed once the stop is proven.
+        // a running or unknown member requires the ordinary member-stop
+        // path, and its held fences proceed only once the stop is proven.
         let terminal = matches!(
             self.cluster.leases.get(&lease).map(|record| record.state),
             Some(
@@ -3094,6 +3081,7 @@ impl NodeService {
         if terminal {
             if let Some(session) = self.cluster.sessions.get(&machine).copied()
                 && !running
+                && exit_code.is_some()
             {
                 self.execution_stopped.insert((lease, machine, session));
             }

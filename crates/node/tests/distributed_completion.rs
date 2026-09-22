@@ -45,6 +45,7 @@ enum Event {
 }
 
 struct StatusAgent {
+    stop_succeeds: bool,
     status: Arc<Mutex<WorkReply>>,
     events: Arc<Mutex<Vec<Event>>>,
 }
@@ -79,7 +80,14 @@ impl AgentClient for StatusAgent {
                     .lock()
                     .expect("event lock")
                     .push(Event::StopExecution);
-                Ok(AgentResponse::ExecutionStopped { lease })
+                Ok(if self.stop_succeeds {
+                    AgentResponse::ExecutionStopped { lease }
+                } else {
+                    AgentResponse::ExecutionStopFailed {
+                        lease,
+                        reason: "untracked execution".into(),
+                    }
+                })
             }
             AgentRequest::Fence { binding, .. } => {
                 self.events.lock().expect("event lock").push(Event::Fence);
@@ -194,7 +202,11 @@ fn register(
     service
         .register_agent_with_capabilities(
             description(member),
-            Box::new(StatusAgent { status, events }),
+            Box::new(StatusAgent {
+                status,
+                events,
+                stop_succeeds: true,
+            }),
             caps(),
         )
         .expect("register proof agent")
@@ -356,6 +368,60 @@ fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
             && !b_events.contains(&Event::StartExecution),
         "recovery must adopt proven members rather than re-activate resources or restart execution"
     );
+}
+
+#[test]
+fn recovered_exit_does_not_prove_unknown_sibling_stopped() {
+    let running = Arc::new(Mutex::new(WorkReply::RUNNING));
+    let (service, a, b, _, _) = active_service(running.clone(), running);
+    let mut recovered = NodeService::new();
+    recovered.restore(service.cluster.clone(), service.state_snapshot());
+    drop(service);
+    register(
+        &mut recovered,
+        "a",
+        Arc::new(Mutex::new(WorkReply::exited(0))),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    recovered.drive(Duration::from_secs(2)).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let unknown = Arc::new(Mutex::new(WorkReply {
+        running: false,
+        exit_code: None,
+    }));
+    recovered
+        .register_agent_with_capabilities(
+            description("b"),
+            Box::new(StatusAgent {
+                status: unknown.clone(),
+                events: events.clone(),
+                stop_succeeds: false,
+            }),
+            caps(),
+        )
+        .unwrap();
+    recovered.drive(Duration::from_secs(2)).unwrap();
+    let lease = LeaseId::from_u64(1);
+    assert_eq!(recovered.cluster.leases[&lease].state, LeaseState::Revoked);
+    assert!(recovered.cluster.occupies(lease));
+    for binding in recovered.cluster.bindings.values() {
+        let machine = recovered.cluster.graph.machine_of(binding.node).unwrap();
+        assert_eq!(binding.state.is_closed(), machine == a);
+        assert!(machine == a || machine == b);
+    }
+    {
+        let events = events.lock().unwrap();
+        assert!(events.contains(&Event::StopExecution));
+        assert!(!events.contains(&Event::Fence));
+        assert!(!events.contains(&Event::Release));
+        assert!(!events.contains(&Event::StartExecution));
+    }
+    // An affirmative stop in a renewed session releases only the held
+    // sibling effects; the known-exit proof from A never authorized B.
+    register(&mut recovered, "b", unknown, events.clone());
+    recovered.drive(Duration::from_secs(2)).unwrap();
+    assert!(!recovered.cluster.occupies(lease));
+    assert!(events.lock().unwrap().contains(&Event::Fence));
 }
 
 #[test]

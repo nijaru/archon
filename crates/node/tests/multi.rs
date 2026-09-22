@@ -1,5 +1,5 @@
 //! Multi-node tests: one controller, several dial-in agents. Placement
-//! spans machines; a re-registering agent gets its live work re-driven.
+//! spans machines; a re-registering agent must prove existing ownership.
 
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
@@ -167,7 +167,7 @@ fn agent_re_registration_reconciles_live_work() {
         "work must run on the first agent"
     );
 
-    // The first agent process dies (its socket drops, its children die).
+    // The first agent process dies; the controller receives no stop proof.
     drop(first);
     std::thread::sleep(Duration::from_millis(50));
 
@@ -184,16 +184,17 @@ fn agent_re_registration_reconciles_live_work() {
         Some(&"worker".to_string())
     );
 
-    // Reconcile must have respawned the lease's work on the new agent.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && !service.is_running(lease) {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(
-        service.is_running(lease),
-        "reconciliation must respawn live work on the fresh agent"
+    // A fresh executor cannot prove the old incarnation is gone. It must
+    // not relaunch the old lease even if the native process actually died.
+    service.drive(Duration::from_secs(5)).expect("reconcile");
+    assert_eq!(
+        service.cluster.leases[&lease].state,
+        archon_kernel::LeaseState::Revoked
     );
-    service.revoke(lease).expect("revoke");
+    assert!(
+        !service.is_running(lease),
+        "untracked work must not respawn"
+    );
 
     // A DIFFERENT instance id claiming the same display name is a distinct
     // machine, not a takeover — no flap.

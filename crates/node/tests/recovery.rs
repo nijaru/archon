@@ -31,11 +31,24 @@ fn recovery_capabilities() -> ExecutionCapabilities {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+enum ReplyMode {
+    #[default]
+    Normal,
+    Failed,
+    Unexpected,
+    Disconnect,
+}
+
 #[derive(Default)]
 struct FakeState {
     /// What the next Status answer reports.
     running: bool,
     exit_code: Option<i32>,
+    status_mode: ReplyMode,
+    stop_mode: ReplyMode,
+    stops: u32,
+    starts: u32,
     /// Protocol counters: adoption must not mint a second activation.
     activates: u32,
     prepares: u32,
@@ -103,7 +116,21 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                             AgentResponse::Activated { binding }
                         }
                         AgentRequest::StartExecution { lease, .. } => {
+                            shared.lock().unwrap().starts += 1;
                             AgentResponse::ExecutionStarted { lease }
+                        }
+                        AgentRequest::StopExecution { lease, .. } => {
+                            let mut state = shared.lock().unwrap();
+                            state.stops += 1;
+                            match state.stop_mode {
+                                ReplyMode::Normal => AgentResponse::ExecutionStopped { lease },
+                                ReplyMode::Failed => AgentResponse::ExecutionStopFailed {
+                                    lease,
+                                    reason: "execution ownership unknown".into(),
+                                },
+                                ReplyMode::Unexpected => AgentResponse::ExecutionStarted { lease },
+                                ReplyMode::Disconnect => break,
+                            }
                         }
                         AgentRequest::Fence {
                             binding, lease: 0, ..
@@ -124,10 +151,18 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                         }
                         AgentRequest::Status { lease } => {
                             let state = shared.lock().unwrap();
-                            AgentResponse::Running {
-                                lease,
-                                running: state.running,
-                                exit_code: state.exit_code,
+                            match state.status_mode {
+                                ReplyMode::Normal => AgentResponse::Running {
+                                    lease,
+                                    running: state.running,
+                                    exit_code: state.exit_code,
+                                },
+                                ReplyMode::Failed => AgentResponse::Failed {
+                                    binding: 0,
+                                    reason: "status unavailable".into(),
+                                },
+                                ReplyMode::Unexpected => AgentResponse::ExecutionStarted { lease },
+                                ReplyMode::Disconnect => break,
                             }
                         }
                         AgentRequest::EnumerateBindings => {
@@ -275,11 +310,13 @@ fn restart_adopts_running_workload_without_respawn() {
     let activates_before = state.lock().unwrap().activates;
     assert_eq!(activates_before, 1);
 
+    let saved_state = first.state_snapshot();
     // Second controller generation replays the same authority log while
     // the endpoint keeps enforcing its generation.
     let commands = read_log(&path);
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
+    recovered.restore_state(saved_state);
     register(&mut recovered, &addr, "inst-a");
 
     // Reconciliation adopts: no second activation may reach the agent.
@@ -322,12 +359,14 @@ fn restart_revokes_work_the_endpoint_cannot_prove() {
     state.lock().unwrap().running = true;
     settle(&mut first, 5);
 
+    let saved_state = first.state_snapshot();
     // The endpoint lost the workload (or cannot vouch for it): recovery
     // must revoke through the protocol and fence before reuse.
     state.lock().unwrap().running = false;
     let commands = read_log(&path);
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
+    recovered.restore_state(saved_state);
     register(&mut recovered, &addr, "inst-rv");
     settle(&mut recovered, 5);
 
@@ -375,6 +414,7 @@ fn restart_fails_partially_prepared_leases_without_activation() {
     let commands = read_log(&path);
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
+    recovered.restore_state(first.state_snapshot());
     register(&mut recovered, &addr, "inst-pp");
     settle(&mut recovered, 5);
 
@@ -422,6 +462,7 @@ fn restart_fences_stray_open_generation_from_enumeration() {
     settle(&mut first, 5);
     let (binding, node, fence) = first_lease_binding(&first).expect("lease 1 opened a binding");
 
+    let saved_state = first.state_snapshot();
     // The endpoint still enforces that generation, but the controller log
     // that survives the crash ends the lease with the fence ack lost:
     // the kernel holds the binding open while the lease is terminal.
@@ -433,9 +474,10 @@ fn restart_fences_stray_open_generation_from_enumeration() {
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
 
+    recovered.restore_state(saved_state);
     // The agent reports the generation still open at the accepted fence.
     state.lock().unwrap().endpoints = vec![(node.as_u64(), binding.as_u64(), true, fence)];
-    state.lock().unwrap().running = false; // member already gone
+    state.lock().unwrap().running = false; // explicit StopExecution proves it gone
     register(&mut recovered, &addr, "inst-stray");
     settle(&mut recovered, 5);
 
@@ -476,6 +518,7 @@ fn restart_frees_claims_the_endpoint_already_closed() {
     settle(&mut first, 5);
     let (binding, node, fence) = first_lease_binding(&first).expect("lease 1 opened a binding");
 
+    let saved_state = first.state_snapshot();
     // Lease revoked; the endpoint processed the fence, but the
     // acknowledgement was lost before the kernel could record the close.
     // Dropping without settling captures exactly that mid-teardown crash.
@@ -486,6 +529,7 @@ fn restart_frees_claims_the_endpoint_already_closed() {
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
 
+    recovered.restore_state(saved_state);
     // Endpoint reports the generation closed at its accepted fence.
     state.lock().unwrap().endpoints = vec![(node.as_u64(), binding.as_u64(), false, fence)];
     state.lock().unwrap().running = false;
@@ -494,7 +538,7 @@ fn restart_frees_claims_the_endpoint_already_closed() {
 
     assert!(
         !recovered.cluster.occupies(LeaseId::from_u64(1)),
-        "agent-proven close frees claims without expiry or a new fence"
+        "endpoint close plus execution stop frees claims without expiry"
     );
     let record = recovered
         .cluster
@@ -518,6 +562,124 @@ fn restart_frees_claims_the_endpoint_already_closed() {
 }
 
 #[test]
+fn terminal_recovery_requires_execution_proof_even_when_endpoint_is_closed() {
+    // Exercise explicit failure, unexpected responses, and transport loss
+    // independently at both proof boundaries. None is evidence of death.
+    for endpoint_open in [Some(true), Some(false), None] {
+        for (status_mode, stop_mode) in [
+            (ReplyMode::Normal, ReplyMode::Failed),
+            (ReplyMode::Normal, ReplyMode::Unexpected),
+            (ReplyMode::Normal, ReplyMode::Disconnect),
+            (ReplyMode::Failed, ReplyMode::Failed),
+            (ReplyMode::Unexpected, ReplyMode::Failed),
+            (ReplyMode::Disconnect, ReplyMode::Failed),
+        ] {
+            let (addr, state) = spawn_fake_agent();
+            let mut first = NodeService::new();
+            register(&mut first, &addr, "proof");
+            submit_sleep(&mut first, 1);
+            settle(&mut first, 5);
+            let (binding, node, fence) = first_lease_binding(&first).unwrap();
+            // Replay a crash before any teardown acknowledgement, without
+            // allowing the old worker to race the scripted proof failures.
+            let saved_state = first.state_snapshot();
+            let mut commands = first.command_history();
+            commands.push(Command::RevokeLease {
+                lease: LeaseId::from_u64(1),
+            });
+            drop(first);
+            {
+                let mut fake = state.lock().unwrap();
+                fake.status_mode = status_mode;
+                fake.stop_mode = stop_mode;
+                fake.endpoints = endpoint_open
+                    .into_iter()
+                    .map(|open| (node.as_u64(), binding.as_u64(), open, fence))
+                    .collect();
+            }
+            let mut recovered = NodeService::new();
+            recovered.replay(commands).unwrap();
+            recovered.restore_state(saved_state);
+            recovered.clear_history();
+            register(&mut recovered, &addr, "proof");
+            settle(&mut recovered, 5);
+            assert!(
+                recovered.cluster.occupies(LeaseId::from_u64(1)),
+                "unproven member must retain occupancy: {endpoint_open:?}/{status_mode:?}/{stop_mode:?}"
+            );
+            assert!(!recovered.cluster.bindings[&binding].state.is_closed());
+            assert_eq!(state.lock().unwrap().fences, 0);
+            if !matches!(status_mode, ReplyMode::Disconnect) {
+                assert!(
+                    state.lock().unwrap().stops > 0,
+                    "unknown status requires StopExecution"
+                );
+            }
+            assert!(!recovered.command_history().iter().any(|command| matches!(
+                command, Command::RecordBindingFenced { binding: id, .. } if *id == binding
+            )));
+            assert_eq!(state.lock().unwrap().starts, 1, "recovery never relaunches");
+
+            // A new session with affirmative stop and endpoint proof can
+            // settle the held ownership, including after transport loss.
+            {
+                let mut fake = state.lock().unwrap();
+                fake.status_mode = ReplyMode::Normal;
+                fake.stop_mode = ReplyMode::Normal;
+                fake.endpoints = vec![(node.as_u64(), binding.as_u64(), true, fence)];
+            }
+            register(&mut recovered, &addr, "proof");
+            settle(&mut recovered, 5);
+            assert!(!recovered.cluster.occupies(LeaseId::from_u64(1)));
+            assert!(state.lock().unwrap().stops > 0);
+        }
+    }
+}
+
+#[test]
+fn empty_enumeration_does_not_close_terminal_bindings() {
+    let (addr, state) = spawn_fake_agent();
+    let mut first = NodeService::new();
+    register(&mut first, &addr, "empty");
+    submit_sleep(&mut first, 1);
+    settle(&mut first, 5);
+    let mut commands = first.command_history();
+    commands.push(Command::RevokeLease {
+        lease: LeaseId::from_u64(1),
+    });
+    let mut recovered = NodeService::new();
+    recovered.replay(commands).unwrap();
+    recovered.restore_state(first.state_snapshot());
+    state.lock().unwrap().exit_code = Some(0);
+    register(&mut recovered, &addr, "empty");
+    settle(&mut recovered, 5);
+    assert!(recovered.cluster.occupies(LeaseId::from_u64(1)));
+    assert_eq!(state.lock().unwrap().fences, 0);
+}
+
+#[test]
+fn agent_reregistration_never_relaunches_untracked_execution() {
+    let (addr, state) = spawn_fake_agent();
+    let mut service = NodeService::new();
+    register(&mut service, &addr, "replacement");
+    submit_sleep(&mut service, 1);
+    settle(&mut service, 5);
+    state.lock().unwrap().stop_mode = ReplyMode::Failed;
+    register(&mut service, &addr, "replacement");
+    settle(&mut service, 5);
+    assert_eq!(
+        service.cluster.leases[&LeaseId::from_u64(1)].state,
+        LeaseState::Revoked
+    );
+    assert!(service.cluster.occupies(LeaseId::from_u64(1)));
+    let fake = state.lock().unwrap();
+    assert_eq!(fake.starts, 1);
+    assert_eq!(fake.activates, 1);
+    assert!(fake.stops > 0);
+    assert_eq!(fake.fences, 0);
+}
+
+#[test]
 fn restart_fences_unknown_open_generation_the_kernel_never_committed() {
     let dir = std::env::temp_dir().join(format!("archon-recovery-unknown-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
@@ -538,6 +700,7 @@ fn restart_fences_unknown_open_generation_the_kernel_never_committed() {
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
 
+    recovered.restore_state(first.state_snapshot());
     // The endpoint holds an open generation whose binding id was never
     // committed by any controller generation — for example an effect
     // applied just before the controller crashed mid-commit.
