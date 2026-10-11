@@ -65,7 +65,20 @@ or resolve an old version-1 compaction overlap. A legacy lease admission after a
 version-1 snapshot is refused because its workload lineage cannot be proven;
 preserve those files for operator reconciliation rather than discarding the log.
 New snapshots use version 2; older binaries cannot read them. Use one controller
-per log; concurrent writers are unsupported.
+per log; concurrent writers are unsupported and no exclusive writer lock
+currently enforces that restriction.
+
+## Stateful workloads
+
+Host-path mounts are raw attachments, not storage placement claims or exclusive
+volume ownership. The operator must establish data locality and writer fencing;
+service replica count does not provide database replication or failover safety.
+Database transaction, recovery and query-admission semantics remain owned by the
+database. No OmenDB engine requires Archon.
+
+Agent execution/recovery proof and controller singleton enforcement remain
+qualification work before dependable stateful hosting. Do not infer storage HA
+from resource leases or generic service restart.
 
 ## Status
 
