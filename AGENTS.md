@@ -1,100 +1,41 @@
-# Archon Compute OS
+# Archon
 
-Rust-first distributed resource OS. Archon is the resource/scheduling authority for resources it directly manages; Linux, KVM, OCI, drivers, accelerator/runtime stacks, networking, and storage systems are substrate/providers.
+Rust-first compute orchestrator in early R&D. The kernel is the resource/scheduling
+authority for its explicitly managed resources; Linux, execution runtimes, drivers,
+networking and storage are substrate.
 
-## Persistent context
+## Navigation and workflow
 
-Primary orientation is this repository: `README.md`, `CONTRIBUTING.md`,
-the crate sources, and the verification gates below. They are the
-contract every contributor shares.
+- `README.md`: current CLI, host prerequisites and behavior limitations.
+- `CONTRIBUTING.md`: contribution policy, DCO sign-off and required CI.
+- `crates/kernel`: pure resource decisions; `crates/sim`: deterministic failure scenarios.
+- `crates/node`: providers, execution, agent/controller reconciliation and persistence.
+- `crates/control` and `crates/cli`: current wire/API and user entry points.
 
-The maintainer additionally keeps durable product/design/roadmap context
-in a private context checkout (locally symlinked as `ai/`, excluded from
-git). When it is present, the maintainer session workflow below applies.
-When it is absent — any public clone — work from the repository alone
-and do not invent roadmap or architecture prose.
-
-Never recreate a repository-local `ai/` tree and do not copy private
-product/design/roadmap prose into this repository.
-
-## Current repository workflow
-
-The maintainer works directly on `main` during R&D. External
-contributors work from forks and pull requests per `CONTRIBUTING.md`.
-Agents: do not open pull requests unless the user explicitly asks for one.
-
-## Session start
-
-1. Check `git status` before editing; preserve unrelated work.
-2. Maintainer sessions with the private context checkout present: read
-   `ai/brief.md`, then only the canonical context file relevant to the
-   task (load map below), and run `tk ready` if using the project task
-   tracker.
-
-## Context load map
-
-Maintainer-only; requires the private context checkout.
-
-| Task | Read |
-|---|---|
-| Product/architecture/scope | centralized `spec.md` |
-| Current implementation | centralized `STATUS.md`, then code/tests |
-| Roadmap/priorities | centralized `PLAN.md` |
-| Durable rationale | centralized `DECISIONS.md` |
-| Resource/lease kernel semantics | centralized `design/kernel-primitives.md` |
-| Fencing/recovery authority | centralized `design/lease-fencing.md` |
-| Scope/complexity/performance expansion | centralized `design/scope-simplicity-performance.md` |
-| Linux/datacenter/coexistence/handoff | centralized `design/deployment-and-adoption.md` |
-| Generic adaptive workload-runtime resource planning | centralized `design/adaptive-runtime-resource-contract.md` |
-| Transactional resource reconfiguration | centralized `design/resource-transition-protocol.md` |
-| Inference runtime / Engine specialization | centralized `design/inference-runtime-boundary.md` |
-| Device/provider enforcement | centralized `design/device-enforcement.md` |
-| License claims | centralized `design/LICENSE_BOUNDARY.md` |
-
-Do not load `archive/` during ordinary work.
-
-## Current work gate
-
-Feature expansion and speculative integrations are parked. Preserve the existing
-resource-authority kernel; perform scoped maintenance when requested. Do not start
-sandbox hosting, resource-transition implementation, or broad productionization merely
-because a retained design describes it.
-
-Resume expansion only after a concrete workload/operator need and an explicit decision
-to run a bounded comparison against existing systems. A hosted agent requirement alone
-does not justify a new cluster scheduler. Maintainer sequencing and reconsideration
-criteria remain in private `PLAN.md`; independent runtimes must not depend on Archon.
+The maintainer works on `main` during R&D. External contributions follow
+`CONTRIBUTING.md`. Do not open a pull request unless requested.
 
 ## Architecture guardrails
 
-- Keep the resource/workload model broad and Archon's ownership boundary narrow.
-- A schedulable exclusive resource has one unambiguous authority at a time.
-- Reuse Linux cgroups/namespaces/eBPF, OCI/KVM, CDI/VFIO/SR-IOV, vendor drivers, networking, and storage systems unless evidence requires replacement.
-- Machine provisioning is not currently an Archon responsibility.
-- Kubernetes, Slurm, Flux, Ray, MPI, and similar systems are integrations, bounded nested workloads, or outer authorities during explicitly delegated evaluation—not competing owners of the same exclusive resource.
-- Adaptive runtimes may describe alternative resource/topology/residency plans, pressure, checkpoint/drain readiness, and performance estimates; these remain advisory until ordinary Allocation/Lease/Binding transitions grant authority.
-- Inference/training runtimes remain workload-local systems: Archon does not absorb their model/state/execution semantics.
-- Runtime resource changes should use accountable additional/replacement Lease units plus prepare/switch/drain semantics rather than hidden in-place ownership mutation unless a proven Provider primitive preserves the same authority guarantees.
-- Unsupported enforcement must fail explicitly; never silently weaken an accepted resource/isolation contract.
-- Do not add mandatory infrastructure because an incumbent uses it.
-- Do not scaffold speculative long-term components or recreate deleted Go model/endpoint/replica/Postgres/NATS/ConnectRPC surfaces.
-- Performance, utilization, and simplicity advantages require matched repeatable evidence.
+- Keep resource authority distinct from workload lifecycle and execution outcomes.
+- A schedulable exclusive resource has one authority at a time. Nested workloads and
+  outer schedulers need explicit, enforced delegation—not overlapping ownership.
+- Planner proposals, telemetry and runtime recommendations are advisory; they cannot
+  grant resource rights.
+- Preserve exact provider targets and generations through graph refresh, restart and
+  teardown. Reject stale sessions/generations at enforcement boundaries. Session
+  freshness is not execution identity.
+- Partial preparation reaches explicit activation or failure. Unknown effects retain
+  occupancy; timeouts, process liveness and root exit are not universal closure proof.
+- Reuse Linux/OCI/device/network/storage implementations. Unsupported enforcement
+  fails explicitly; do not silently weaken an accepted contract.
+- Keep application/runtime state semantics out of the resource kernel.
+- Share pure resource-decision logic between production and simulation. Small
+  installations must not inherit unnecessary distributed infrastructure.
 
-## Invariants
-
-- Exclusive leases never overlap.
-- Stale binding fences and agent sessions are rejected at enforcement boundaries.
-- Partial preparation reaches active ownership or explicit failure.
-- Resource reuse occurs only after prior bindings are closed/fenced.
-- Telemetry, runtime recommendations, and performance forecasts cannot grant resource authority.
-- Simulator and production share pure resource-decision logic where applicable.
-- Small deployments do not inherit unnecessary datacenter complexity.
-
-## Repository documentation boundary
-
-Keep this repository's docs tied to executable behavior: build/test instructions, current CLI/API/wire behavior, supported host prerequisites, installation, troubleshooting, and version compatibility.
-
-Future product strategy, architecture rationale, deployment/adoption strategy, and roadmap live only in centralized context. Link rather than copy.
+These are required contracts, not blanket claims that current code satisfies them.
+Do not treat a design proposal as shipped behavior or freeze proof-stage abstractions
+when an authorized redesign shows they need replacement.
 
 ## Verification
 
@@ -105,4 +46,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p archon-sim
 ```
 
-Use the simulator for distributed ownership/failure invariants and live Linux integration tests for enforcement, process/device behavior, and timing-sensitive proof.
+Dependency changes also require:
+`cargo deny check advisories bans licenses sources`.
+
+CI's `privileged-enforcement` job runs the real Linux cgroup/device suite with
+`ARCHON_REQUIRE_PRIVILEGED_CGROUP=1`; ordinary unprivileged or macOS tests are not
+equivalent evidence. Use simulation for distributed ownership decisions, live Linux
+tests for enforcement and real multi-controller tests for HA claims.
+
+## Documentation boundary
+
+Public documentation describes implemented behavior, supported contracts, prerequisites,
+compatibility, troubleshooting and otherwise-lost maintenance rationale. Do not publish
+private product strategy, research or roadmap, or add private-store discovery paths here.
