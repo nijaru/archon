@@ -4,7 +4,7 @@
 //! Legacy command-only logs remain readable.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 
 use archon_kernel::Command;
@@ -31,16 +31,42 @@ pub enum LogRecord {
     Legacy(Command),
 }
 
+/// An exclusively owned journal. The OS lock lasts until all owned handles
+/// close, including after process termination; replay and repair require it too.
 pub struct CommandLog {
     file: File,
 }
 
 impl CommandLog {
     pub fn open(path: &Path) -> std::io::Result<Self> {
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)?;
+        file.try_lock().map_err(|error| {
+            let error = std::io::Error::from(error);
+            std::io::Error::new(
+                error.kind(),
+                format!("cannot lock journal {}: {error}", path.display()),
+            )
+        })?;
         file.sync_all()?;
         sync_parent(path)?;
         Ok(Self { file })
+    }
+
+    /// Share this ownership with the controller's compaction path. Never
+    /// re-lock the duplicate: it already shares the original handle's lock.
+    pub(crate) fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(Self {
+            file: self.file.try_clone()?,
+        })
+    }
+
+    pub(crate) fn truncate(&self) -> std::io::Result<()> {
+        self.file.set_len(0)?;
+        self.file.sync_all()
     }
 
     pub fn append(&mut self, command: &Command) -> std::io::Result<()> {
@@ -63,11 +89,12 @@ impl CommandLog {
     }
 
     /// Read every logged command in order. A torn final line (crash
-    /// mid-append) is truncated with a warning instead of failing boot:
-    /// its fsync never completed, so no response could have acknowledged
-    /// it. Corruption anywhere else stays a hard error.
-    pub fn read(path: &Path) -> std::io::Result<Vec<Command>> {
-        Ok(Self::read_records(path)?
+    /// mid-append) is truncated instead of failing boot: its fsync never
+    /// completed, so no response could have acknowledged it. Corruption
+    /// anywhere else stays a hard error.
+    pub fn read(&mut self) -> std::io::Result<Vec<Command>> {
+        Ok(self
+            .read_records()?
             .into_iter()
             .filter_map(|record| match record {
                 LogRecord::Controller(record) => record.command,
@@ -76,11 +103,10 @@ impl CommandLog {
             .collect())
     }
 
-    pub fn read_records(path: &Path) -> std::io::Result<Vec<LogRecord>> {
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let bytes = std::fs::read(path)?;
+    pub fn read_records(&mut self) -> std::io::Result<Vec<LogRecord>> {
+        self.file.rewind()?;
+        let mut bytes = Vec::new();
+        self.file.read_to_end(&mut bytes)?;
         let mut commands = Vec::new();
         let mut line_start = 0usize;
         let mut line_no = 1usize;
@@ -93,9 +119,8 @@ impl CommandLog {
                 // Newline is the record boundary, even if the JSON itself
                 // happens to be complete. Remove the tail before appending.
                 if line_start < bytes.len() {
-                    let file = OpenOptions::new().write(true).open(path)?;
-                    file.set_len(line_start as u64)?;
-                    file.sync_all()?;
+                    self.file.set_len(line_start as u64)?;
+                    self.file.sync_all()?;
                 }
                 break;
             };

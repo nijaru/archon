@@ -52,7 +52,8 @@ work. Restart restores desired state; live leases still require agent
 reconciliation, not blind re-execution.
 
 `--compact-every N` bounds the journal between snapshots; `0` disables compaction,
-not durability. Keep the log and its adjacent `.snapshot` file together.
+not durability. Keep the log and its adjacent `.snapshot` file together and
+always restart with the same log path.
 Snapshot replay cursors make an interrupted log truncation safe, and recovery
 truncates an incomplete final journal record before appending again. Malformed
 complete records and gaps in journal sequence numbers fail boot.
@@ -64,9 +65,16 @@ be read, but cannot recover desired state that the old controller never wrote
 or resolve an old version-1 compaction overlap. A legacy lease admission after a
 version-1 snapshot is refused because its workload lineage cannot be proven;
 preserve those files for operator reconciliation rather than discarding the log.
-New snapshots use version 2; older binaries cannot read them. Use one controller
-per log; concurrent writers are unsupported and no exclusive writer lock
-currently enforces that restriction.
+New snapshots use version 2; older binaries cannot read them.
+
+The controller acquires a nonblocking exclusive OS lock on the journal before
+snapshot loading, replay or tail repair, and holds it through compaction until
+shutdown. A second controller using the same journal fails boot; process exit
+releases the lock without stale-lock cleanup. This is local writer exclusion,
+not distributed fencing or HA. Use a local filesystem with working file locks
+and fsync; unsupported locking fails boot. The lock is advisory on Unix: do not
+modify, delete, replace or externally rotate either durable file while the
+controller runs, and do not run older binaries that bypass locking.
 
 ## Stateful workloads
 
@@ -76,9 +84,10 @@ service replica count does not provide database replication or failover safety.
 Database transaction, recovery and query-admission semantics remain owned by the
 database. No OmenDB engine requires Archon.
 
-Agent execution/recovery proof and controller singleton enforcement remain
-qualification work before dependable stateful hosting. Do not infer storage HA
-from resource leases or generic service restart.
+Agent execution/recovery proof and storage-writer fencing remain qualification
+work before dependable stateful hosting. The local journal lock does not fence
+agents, storage writers or controllers using different journals. Do not infer
+storage HA from resource leases or generic service restart.
 
 ## Status
 

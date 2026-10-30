@@ -200,8 +200,12 @@ fn replay_reproduces_cluster_state_exactly() {
     let mut service = logged_service(&path);
     submit_sleep(&mut service, 1, 3_600);
     let before = format!("{:?}", service.cluster.leases);
+    drop(service);
 
-    let commands = archon_control::log::CommandLog::read(&path).expect("read log");
+    let commands = archon_control::log::CommandLog::open(&path)
+        .expect("own log")
+        .read()
+        .expect("read log");
     assert!(commands.len() > 5, "log must capture the full lifecycle");
 
     let mut recovered = NodeService::new();
@@ -219,11 +223,15 @@ fn restart_recovery_revokes_unprovable_work_through_reconciliation() {
     let lease = LeaseId::from_u64(1);
     assert!(service.is_running(lease));
 
+    drop(service);
     // A restart replays the log into a fresh controller whose new local
     // agent holds no processes: reconciliation must prove ownership against
     // the endpoint, fail it as unprovable, and fence through the protocol —
     // not blanket-revoke at boot.
-    let commands = archon_control::log::CommandLog::read(&path).expect("read log");
+    let commands = archon_control::log::CommandLog::open(&path)
+        .expect("own log")
+        .read()
+        .expect("read log");
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
     assert_eq!(
@@ -256,72 +264,42 @@ fn restart_recovery_revokes_unprovable_work_through_reconciliation() {
 
 #[test]
 fn snapshot_compaction_preserves_state_across_restarts() {
-    use std::sync::{Arc, Mutex};
-
     let dir = std::env::temp_dir().join(format!("archon-snap-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
     let log = dir.join("cluster.jsonl");
 
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().unwrap().to_string();
     let agent_addr = spawn_test_agent();
     let link = archon_control::server::AgentLink::Remote {
         addr: agent_addr,
         token: None,
     };
-    let plane = Arc::new(Mutex::new(
-        ControlPlane::boot(link, log.clone(), 0).expect("boot"),
-    ));
-    {
-        let plane = plane.clone();
-        std::thread::spawn(move || ControlPlane::serve(&plane, listener));
-    }
+    let mut plane = ControlPlane::boot(link, log.clone(), 0).expect("boot");
 
     // Operate: two workloads live, one already finished (revoked).
-    // Connections secure the link with the Noise handshake, then greet.
-    let stream = TcpStream::connect(&addr).expect("connect");
-    let mut stream = archon_node::transport::establish_initiator(stream, None).unwrap();
-    write_frame(&mut stream, &archon_control::api::Greeting::Client).unwrap();
-    for _id in [1u64, 2] {
-        write_frame(
-            &mut stream,
-            &ClientRequest::Submit {
-                owner: 1,
-                cpus: 1,
-                memory_mib: 0,
-                lifetime_secs: 3_600,
-                command: vec!["sleep".into(), "30".into()],
-                keep_alive: false,
-                volumes: vec![],
-                ports: vec![],
-                grace_secs: 0,
-                image: None,
-                gpus: 0,
-            },
-        )
-        .unwrap();
-        read_response(&mut stream).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            plane.handle(submit_request()),
+            ServerResponse::Submitted { .. }
+        ));
     }
-    write_frame(&mut stream, &ClientRequest::Revoke { lease: 1 }).unwrap();
-    read_response(&mut stream).unwrap();
+    assert!(matches!(
+        plane.handle(ClientRequest::Revoke { lease: 1 }),
+        ServerResponse::Revoked
+    ));
 
     // Agent acks (activation of lease 2, teardown of lease 1) complete
     // asynchronously; let the plane drain before freezing state.
     assert!(
-        wait_until(Duration::from_secs(5), || plane.lock().unwrap().settled()),
+        wait_until(Duration::from_secs(5), || {
+            plane.advance();
+            plane.settled()
+        }),
         "plane must settle before compaction"
     );
 
     // Compact: snapshot + truncated log.
-    plane.lock().unwrap().compact().unwrap();
-    eprintln!(
-        "debug: dir={} exists={} entries={:?}",
-        dir.display(),
-        dir.exists(),
-        std::fs::read_dir(&dir)
-            .map(|entries| entries.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
-    );
+    plane.compact().unwrap();
     let commands_after_compact = log_len(&log);
     assert_eq!(
         commands_after_compact, 0,
@@ -330,7 +308,7 @@ fn snapshot_compaction_preserves_state_across_restarts() {
     assert!(log.with_added_extension("snapshot").exists());
 
     // Restart from the snapshot alone.
-    drop(stream);
+    drop(plane);
     let restarted_agent_addr = spawn_test_agent();
     let link2 = archon_control::server::AgentLink::Remote {
         addr: restarted_agent_addr,
@@ -414,7 +392,10 @@ fn replay_recovers_id_high_water_marks() {
 
     // A fresh controller replays and admits new work: ids must continue,
     // not restart at 1.
-    let commands = archon_control::log::CommandLog::read(&path).expect("read log");
+    let commands = archon_control::log::CommandLog::open(&path)
+        .expect("own log")
+        .read()
+        .expect("read log");
     let mut recovered = NodeService::new();
     recovered.replay(commands).expect("replay");
     register_test_agent(&mut recovered);
@@ -440,8 +421,12 @@ fn replay_recovers_naturally_expired_leases() {
         LeaseState::Expired,
         "lease must expire in the live plane"
     );
+    drop(service);
 
-    let commands = archon_control::log::CommandLog::read(&path).expect("read log");
+    let commands = archon_control::log::CommandLog::open(&path)
+        .expect("own log")
+        .read()
+        .expect("read log");
     assert!(
         commands
             .iter()
@@ -600,7 +585,15 @@ fn service_updates_and_members_are_journaled_without_compaction() {
     let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
     plane.maintain();
     assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 5);
-    let records = archon_control::log::CommandLog::read_records(&path).unwrap();
+    assert!(matches!(
+        plane.handle(submit_request()),
+        ServerResponse::Submitted { request: 6, .. }
+    ));
+    drop(plane);
+    let records = archon_control::log::CommandLog::open(&path)
+        .expect("own log")
+        .read_records()
+        .unwrap();
     let archon_control::log::LogRecord::Controller(last) = records.last().unwrap() else {
         panic!()
     };
@@ -613,10 +606,6 @@ fn service_updates_and_members_are_journaled_without_compaction() {
     assert!(matches!(
         state.service_groups["workers"].cardinality,
         archon_node::workload::Cardinality::Elastic { target: 4, .. }
-    ));
-    assert!(matches!(
-        plane.handle(submit_request()),
-        ServerResponse::Submitted { request: 6, .. }
     ));
     let _ = std::fs::remove_file(path);
 }
@@ -872,6 +861,10 @@ fn boot_rejects_unknown_snapshot_versions() {
         err.to_string().contains("unsupported snapshot version"),
         "unexpected error: {err}"
     );
+    // Failed boot must release ownership as well as successful shutdown.
+    std::fs::write(&snapshot, content).expect("restore snapshot");
+    ControlPlane::boot(archon_control::server::AgentLink::None, log, 10_000)
+        .expect("failed boot must release the journal");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -994,7 +987,10 @@ fn torn_log_tail_truncates_instead_of_failing_boot() {
     // A crash mid-append leaves a torn tail after complete lines.
     std::fs::write(&path, format!("{first}\n{{\"QuarantineNod")).expect("write torn log");
 
-    let commands = archon_control::log::CommandLog::read(&path).expect("torn tail truncates");
+    let commands = archon_control::log::CommandLog::open(&path)
+        .expect("own log")
+        .read()
+        .expect("torn tail truncates");
     assert_eq!(commands.len(), 1, "complete prefix must survive");
     let after = std::fs::read(&path).expect("read truncated log");
     assert_eq!(
@@ -1006,7 +1002,10 @@ fn torn_log_tail_truncates_instead_of_failing_boot() {
     // Corruption in the middle is still a hard error, never masked.
     std::fs::write(&path, format!("{first}\nnot json\n{first}\n")).expect("write corrupt log");
     assert!(
-        archon_control::log::CommandLog::read(&path).is_err(),
+        archon_control::log::CommandLog::open(&path)
+            .expect("own log")
+            .read()
+            .is_err(),
         "mid-file corruption must fail"
     );
     let _ = std::fs::remove_file(&path);

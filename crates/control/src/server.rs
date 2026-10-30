@@ -1,6 +1,6 @@
 //! The control plane server: one [`NodeService`], one command log, clients
-//! over TCP. Expiry is checked as requests arrive; recovery replays the log
-//! and expires work that was live at shutdown.
+//! over TCP. Recovery restores journaled state before agents reconcile
+//! surviving execution and bindings.
 
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -78,6 +78,9 @@ use crate::log::CommandLog;
 pub struct ControlPlane {
     service: NodeService,
     log_path: PathBuf,
+    /// Shares the sink's locked file description, so compaction never reopens
+    /// a path or releases ownership between snapshot and journal operations.
+    journal: CommandLog,
     /// Last durable journal sequence, shared with the synchronous sink.
     journal_sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Compact after this many journal records (0 = never).
@@ -88,16 +91,18 @@ pub struct ControlPlane {
 }
 
 impl ControlPlane {
-    /// Boot from a log. Replay restores state first — on a restart the
-    /// graph of record comes from the log, not from rediscovery. Only a
-    /// first boot (empty log) discovers the machine. Live leases are then
-    /// revoked: a fresh agent holds no processes, so recovery restores
-    /// decisions, it never re-executes work.
+    /// Boot under exclusive journal ownership. Restore authoritative state
+    /// before agent registration and reconciliation; replay itself never
+    /// re-executes work.
     pub fn boot(
         link: AgentLink,
         log_path: PathBuf,
         compact_every: u64,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Exclude other controllers before reading either durable file or
+        // repairing a torn tail. Moving this log into the sink keeps ownership
+        // uninterrupted through replay, registration, and normal operation.
+        let mut log = CommandLog::open(&log_path)?;
         let mut service = NodeService::new();
 
         // The snapshot cursor skips records already included in the atomic
@@ -117,7 +122,7 @@ impl ControlPlane {
             service.restore(envelope.cluster, envelope.state);
         }
 
-        let records = CommandLog::read_records(&log_path)?;
+        let records = log.read_records()?;
         let first_boot = !restored && records.is_empty();
         let replayed = records.len();
         let compacted_sequence = sequence;
@@ -170,51 +175,24 @@ impl ControlPlane {
         }
         let self_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(sequence));
 
-        // The link registers at most once per boot: a remote agent serves
-        // one controller connection, so registering twice would deadlock
-        // the second handshake behind the still-open first.
-        let mut registered = false;
-        if first_boot && !matches!(link, AgentLink::None) {
-            // The graph of record enters the log on first boot so restarts
-            // replay it instead of rediscovering.
-            service.set_durable_sink(Some(Self::make_sink(&log_path, self_counter.clone())));
-            match &link {
-                AgentLink::Local { cgroup_root } => {
-                    service.register_local(cgroup_root.clone())?;
-                }
-                AgentLink::Remote { addr, token } => {
-                    if let Some(token) = token {
-                        service.set_link_token(token.clone());
-                    }
-                    service.register_remote(addr)?;
-                }
-                AgentLink::None => {}
-            }
-            registered = true;
-            service.set_durable_sink(None);
-        }
-
-        // Recovery policy: replay restores authoritative state, but ownership
-        // of live work is not assumed. Each agent re-registers with a fresh
-        // monotonic session; registration queries the machine's actual
-        // endpoint state and adopts only provably-current bindings, fencing
-        // or revoking everything else before its claims can be reused.
-        service.set_durable_sink(Some(Self::make_sink(&log_path, self_counter.clone())));
+        let journal = log.try_clone()?;
+        service.set_durable_sink(Some(Self::make_sink(log, self_counter.clone())));
         let live = service.live_lease_count();
 
-        // Register this process's own execution path (local dev or the
-        // legacy connect-out agent) unless first boot already did; dial-in
-        // agents arrive via serve().
-        if !registered && !matches!(link, AgentLink::None) {
-            match &link {
-                AgentLink::Local { cgroup_root } => {
-                    service.register_local(cgroup_root.clone())?;
-                }
-                AgentLink::Remote { addr, .. } => {
-                    service.register_remote(addr)?;
-                }
-                AgentLink::None => {}
+        // Register once, with durability already installed on both first boot
+        // and recovery. Replayed live work still needs endpoint proof before
+        // adoption; registration fences or revokes unprovable bindings.
+        match &link {
+            AgentLink::Local { cgroup_root } => {
+                service.register_local(cgroup_root.clone())?;
             }
+            AgentLink::Remote { addr, token } => {
+                if let Some(token) = token {
+                    service.set_link_token(token.clone());
+                }
+                service.register_remote(addr)?;
+            }
+            AgentLink::None => {}
         }
 
         eprintln!(
@@ -231,6 +209,7 @@ impl ControlPlane {
             service,
             token: None,
             log_path,
+            journal,
             journal_sequence: self_counter,
             compact_every,
             compacted_sequence,
@@ -244,23 +223,10 @@ impl ControlPlane {
     }
 
     fn make_sink(
-        log_path: &std::path::Path,
+        mut log: CommandLog,
         counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
     ) -> archon_node::service::DurableSink {
-        // One handle for the sink's lifetime: append-mode writes still land
-        // at end-of-file after compaction truncates the file, so the
-        // per-command flush keeps its crash-safety without reopening per
-        // applied command.
-        let mut log = match CommandLog::open(log_path) {
-            Ok(log) => log,
-            Err(err) => {
-                eprintln!(
-                    "archon: cannot open command log {}: {err}",
-                    log_path.display()
-                );
-                std::process::exit(2);
-            }
-        };
+        // Append-mode writes still land at EOF after in-place compaction.
         let mut last_state = Vec::new();
         Box::new(move |command, state| {
             let encoded_state = serde_json::to_vec(state).expect("serialize controller state");
@@ -304,11 +270,7 @@ impl ControlPlane {
         file.sync_all()?;
         std::fs::rename(&tmp, &path)?;
         crate::log::sync_parent(&path)?;
-        let log = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&self.log_path)?;
-        log.set_len(0)?;
-        log.sync_all()?;
+        self.journal.truncate()?;
         self.service.clear_history();
         self.compacted_sequence = envelope.sequence;
         eprintln!("archon: compacted command log into snapshot");
