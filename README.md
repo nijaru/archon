@@ -42,6 +42,17 @@ one the request waits in the queue, visible via `status`.
 
 All client↔controller and controller↔agent links use encrypted Noise transport. Configure the same shared secret with `--token-file` or `ARCHON_TOKEN` for PSK authentication; without a token the current development mode is encrypted but unauthenticated.
 
+## Resource graph updates
+
+Graph updates cannot change a resource's machine ancestor while a lease holds
+its capacity. This includes reservations, preparation, and terminal leases with
+unclosed bindings. Reclassifying an ancestor or introducing a nearer machine
+must not redirect enforcement or let another machine acknowledge teardown.
+Unsafe updates are rejected atomically. Capacity increases and unrelated facts
+can still be refreshed; the machine restriction ends once the lease is terminal
+and all its bindings are closed. This is not workload migration or validation of
+physical device identity.
+
 ## Controller persistence
 
 The `--log` journal synchronously persists accepted submissions, service

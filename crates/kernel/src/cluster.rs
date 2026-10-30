@@ -4,7 +4,9 @@ use crate::command::{Command, Effect};
 use crate::error::Error;
 use crate::graph::Graph;
 use crate::ids::{BindingId, FactWriterId, LeaseId, NodeId};
-use crate::occupancy::{claim_fits, covers, occupancy_from_leases, resolve_claim, subtree_used};
+use crate::occupancy::{
+    claim_fits, covers, lease_occupies, occupancy_from_leases, resolve_claim, subtree_used,
+};
 use crate::types::{
     Binding, BindingScope, BindingState, ClaimBinding, FactEdge, FactWriterAssignment, Lease,
     LeaseState, NodeState, ProviderFactBatch, Quantity,
@@ -284,12 +286,9 @@ impl Cluster {
     }
 
     pub fn occupies(&self, lease: LeaseId) -> bool {
-        self.leases.get(&lease).is_some_and(|lease| {
-            matches!(
-                lease.state,
-                LeaseState::Reserved | LeaseState::Preparing | LeaseState::Active
-            ) || self.open_bindings(lease.id)
-        })
+        self.leases
+            .get(&lease)
+            .is_some_and(|lease| lease_occupies(lease, self.open_bindings(lease.id)))
     }
 
     pub fn children(&self, parent: LeaseId) -> Vec<LeaseId> {
@@ -502,14 +501,7 @@ impl Cluster {
         }
         let mut staged = self.graph.clone();
         staged.apply(nodes, edges)?;
-        // Capacity may grow freely but never drop below what live leases
-        // already hold: saturating arithmetic would hide the overcommit.
-        let occupancy = self.occupancy();
-        if let Some(node) = occupancy.exceeds_capacity(&staged)? {
-            return Err(Error::CapacityBelowOccupancy { node });
-        }
-        self.graph = staged;
-        Ok(Vec::new())
+        self.install_resource_graph(staged)
     }
 
     fn apply_resource_facts(
@@ -523,12 +515,7 @@ impl Cluster {
         }
         let mut staged = self.graph.clone();
         staged.apply_resource_facts(nodes, edges, claim_bindings)?;
-        let occupancy = self.occupancy();
-        if let Some(node) = occupancy.exceeds_capacity(&staged)? {
-            return Err(Error::CapacityBelowOccupancy { node });
-        }
-        self.graph = staged;
-        Ok(Vec::new())
+        self.install_resource_graph(staged)
     }
 
     fn apply_provider_facts(
@@ -541,9 +528,30 @@ impl Cluster {
         }
         let mut staged = self.graph.clone();
         staged.apply_provider_facts(batches, claim_bindings)?;
-        let occupancy = self.occupancy();
+        self.install_resource_graph(staged)
+    }
+
+    fn install_resource_graph(&mut self, staged: Graph) -> Result<Vec<Effect>, Error> {
+        let open_bindings = self.open_binding_leases();
+        let occupancy =
+            occupancy_from_leases(self.leases.values(), &open_bindings, &BTreeSet::new());
+        // Capacity may grow freely but never drop below live claims.
         if let Some(node) = occupancy.exceeds_capacity(&staged)? {
             return Err(Error::CapacityBelowOccupancy { node });
+        }
+        // Machine ancestry routes enforcement and validates acknowledgements.
+        // Reclassifying an ancestor (or introducing a nearer Machine) must not
+        // transfer those rights, including during preparation or failed teardown.
+        for lease in self
+            .leases
+            .values()
+            .filter(|lease| lease_occupies(lease, open_bindings.contains(&lease.id)))
+        {
+            for claim in &lease.allocation.claims {
+                if self.graph.machine_of(claim.node) != staged.machine_of(claim.node) {
+                    return Err(Error::ResourceBusy { node: claim.node });
+                }
+            }
         }
         self.graph = staged;
         Ok(Vec::new())
