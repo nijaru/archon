@@ -12,8 +12,8 @@ use archon_kernel::{
     RequestId, ResourceClass, qty,
 };
 use archon_node::protocol::{
-    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities, read_greeting,
-    read_request, write_response,
+    AgentRequest, AgentResponse, EnumeratedEndpoint, ExecutionCapabilities, RuntimeCapabilities,
+    read_greeting, read_request, write_response,
 };
 use archon_node::service::{NodeService, RemoteAgentClient};
 
@@ -53,9 +53,8 @@ struct FakeState {
     activates: u32,
     prepares: u32,
     fences: u32,
-    /// Endpoint picture for EnumerateBindings: (node, binding, open,
-    /// accepted_fence). One entry per open/held endpoint generation.
-    endpoints: Vec<(u64, u64, bool, u64)>,
+    /// Actual endpoint generations, with optional per-test scripted edits.
+    endpoints: Vec<EnumeratedEndpoint>,
     /// Count EnumerateBindings requests served.
     enumerations: u32,
     /// Count stray fences the controller asked for (binding ids may be
@@ -101,8 +100,35 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                         AgentRequest::Capabilities => AgentResponse::Capabilities {
                             capabilities: recovery_capabilities(),
                         },
-                        AgentRequest::Prepare { binding, .. } => {
-                            shared.lock().unwrap().prepares += 1;
+                        AgentRequest::Prepare {
+                            binding,
+                            node,
+                            provider,
+                            scope,
+                            fence,
+                            ..
+                        } => {
+                            let mut state = shared.lock().unwrap();
+                            state.prepares += 1;
+                            state.endpoints.retain(|endpoint| match scope {
+                                archon_kernel::BindingScope::Exclusive => {
+                                    endpoint.scope != scope
+                                        || endpoint.node != node
+                                        || endpoint.provider != provider
+                                }
+                                archon_kernel::BindingScope::IndependentShare => {
+                                    endpoint.binding != Some(binding)
+                                }
+                            });
+                            state.endpoints.push(EnumeratedEndpoint {
+                                node,
+                                provider,
+                                scope,
+                                binding: Some(binding),
+                                open: true,
+                                accepted_fence: fence,
+                                phase: archon_kernel::EndpointPhase::Prepared,
+                            });
                             AgentResponse::Prepared {
                                 binding,
                                 handle: {
@@ -112,7 +138,14 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                             }
                         }
                         AgentRequest::Activate { binding, .. } => {
-                            shared.lock().unwrap().activates += 1;
+                            let mut state = shared.lock().unwrap();
+                            state.activates += 1;
+                            state
+                                .endpoints
+                                .iter_mut()
+                                .find(|endpoint| endpoint.binding == Some(binding))
+                                .unwrap()
+                                .phase = archon_kernel::EndpointPhase::Active;
                             AgentResponse::Activated { binding }
                         }
                         AgentRequest::StartExecution { lease, .. } => {
@@ -140,13 +173,17 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                             let mut state = shared.lock().unwrap();
                             state.stray_fences.push(binding);
                             state.fences += 1;
+                            close_endpoint(&mut state, binding);
                             AgentResponse::Fenced { binding }
                         }
                         AgentRequest::Fence { binding, .. } => {
-                            shared.lock().unwrap().fences += 1;
+                            let mut state = shared.lock().unwrap();
+                            state.fences += 1;
+                            close_endpoint(&mut state, binding);
                             AgentResponse::Fenced { binding }
                         }
                         AgentRequest::Release { binding, .. } => {
+                            close_endpoint(&mut shared.lock().unwrap(), binding);
                             AgentResponse::Released { binding }
                         }
                         AgentRequest::Status { lease } => {
@@ -168,25 +205,7 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                         AgentRequest::EnumerateBindings => {
                             let mut state = shared.lock().unwrap();
                             state.enumerations += 1;
-                            let endpoints = state
-                                .endpoints
-                                .iter()
-                                .map(|(node, binding, open, fence)| {
-                                    archon_node::protocol::EnumeratedEndpoint {
-                                        node: *node,
-                                        provider: 1,
-                                        scope: archon_kernel::BindingScope::Exclusive,
-                                        binding: (*binding).into(),
-                                        open: *open,
-                                        accepted_fence: *fence,
-                                        phase: if *open {
-                                            archon_kernel::EndpointPhase::Active
-                                        } else {
-                                            archon_kernel::EndpointPhase::Idle
-                                        },
-                                    }
-                                })
-                                .collect();
+                            let endpoints = state.endpoints.clone();
                             AgentResponse::BindingsEnumerated { endpoints }
                         }
                         other => other.failed_response(),
@@ -199,6 +218,32 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
         }
     });
     (addr, state)
+}
+
+fn close_endpoint(state: &mut FakeState, binding: u64) {
+    for endpoint in &mut state.endpoints {
+        if endpoint.binding == Some(binding) {
+            endpoint.open = false;
+            endpoint.phase = archon_kernel::EndpointPhase::Idle;
+        }
+    }
+}
+
+/// These scripted cases use the CPU's exclusive enforcement namespace.
+fn cpu_endpoint(node: u64, binding: u64, open: bool, accepted_fence: u64) -> EnumeratedEndpoint {
+    EnumeratedEndpoint {
+        node,
+        provider: archon_kernel::ProviderId::ENFORCE.as_u64(),
+        scope: archon_kernel::BindingScope::Exclusive,
+        binding: Some(binding),
+        open,
+        accepted_fence,
+        phase: if open {
+            archon_kernel::EndpointPhase::Active
+        } else {
+            archon_kernel::EndpointPhase::Idle
+        },
+    }
 }
 
 trait FailedResponse {
@@ -476,7 +521,8 @@ fn restart_fences_stray_open_generation_from_enumeration() {
 
     recovered.restore_state(saved_state);
     // The agent reports the generation still open at the accepted fence.
-    state.lock().unwrap().endpoints = vec![(node.as_u64(), binding.as_u64(), true, fence)];
+    state.lock().unwrap().endpoints =
+        vec![cpu_endpoint(node.as_u64(), binding.as_u64(), true, fence)];
     state.lock().unwrap().running = false; // explicit StopExecution proves it gone
     register(&mut recovered, &addr, "inst-stray");
     settle(&mut recovered, 5);
@@ -531,7 +577,8 @@ fn restart_frees_claims_the_endpoint_already_closed() {
 
     recovered.restore_state(saved_state);
     // Endpoint reports the generation closed at its accepted fence.
-    state.lock().unwrap().endpoints = vec![(node.as_u64(), binding.as_u64(), false, fence)];
+    state.lock().unwrap().endpoints =
+        vec![cpu_endpoint(node.as_u64(), binding.as_u64(), false, fence)];
     state.lock().unwrap().running = false;
     register(&mut recovered, &addr, "inst-closed");
     settle(&mut recovered, 5);
@@ -594,7 +641,7 @@ fn terminal_recovery_requires_execution_proof_even_when_endpoint_is_closed() {
                 fake.stop_mode = stop_mode;
                 fake.endpoints = endpoint_open
                     .into_iter()
-                    .map(|open| (node.as_u64(), binding.as_u64(), open, fence))
+                    .map(|open| cpu_endpoint(node.as_u64(), binding.as_u64(), open, fence))
                     .collect();
             }
             let mut recovered = NodeService::new();
@@ -626,7 +673,7 @@ fn terminal_recovery_requires_execution_proof_even_when_endpoint_is_closed() {
                 let mut fake = state.lock().unwrap();
                 fake.status_mode = ReplyMode::Normal;
                 fake.stop_mode = ReplyMode::Normal;
-                fake.endpoints = vec![(node.as_u64(), binding.as_u64(), true, fence)];
+                fake.endpoints = vec![cpu_endpoint(node.as_u64(), binding.as_u64(), true, fence)];
             }
             register(&mut recovered, &addr, "proof");
             settle(&mut recovered, 5);
@@ -651,6 +698,7 @@ fn empty_enumeration_does_not_close_terminal_bindings() {
     recovered.replay(commands).unwrap();
     recovered.restore_state(first.state_snapshot());
     state.lock().unwrap().exit_code = Some(0);
+    state.lock().unwrap().endpoints.clear();
     register(&mut recovered, &addr, "empty");
     settle(&mut recovered, 5);
     assert!(recovered.cluster.occupies(LeaseId::from_u64(1)));
@@ -704,7 +752,10 @@ fn restart_fences_unknown_open_generation_the_kernel_never_committed() {
     // The endpoint holds an open generation whose binding id was never
     // committed by any controller generation — for example an effect
     // applied just before the controller crashed mid-commit.
-    state.lock().unwrap().endpoints = vec![(node.as_u64(), 999, true, 42)];
+    let mut stray = cpu_endpoint(node.as_u64(), 999, true, 42);
+    // A distinct provider namespace can coexist with the active CPU endpoint.
+    stray.provider = 999;
+    state.lock().unwrap().endpoints.push(stray);
     state.lock().unwrap().running = true; // keep lease 1 adoptable
     register(&mut recovered, &addr, "inst-unk");
     settle(&mut recovered, 5);

@@ -27,6 +27,7 @@ use crate::protocol::{
     AgentRequest, AgentResponse, CpuList, CpuPlacement, ExecutionCapabilities, LeaseLimits,
     read_frame, write_frame,
 };
+use crate::recovery::{MachineRecovery, MemberStatus, same_generation};
 use crate::runtime::ProcessRuntime;
 use crate::workload::WorkloadSpec;
 
@@ -86,12 +87,6 @@ impl AgentClient for RemoteAgentClient {
         write_frame(&mut self.stream, &request).map_err(|err| err.to_string())?;
         read_frame(&mut self.stream).map_err(|err| err.to_string())
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct MemberStatus {
-    running: bool,
-    exit_code: Option<i32>,
 }
 
 /// Material controller-restart reconciliation outcomes. These are
@@ -215,21 +210,8 @@ pub struct NodeService {
     next_binding: u64,
     /// Machines re-registered after a controller or agent restart whose live
     /// Bindings are still being proven against actual endpoint state.
-    /// Each entry lists the Active Leases awaiting their proof query.
-    recovering_machines: BTreeMap<NodeId, BTreeSet<LeaseId>>,
-    /// Machines whose binding enumeration is still outstanding after a
-    /// controller-restart recovery entry; the answer drives per-endpoint
-    /// reconcile decisions instead of lease-state guesses.
-    pending_enumerations: BTreeSet<NodeId>,
-    /// Open endpoint generations the controller fenced from enumeration
-    /// but whose fence acknowledgement is still in flight; the record fence
-    /// was already advanced so no new exclusive lease reuses that endpoint
-    /// before the stray close is proven.
-    stray_fences: BTreeSet<NodeId>,
-    /// Active (Lease, machine) members whose recovery Status query is
-    /// outstanding. Recovery authority is machine-local even when the Lease
-    /// itself spans several agents.
-    recovering_members: BTreeSet<(LeaseId, NodeId)>,
+    /// Each entry joins endpoint and member evidence for exactly one session.
+    recovering_machines: BTreeMap<NodeId, MachineRecovery>,
     /// Material restart-recovery decisions waiting for an observer. This is
     /// controller-local telemetry and is intentionally absent from ServiceState.
     recovery_events: Vec<RecoveryEvent>,
@@ -500,12 +482,12 @@ impl NodeService {
         // survive. Every previously registered machine must prove ownership
         // or stop before reuse, regardless of which process restarted.
         let recovering = !new_machine && self.cluster.sessions.contains_key(&machine);
+        let session = self.next_session;
+        self.next_session += 1;
         if recovering {
-            self.recovering_machines.insert(machine, BTreeSet::new());
-            // Ask the agent for its full provider picture before deciding
-            // any binding: reconcile compares every open endpoint against
-            // kernel records rather than inferring from lease state.
-            self.request_enumeration(machine);
+            self.recovering_machines
+                .insert(machine, MachineRecovery::new(session));
+            self.member_status.retain(|(_, node), _| *node != machine);
             eprintln!(
                 "archon: machine {machine} returned after restart; reconciling live bindings"
             );
@@ -520,37 +502,25 @@ impl NodeService {
                 health: "healthy".into(),
             })?;
         }
-        let session = self.next_session;
-        self.next_session += 1;
         self.commit(Command::SetAgentSession { machine, session })?;
-        self.pump()?;
-        if recovering
-            && self
-                .recovering_machines
-                .get(&machine)
-                .is_some_and(BTreeSet::is_empty)
-            && self.machine_recovery_settled(machine)
-        {
-            // No live bindings needed proof: restore health marks now.
-            self.finish_machine_recovery(machine);
+        if recovering {
+            self.request_enumeration(machine);
         }
+        self.pump()?;
         Ok(machine)
     }
 
-    /// Whether a recovering machine's reconciliation has fully settled:
-    /// the binding enumeration answered and every stray-generation fence
-    /// it triggered was acknowledged. Health/quarantine marks may only
-    /// restore after the machine's endpoints are proven clean.
-    fn machine_recovery_settled(&self, machine: NodeId) -> bool {
-        !self.pending_enumerations.contains(&machine) && !self.stray_fences.contains(&machine)
-    }
-
     fn request_enumeration(&mut self, machine: NodeId) {
-        let tag = Tag::Enumerate { machine };
+        let Some(recovery) = self.recovering_machines.get(&machine) else {
+            return;
+        };
+        let tag = Tag::Enumerate {
+            machine,
+            session: recovery.session,
+        };
         if self.inflight.contains(&tag) {
             return;
         }
-        self.pending_enumerations.insert(machine);
         self.dispatch(machine, tag, AgentRequest::EnumerateBindings);
     }
 
@@ -737,8 +707,6 @@ impl NodeService {
     /// direction when some Binding could not be resolved.
     fn finish_machine_recovery(&mut self, machine: NodeId) {
         self.recovering_machines.remove(&machine);
-        self.pending_enumerations.remove(&machine);
-        self.stray_fences.remove(&machine);
         if let Err(err) = self.commit(Command::UnquarantineNode { node: machine }) {
             eprintln!("archon: machine {machine} stays quarantined after recovery: {err}");
         }
@@ -1016,9 +984,6 @@ impl NodeService {
             next_session: 1,
             next_binding: 1,
             recovering_machines: BTreeMap::new(),
-            pending_enumerations: BTreeSet::new(),
-            stray_fences: BTreeSet::new(),
-            recovering_members: BTreeSet::new(),
             recovery_events: Vec::new(),
             command_sink: None,
             durable_sink: None,
@@ -2188,6 +2153,19 @@ impl NodeService {
         let mut finished = Vec::new();
         for (tag, reply) in self.inbox.take() {
             self.inflight.remove(&tag);
+            // Old workers may answer after replacement. Their tags must not
+            // consume current-session recovery queries or mutate observations.
+            if let Tag::Status {
+                machine, session, ..
+            }
+            | Tag::Enumerate { machine, session }
+            | Tag::StrayFence {
+                machine, session, ..
+            } = &tag
+                && self.cluster.sessions.get(machine) != Some(session)
+            {
+                continue;
+            }
             match (&tag, reply) {
                 (
                     Tag::Binding {
@@ -2372,88 +2350,79 @@ impl NodeService {
                         }
                     }
                 }
-                (
-                    Tag::Status { lease, machine },
-                    Ok(AgentResponse::Running {
-                        running, exit_code, ..
-                    }),
-                ) => {
+                (Tag::Status { lease, machine, .. }, reply) => {
                     let (lease, machine) = (*lease, *machine);
-                    if self.recovering_members.remove(&(lease, machine)) {
-                        self.resolve_recovered_member(
-                            lease,
-                            machine,
+                    let status = match reply {
+                        Ok(AgentResponse::Running {
+                            lease: got,
                             running,
                             exit_code,
-                            &mut finished,
-                        );
-                    } else {
-                        self.member_status
-                            .insert((lease, machine), MemberStatus { running, exit_code });
+                        }) if got == lease.as_u64() => Some(MemberStatus { running, exit_code }),
+                        other => {
+                            eprintln!(
+                                "archon: status for lease {lease} on machine {machine} unproven: {other:?}"
+                            );
+                            None
+                        }
+                    };
+                    if let Some(member) = self
+                        .recovering_machines
+                        .get_mut(&machine)
+                        .and_then(|recovery| recovery.members.get_mut(&lease))
+                    {
+                        *member = Some(status.unwrap_or(MemberStatus {
+                            running: false,
+                            exit_code: None,
+                        }));
+                        self.resolve_machine_recovery(machine, &mut finished);
+                    } else if let Some(status) = status {
+                        self.member_status.insert((lease, machine), status);
                         self.resolve_observed_completion(lease, &mut finished);
-                    }
-                }
-                (Tag::Status { lease, machine }, Ok(other)) => {
-                    eprintln!("archon: unexpected status response: {other:?}");
-                    if self.recovering_members.remove(&(*lease, *machine)) {
-                        self.resolve_recovered_member(*lease, *machine, false, None, &mut finished);
-                    }
-                }
-                (Tag::Status { lease, machine }, Err(reason)) => {
-                    if self.recovering_members.remove(&(*lease, *machine)) {
-                        eprintln!(
-                            "archon: recovery status for lease {lease} on machine {machine} failed: {reason}"
-                        );
-                        self.resolve_recovered_member(*lease, *machine, false, None, &mut finished);
                     }
                 }
                 (Tag::Probe { machine }, Err(_)) => self.unreachable.push(*machine),
                 (Tag::Probe { .. }, Ok(_)) => {}
-                (Tag::Enumerate { machine }, reply) => {
+                (Tag::Enumerate { machine, .. }, reply) => {
                     let machine = *machine;
-                    self.pending_enumerations.remove(&machine);
                     match reply {
                         Ok(AgentResponse::BindingsEnumerated { endpoints }) => {
-                            self.absorb_enumeration(machine, endpoints);
+                            if self.absorb_enumeration(machine, &endpoints)
+                                && let Some(recovery) = self.recovering_machines.get_mut(&machine)
+                            {
+                                recovery.endpoints = Some(endpoints);
+                            }
+                            self.resolve_machine_recovery(machine, &mut finished);
                         }
-                        Ok(other) => {
+                        other => {
+                            // Failure is not an empty provider picture. Retain
+                            // recovery and occupancy until fresh proof arrives.
                             eprintln!(
-                                "archon: unexpected enumeration response from {machine}: {other:?}"
-                            );
-                        }
-                        Err(reason) => {
-                            eprintln!(
-                                "archon: binding enumeration for machine {machine} failed: {reason}"
+                                "archon: binding enumeration for machine {machine} unproven: {other:?}"
                             );
                         }
                     }
                 }
-                (Tag::StrayFence { machine }, reply) => {
+                (
+                    Tag::StrayFence {
+                        machine, binding, ..
+                    },
+                    reply,
+                ) => {
                     let machine = *machine;
-                    self.stray_fences.remove(&machine);
                     match reply {
-                        Ok(AgentResponse::Fenced { .. }) => {}
-                        Ok(other) => {
+                        Ok(AgentResponse::Fenced { binding: got }) if got == binding.as_u64() => {
+                            if let Some(recovery) = self.recovering_machines.get_mut(&machine) {
+                                recovery.stray_fences.remove(&tag);
+                            }
+                            self.resolve_machine_recovery(machine, &mut finished);
+                        }
+                        other => {
+                            // A watermark is not proof of closure. Keep this
+                            // exact stray outstanding on failure or wrong ack.
                             eprintln!(
-                                "archon: unexpected stray-fence response from {machine}: {other:?}"
+                                "archon: stray fence on machine {machine} unproven: {other:?}"
                             );
                         }
-                        Err(reason) => {
-                            eprintln!(
-                                "archon: stray fence on machine {machine} unprovable: {reason}"
-                            );
-                        }
-                    }
-                    // The stray close is settled either way; a failed stray
-                    // fence leaves the watermark raised, so reuse still
-                    // cannot fall behind what the endpoint accepted.
-                    if self
-                        .recovering_machines
-                        .get(&machine)
-                        .is_some_and(BTreeSet::is_empty)
-                        && self.machine_recovery_settled(machine)
-                    {
-                        self.finish_machine_recovery(machine);
                     }
                 }
             }
@@ -2466,8 +2435,7 @@ impl NodeService {
 
     /// Reconcile one machine from its agent's full endpoint enumeration.
     /// For every endpoint the agent holds, its generation is compared
-    /// against kernel Binding records, per `design/lease-fencing.md`
-    /// session-and-reconcile:
+    /// against exact kernel Binding generations:
     ///
     /// - open generation the kernel also expects open under a still-
     ///   authoritative lease: left to that lease's ordinary recovery
@@ -2489,17 +2457,35 @@ impl NodeService {
     fn absorb_enumeration(
         &mut self,
         machine: NodeId,
-        endpoints: Vec<crate::protocol::EnumeratedEndpoint>,
-    ) {
-        let session = self.cluster.sessions.get(&machine).copied();
+        endpoints: &[crate::protocol::EnumeratedEndpoint],
+    ) -> bool {
+        let Some(session) = self.cluster.sessions.get(&machine).copied() else {
+            return false;
+        };
+        // Validate identities before applying any reported closure. An endpoint
+        // on another machine, or a known id at different coordinates/fence,
+        // cannot prove (or close) the recorded generation.
+        if endpoints.iter().any(|endpoint| {
+            self.cluster
+                .graph
+                .machine_of(NodeId::from_u64(endpoint.node))
+                != Some(machine)
+                || (endpoint.open && endpoint.binding.is_none())
+                || endpoint
+                    .binding
+                    .and_then(|id| self.cluster.bindings.get(&BindingId::from_u64(id)))
+                    .is_some_and(|record| !same_generation(endpoint, record))
+        }) {
+            eprintln!(
+                "archon: machine {machine} reported inconsistent endpoint generations; recovery held"
+            );
+            return false;
+        }
         let mut fence_commands: Vec<Command> = Vec::new();
         let mut closed_records: Vec<(BindingId, u64)> = Vec::new();
-        let mut strays: Vec<(NodeId, BindingId, u64, archon_kernel::ProviderId)> = Vec::new();
+        let mut strays = Vec::new();
         for endpoint in endpoints {
             let node = NodeId::from_u64(endpoint.node);
-            if self.cluster.graph.machine_of(node) != Some(machine) {
-                continue;
-            }
             let Some(binding) = endpoint.binding.map(archon_kernel::BindingId::from_u64) else {
                 continue;
             };
@@ -2538,50 +2524,24 @@ impl NodeService {
                         closed_records.push((binding, endpoint.accepted_fence));
                     }
                 }
-                Some(_) => {
-                    if endpoint.open {
-                        // Kernel record closed while the endpoint still holds
-                        // the generation open: reopen it as a stray to close.
-                        fence_commands.push(Command::FenceBinding { binding });
-                        self.recovery_events.push(RecoveryEvent::StrayFenced {
-                            machine,
-                            node,
-                            binding,
-                        });
-                    }
-                }
-                None => {
-                    // Unknown binding id held open: the true stray path.
-                    let provider = self
-                        .cluster
-                        .graph
-                        .claim_bindings()
-                        .get(&node)
-                        .and_then(|dims| dims.values().next())
-                        .map(|contract| contract.provider)
-                        .unwrap_or_else(|| archon_kernel::ProviderId::from_u64(endpoint.provider));
-                    strays.push((node, binding, endpoint.accepted_fence, provider));
-                }
+                _ if endpoint.open => strays.push((binding, endpoint)),
+                _ => {}
             }
         }
         for command in fence_commands {
             self.commit_lenient(command);
         }
-        if let Some(session) = session {
-            for (binding, accepted_fence) in closed_records {
-                // The agent closed this generation itself (crash between
-                // close and acknowledgement). The endpoint's accepted fence
-                // is exactly the generation the binding record carries, so
-                // the ordinary Record command validates and frees claims.
-                self.commit_lenient(Command::RecordBindingFenced {
-                    binding,
-                    session,
-                    fence: accepted_fence,
-                });
-            }
+        for (binding, accepted_fence) in closed_records {
+            self.commit_lenient(Command::RecordBindingFenced {
+                binding,
+                session,
+                fence: accepted_fence,
+            });
         }
-        let Some(session) = session else { return };
-        for (node, binding, accepted_fence, provider) in strays {
+        for (binding, endpoint) in strays {
+            let node = NodeId::from_u64(endpoint.node);
+            let provider = ProviderId::from_u64(endpoint.provider);
+            let accepted_fence = endpoint.accepted_fence;
             self.recovery_events.push(RecoveryEvent::StrayFenced {
                 machine,
                 node,
@@ -2600,14 +2560,27 @@ impl NodeService {
                 lease: 0,
                 node: node.as_u64(),
                 provider: provider.as_u64(),
-                scope: archon_kernel::BindingScope::Exclusive,
+                scope: endpoint.scope,
                 session,
                 fence: accepted_fence,
                 epoch: self.cluster.epoch,
             };
-            self.stray_fences.insert(machine);
-            self.dispatch(machine, Tag::StrayFence { machine }, request);
+            let tag = Tag::StrayFence {
+                machine,
+                session,
+                node,
+                provider,
+                scope: endpoint.scope,
+                binding,
+                fence: accepted_fence,
+            };
+            if let Some(recovery) = self.recovering_machines.get_mut(&machine)
+                && recovery.stray_fences.insert(tag.clone())
+            {
+                self.dispatch(machine, tag, request);
+            }
         }
+        true
     }
 
     /// Advance pending work: absorb completions, send queued effects, and
@@ -2876,7 +2849,14 @@ impl NodeService {
     }
 
     fn request_status_on_machine(&mut self, lease: LeaseId, machine: NodeId) {
-        let tag = Tag::Status { lease, machine };
+        let Some(session) = self.cluster.sessions.get(&machine).copied() else {
+            return;
+        };
+        let tag = Tag::Status {
+            lease,
+            machine,
+            session,
+        };
         if self.inflight.contains(&tag) {
             return;
         }
@@ -3022,7 +3002,7 @@ impl NodeService {
                     if terminal_status.insert(record.lease)
                         && let Some(pending) = self.recovering_machines.get_mut(&machine)
                     {
-                        pending.insert(record.lease);
+                        pending.members.entry(record.lease).or_insert(None);
                     }
                 }
             }
@@ -3037,18 +3017,67 @@ impl NodeService {
         }
         for lease in active {
             if let Some(pending) = self.recovering_machines.get_mut(&machine) {
-                pending.insert(lease);
+                pending.members.entry(lease).or_insert(None);
             }
-            if self.recovering_members.insert((lease, machine)) {
-                self.request_status_on_machine(lease, machine);
-            }
+            self.request_status_on_machine(lease, machine);
         }
         for lease in terminal_status {
-            if self.recovering_members.insert((lease, machine)) {
-                self.request_status_on_machine(lease, machine);
-            }
+            self.request_status_on_machine(lease, machine);
         }
         Ok(commands)
+    }
+
+    /// Join independent current-session observations. Unprovable status may
+    /// revoke through ordinary stop/fence teardown without endpoint proof;
+    /// adoption needs every expected open binding and all stray closes proven.
+    fn resolve_machine_recovery(&mut self, machine: NodeId, finished: &mut Vec<LeaseId>) {
+        let Some(recovery) = self.recovering_machines.get(&machine) else {
+            return;
+        };
+        let ready: Vec<_> = recovery
+            .members
+            .iter()
+            .filter_map(|(lease, status)| {
+                let status = (*status)?;
+                let active = self
+                    .cluster
+                    .leases
+                    .get(lease)
+                    .is_some_and(|record| record.state == archon_kernel::LeaseState::Active);
+                let needs_adoption = active && (status.running || status.exit_code.is_some());
+                let proven = recovery.endpoints_settled()
+                    && self
+                        .cluster
+                        .bindings_for(*lease)
+                        .iter()
+                        .filter_map(|binding| self.cluster.bindings.get(binding))
+                        .filter(|record| {
+                            !record.state.is_closed()
+                                && self.cluster.graph.machine_of(record.node) == Some(machine)
+                        })
+                        .all(|record| recovery.proves(record));
+                (!needs_adoption || proven).then_some((*lease, status))
+            })
+            .collect();
+        for (lease, status) in ready {
+            if let Some(recovery) = self.recovering_machines.get_mut(&machine) {
+                recovery.members.remove(&lease);
+            }
+            self.resolve_recovered_member(
+                lease,
+                machine,
+                status.running,
+                status.exit_code,
+                finished,
+            );
+        }
+        if self
+            .recovering_machines
+            .get(&machine)
+            .is_some_and(MachineRecovery::complete)
+        {
+            self.finish_machine_recovery(machine);
+        }
     }
 
     /// Resolve one machine member whose ownership was unproven at controller
@@ -3097,7 +3126,6 @@ impl NodeService {
             }
             self.recovery_events
                 .push(RecoveryEvent::TerminalMemberResolved { lease, machine });
-            self.settle_machine_recovery(lease, machine);
             return;
         }
         if running || exit_code.is_some() {
@@ -3107,12 +3135,11 @@ impl NodeService {
                     .push(RecoveryEvent::MemberRevokedRebindFailed { lease, machine });
                 self.commit_lenient(Command::RevokeLease { lease });
                 finished.push(lease);
-                self.settle_machine_recovery(lease, machine);
                 return;
             }
-            // A running/exited member proves that this Agent still owns the
-            // previously-active Provider endpoints. Rebinding moves those
-            // proofs to the current controller session without respawning.
+            // The recovery join proved each exact Active endpoint as well as
+            // this member's status. Move those proofs to the current session
+            // without activating resources or respawning execution.
             for binding in self.cluster.bindings_for(lease) {
                 if let Some(record) = self.cluster.bindings.get(&binding)
                     && record.state == archon_kernel::BindingState::Active
@@ -3147,7 +3174,6 @@ impl NodeService {
                 "archon: recovered lease {lease} on machine {machine}: ownership unprovable, revoking"
             );
         }
-        self.settle_machine_recovery(lease, machine);
     }
 
     /// Decide whole-Lease natural completion from machine-member observations.
@@ -3210,19 +3236,6 @@ impl NodeService {
             self.commit(Command::RebindSession { binding, session })?;
         }
         Ok(())
-    }
-
-    /// Drop one lease member from a machine's recovery set; when every
-    /// recovering lease on that machine resolved, restore deferred health.
-    fn settle_machine_recovery(&mut self, lease: LeaseId, machine: NodeId) {
-        let mut done = false;
-        if let Some(pending) = self.recovering_machines.get_mut(&machine) {
-            pending.remove(&lease);
-            done = pending.is_empty();
-        }
-        if done && self.machine_recovery_settled(machine) {
-            self.finish_machine_recovery(machine);
-        }
     }
 
     /// The controller side of the seam: route one kernel Effect toward the

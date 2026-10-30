@@ -11,6 +11,7 @@ mod executor;
 mod linux_process;
 pub mod protocol;
 mod provider;
+mod recovery;
 pub mod runtime;
 pub mod service;
 pub mod transport;

@@ -51,6 +51,16 @@ A journal write failure terminates the controller rather than accepting volatile
 work. Restart restores desired state; live leases still require agent
 reconciliation, not blind re-execution.
 
+Adoption requires member status and successful endpoint enumeration from the
+returning agent's current session. Every expected open binding must match its
+node, provider, scope, binding id, fence, and active phase; a running process alone
+is not ownership proof. Missing or inconsistent endpoint evidence blocks
+adoption and keeps recovery pending; it does not itself release occupied capacity. Stray endpoint closes must each
+be acknowledged; successful empty enumeration completes recovery for an idle
+machine. Adoption never reactivates resources or restarts execution. Re-register
+the agent to collect fresh recovery evidence; enumeration is not automatically
+retried.
+
 `--compact-every N` bounds the journal between snapshots; `0` disables compaction,
 not durability. Keep the log and its adjacent `.snapshot` file together and
 always restart with the same log path.

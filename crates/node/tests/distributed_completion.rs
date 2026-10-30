@@ -8,7 +8,7 @@ use archon_kernel::{
 };
 use archon_node::discover::{HostNodeSpec, MachineDescription};
 use archon_node::protocol::{
-    AgentRequest, AgentResponse, ExecutionCapabilities, RuntimeCapabilities,
+    AgentRequest, AgentResponse, EnumeratedEndpoint, ExecutionCapabilities, RuntimeCapabilities,
 };
 use archon_node::service::{AgentClient, NodeService, RecoveryEvent};
 
@@ -44,24 +44,73 @@ enum Event {
     Release,
 }
 
+struct AgentState {
+    status: WorkReply,
+    endpoints: Vec<EnumeratedEndpoint>,
+}
+
+fn agent_state(status: WorkReply) -> SharedStatus {
+    Arc::new(Mutex::new(AgentState {
+        status,
+        endpoints: Vec::new(),
+    }))
+}
+
 struct StatusAgent {
     stop_succeeds: bool,
-    status: Arc<Mutex<WorkReply>>,
+    status: SharedStatus,
     events: Arc<Mutex<Vec<Event>>>,
 }
 
 impl AgentClient for StatusAgent {
     fn call(&mut self, request: AgentRequest) -> Result<AgentResponse, String> {
         match request {
-            AgentRequest::Prepare { binding, .. } => Ok(AgentResponse::Prepared {
+            AgentRequest::Prepare {
                 binding,
-                handle: binding,
-            }),
+                node,
+                provider,
+                scope,
+                fence,
+                ..
+            } => {
+                let mut state = self.status.lock().unwrap();
+                state.endpoints.retain(|endpoint| match scope {
+                    archon_kernel::BindingScope::Exclusive => {
+                        endpoint.scope != scope
+                            || endpoint.node != node
+                            || endpoint.provider != provider
+                    }
+                    archon_kernel::BindingScope::IndependentShare => {
+                        endpoint.binding != Some(binding)
+                    }
+                });
+                state.endpoints.push(EnumeratedEndpoint {
+                    node,
+                    provider,
+                    scope,
+                    binding: Some(binding),
+                    open: true,
+                    accepted_fence: fence,
+                    phase: archon_kernel::EndpointPhase::Prepared,
+                });
+                Ok(AgentResponse::Prepared {
+                    binding,
+                    handle: binding,
+                })
+            }
             AgentRequest::Activate { binding, .. } => {
                 self.events
                     .lock()
                     .expect("event lock")
                     .push(Event::Activate);
+                self.status
+                    .lock()
+                    .unwrap()
+                    .endpoints
+                    .iter_mut()
+                    .find(|endpoint| endpoint.binding == Some(binding))
+                    .unwrap()
+                    .phase = archon_kernel::EndpointPhase::Active;
                 Ok(AgentResponse::Activated { binding })
             }
             AgentRequest::StartExecution { lease, .. } => {
@@ -73,6 +122,7 @@ impl AgentClient for StatusAgent {
             }
             AgentRequest::Release { binding, .. } => {
                 self.events.lock().expect("event lock").push(Event::Release);
+                self.close_endpoint(binding);
                 Ok(AgentResponse::Released { binding })
             }
             AgentRequest::StopExecution { lease, .. } => {
@@ -91,22 +141,37 @@ impl AgentClient for StatusAgent {
             }
             AgentRequest::Fence { binding, .. } => {
                 self.events.lock().expect("event lock").push(Event::Fence);
+                self.close_endpoint(binding);
                 Ok(AgentResponse::Fenced { binding })
             }
             AgentRequest::Status { lease } => {
                 self.events.lock().expect("event lock").push(Event::Status);
-                let status = *self.status.lock().expect("status lock");
+                let status = self.status.lock().expect("status lock").status;
                 Ok(AgentResponse::Running {
                     lease,
                     running: status.running,
                     exit_code: status.exit_code,
                 })
             }
+            AgentRequest::EnumerateBindings => Ok(AgentResponse::BindingsEnumerated {
+                endpoints: self.status.lock().unwrap().endpoints.clone(),
+            }),
             AgentRequest::Logs { lease } => Ok(AgentResponse::Logs {
                 lease,
                 output: String::new(),
             }),
             other => Err(format!("unexpected request in status agent: {other:?}")),
+        }
+    }
+}
+
+impl StatusAgent {
+    fn close_endpoint(&self, binding: u64) {
+        for endpoint in &mut self.status.lock().unwrap().endpoints {
+            if endpoint.binding == Some(binding) {
+                endpoint.open = false;
+                endpoint.phase = archon_kernel::EndpointPhase::Idle;
+            }
         }
     }
 }
@@ -190,7 +255,7 @@ fn request() -> archon_node::workload::WorkloadSpec {
     }
 }
 
-type SharedStatus = Arc<Mutex<WorkReply>>;
+type SharedStatus = Arc<Mutex<AgentState>>;
 type SharedEvents = Arc<Mutex<Vec<Event>>>;
 
 fn register(
@@ -244,8 +309,8 @@ fn poll(service: &mut NodeService) {
 
 #[test]
 fn distributed_success_waits_for_every_member() {
-    let a_status = Arc::new(Mutex::new(WorkReply::exited(0)));
-    let b_status = Arc::new(Mutex::new(WorkReply::RUNNING));
+    let a_status = agent_state(WorkReply::exited(0));
+    let b_status = agent_state(WorkReply::RUNNING);
     let (mut service, _, _, _, _) = active_service(a_status, b_status.clone());
 
     poll(&mut service);
@@ -255,7 +320,7 @@ fn distributed_success_waits_for_every_member() {
         "one successful member must not complete a rigid multi-machine lease"
     );
 
-    *b_status.lock().expect("status lock") = WorkReply::exited(0);
+    b_status.lock().expect("status lock").status = WorkReply::exited(0);
     poll(&mut service);
     let lease = &service.cluster.leases[&LeaseId::from_u64(1)];
     assert_eq!(lease.state, LeaseState::Completed);
@@ -264,8 +329,8 @@ fn distributed_success_waits_for_every_member() {
 
 #[test]
 fn distributed_failure_fails_the_root_and_fences_other_members() {
-    let a_status = Arc::new(Mutex::new(WorkReply::exited(7)));
-    let b_status = Arc::new(Mutex::new(WorkReply::RUNNING));
+    let a_status = agent_state(WorkReply::exited(7));
+    let b_status = agent_state(WorkReply::RUNNING);
     let (mut service, _, _, _, b_events) = active_service(a_status, b_status);
 
     poll(&mut service);
@@ -298,9 +363,9 @@ fn binding_sessions(service: &NodeService, machine: NodeId) -> BTreeSet<u64> {
 
 #[test]
 fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
-    let running_a = Arc::new(Mutex::new(WorkReply::RUNNING));
-    let running_b = Arc::new(Mutex::new(WorkReply::RUNNING));
-    let (service, a, b, _, _) = active_service(running_a, running_b);
+    let running_a = agent_state(WorkReply::RUNNING);
+    let running_b = agent_state(WorkReply::RUNNING);
+    let (service, a, b, _, _) = active_service(running_a.clone(), running_b.clone());
     let cluster = service.cluster.clone();
     let state = service.state_snapshot();
     let old_a = binding_sessions(&service, a);
@@ -312,7 +377,8 @@ fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
     let mut recovered = NodeService::new();
     recovered.restore(cluster, state);
 
-    let a_status = Arc::new(Mutex::new(WorkReply::exited(0)));
+    let a_status = running_a;
+    a_status.lock().unwrap().status = WorkReply::exited(0);
     let a_events = Arc::new(Mutex::new(Vec::new()));
     assert_eq!(register(&mut recovered, "a", a_status, a_events.clone()), a);
     recovered
@@ -339,7 +405,7 @@ fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
         "one member exiting successfully while detached is not whole-job completion"
     );
 
-    let b_status = Arc::new(Mutex::new(WorkReply::RUNNING));
+    let b_status = running_b;
     let b_events = Arc::new(Mutex::new(Vec::new()));
     assert_eq!(register(&mut recovered, "b", b_status, b_events.clone()), b);
     recovered
@@ -372,23 +438,26 @@ fn restart_recovery_is_member_scoped_and_aggregates_exit_state() {
 
 #[test]
 fn recovered_exit_does_not_prove_unknown_sibling_stopped() {
-    let running = Arc::new(Mutex::new(WorkReply::RUNNING));
-    let (service, a, b, _, _) = active_service(running.clone(), running);
+    let a_state = agent_state(WorkReply::RUNNING);
+    let b_state = agent_state(WorkReply::RUNNING);
+    let (service, a, b, _, _) = active_service(a_state.clone(), b_state.clone());
     let mut recovered = NodeService::new();
     recovered.restore(service.cluster.clone(), service.state_snapshot());
     drop(service);
+    a_state.lock().unwrap().status = WorkReply::exited(0);
     register(
         &mut recovered,
         "a",
-        Arc::new(Mutex::new(WorkReply::exited(0))),
+        a_state,
         Arc::new(Mutex::new(Vec::new())),
     );
     recovered.drive(Duration::from_secs(2)).unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
-    let unknown = Arc::new(Mutex::new(WorkReply {
+    let unknown = b_state;
+    unknown.lock().unwrap().status = WorkReply {
         running: false,
         exit_code: None,
-    }));
+    };
     recovered
         .register_agent_with_capabilities(
             description("b"),
@@ -426,8 +495,8 @@ fn recovered_exit_does_not_prove_unknown_sibling_stopped() {
 
 #[test]
 fn restart_recovery_explains_unprovable_member_revocation() {
-    let running_a = Arc::new(Mutex::new(WorkReply::RUNNING));
-    let running_b = Arc::new(Mutex::new(WorkReply::RUNNING));
+    let running_a = agent_state(WorkReply::RUNNING);
+    let running_b = agent_state(WorkReply::RUNNING);
     let (service, a, _, _, _) = active_service(running_a, running_b);
     let cluster = service.cluster.clone();
     let state = service.state_snapshot();
@@ -435,10 +504,10 @@ fn restart_recovery_explains_unprovable_member_revocation() {
 
     let mut recovered = NodeService::new();
     recovered.restore(cluster, state);
-    let unknown = Arc::new(Mutex::new(WorkReply {
+    let unknown = agent_state(WorkReply {
         running: false,
         exit_code: None,
-    }));
+    });
     let events = Arc::new(Mutex::new(Vec::new()));
     assert_eq!(register(&mut recovered, "a", unknown, events), a);
     recovered

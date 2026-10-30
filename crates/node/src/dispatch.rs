@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use archon_kernel::{BindingId, LeaseId, NodeId};
+use archon_kernel::{BindingId, BindingScope, LeaseId, NodeId, ProviderId};
 
 use crate::protocol::{AgentRequest, AgentResponse};
 use crate::service::AgentClient;
@@ -49,15 +49,23 @@ pub enum Tag {
     Status {
         lease: LeaseId,
         machine: NodeId,
+        session: u64,
     },
     /// One-time provider enumeration for a recovering machine.
     Enumerate {
         machine: NodeId,
+        session: u64,
     },
     /// A stray-generation fence dispatched from enumeration; the ack
     /// settles the machine's stray cleanup.
     StrayFence {
         machine: NodeId,
+        session: u64,
+        node: NodeId,
+        provider: ProviderId,
+        scope: BindingScope,
+        binding: BindingId,
+        fence: u64,
     },
     Probe {
         machine: NodeId,
