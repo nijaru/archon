@@ -2,15 +2,15 @@
 
 [![CI](https://github.com/nijaru/archon/actions/workflows/ci.yml/badge.svg)](https://github.com/nijaru/archon/actions/workflows/ci.yml)
 
-Archon is a Rust-first distributed resource operating system for heterogeneous compute infrastructure.
+Archon is an experimental Rust resource and workload orchestrator for heterogeneous Linux clusters.
 
-> A datacenter is a graph of leaseable capabilities. A workload is a set of constraints and objectives over that graph.
+Resource discovery, placement, resource rights and workload execution are distinct concerns with explicit ownership.
 
 Archon provides resource discovery, scheduling, enforceable leases, execution lifecycle, health, and recovery across Linux machines. The current implementation supports native processes and OCI containers, multi-node agents, cgroup-based CPU/memory enforcement, device claims, persistent control state, and deterministic simulation/fault testing.
 
-Linux and existing runtime/hardware stacks remain substrate: cgroups, eBPF, OCI runtimes, KVM, device drivers, accelerator stacks, networking, and storage systems are reused rather than reimplemented.
+Archon uses Linux cgroups/eBPF, OCI runtimes and existing hardware drivers; networking and storage require separately qualified integrations. Archon does not implement a host OS kernel, hypervisor, complete network stack or storage manager.
 
-The implementation is lab-proven and is not yet a production-scale claim.
+Selected mechanisms have simulator, host and privileged-Linux test evidence. The full operational platform, production security and comparative performance remain unqualified.
 
 ## Prerequisites
 
@@ -40,7 +40,7 @@ cargo run -p archon-cli -- -c 127.0.0.1:9000 status
 The lease admits once an enforcement-capable agent registers; without
 one the request waits in the queue, visible via `status`.
 
-All client↔controller and controller↔agent links use encrypted Noise transport. Configure the same shared secret with `--token-file` or `ARCHON_TOKEN` for PSK authentication; without a token the current development mode is encrypted but unauthenticated.
+All client↔controller and controller↔agent links use encrypted Noise transport. Configure the same shared secret with `--token-file` or `ARCHON_TOKEN` for PSK authentication; without a token the current development mode is encrypted but unauthenticated. A shared token is not per-user/project authorization or a node enrollment/audit system.
 
 ## Resource graph updates
 
@@ -66,9 +66,9 @@ Adoption requires member status and successful endpoint enumeration from the
 returning agent's current session. Every expected open binding must match its
 node, provider, scope, binding id, fence, and active phase; a running process alone
 is not ownership proof. Missing or inconsistent endpoint evidence blocks
-adoption and keeps recovery pending; it does not itself release occupied capacity. Stray endpoint closes must each
-be acknowledged; successful empty enumeration completes recovery for an idle
-machine. Adoption never reactivates resources or restarts execution. Re-register
+adoption and keeps recovery pending; it does not itself release occupied capacity.
+Stray endpoint closes must each be acknowledged; successful empty enumeration
+completes recovery for an idle machine. Adoption never reactivates resources or restarts execution. Re-register
 the agent to collect fresh recovery evidence; enumeration is not automatically
 retried.
 
@@ -103,18 +103,20 @@ Host-path mounts are raw attachments, not storage placement claims or exclusive
 volume ownership. The operator must establish data locality and writer fencing;
 service replica count does not provide database replication or failover safety.
 Database transaction, recovery and query-admission semantics remain owned by the
-database. No OmenDB engine requires Archon.
+database.
 
 Agent execution/recovery proof and storage-writer fencing remain qualification
 work before dependable stateful hosting. The local journal lock does not fence
 agents, storage writers or controllers using different journals. Do not infer
 storage HA from resource leases or generic service restart.
 
-## Status
+## Status and limitations
 
-What works today: exclusive leases over a resource graph, controller/agent restart reconciliation with fencing, native process and OCI container execution, service groups with fixed/elastic/per-machine cardinality, accelerator device claims, a persistent control-plane command log, and a deterministic simulator with fault-injection proof tests.
+Implemented research paths include exclusive leases over a resource graph, targeted controller/agent restart reconciliation, native process and OCI execution, service groups with fixed/elastic/per-machine cardinality, accelerator claims, a persistent single-controller command journal and deterministic fault simulation. Targeted tests cover journal writer exclusion, recovered binding evidence and graph machine-ancestry stability. These do not establish end-to-end execution fencing under every failure.
 
-Not yet production-hardened: node/client identity and authorization, quota/audit semantics, versioned external APIs, high availability, rolling upgrades, and packaging. See [`AGENTS.md`](AGENTS.md) for the architecture guardrails that govern new work.
+Service cardinality is **not** revisioned deployment: immutable revisions, ready endpoint discovery, traffic-aware rollout and rollback are not implemented as complete operating workflows. A host-path mount is not managed storage ownership or safe writer failover. A local journal lock is not distributed control-plane HA. Node/client authorization, quotas/audit, durable client retry identity, versioned external APIs, rolling upgrades, supported packaging and representative performance comparisons remain qualification or design work.
+
+See [`AGENTS.md`](AGENTS.md) for engineering guardrails. Features described as future research elsewhere should not be inferred from this README.
 
 ## Contributing
 

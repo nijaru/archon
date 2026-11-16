@@ -1,8 +1,8 @@
 # Archon
 
-Rust-first compute orchestrator in early R&D. The kernel is the resource/scheduling
-authority for its explicitly managed resources; Linux, execution runtimes, drivers,
-networking and storage are substrate.
+Rust-first compute orchestrator in early R&D. `crates/kernel` is Archon's pure
+resource-decision kernel, **not** a host operating-system kernel. Linux, execution
+runtimes, drivers, networking and storage are external substrate.
 
 ## Navigation and workflow
 
@@ -29,7 +29,10 @@ The maintainer works on `main` during R&D. External contributions follow
   occupancy; timeouts, process liveness and root exit are not universal closure proof.
 - Reuse Linux/OCI/device/network/storage implementations. Unsupported enforcement
   fails explicitly; do not silently weaken an accepted contract.
-- Keep application/runtime state semantics out of the resource kernel.
+- Keep application/runtime state semantics out of the resource kernel. Service
+  replica/cardinality management is not proof of revisioned rollout or endpoint readiness.
+- A controller journal lock only excludes local writers; never advertise cross-controller
+  HA or storage-writer fencing without separate enforcement and recovery proof.
 - Share pure resource-decision logic between production and simulation. Small
   installations must not inherit unnecessary distributed infrastructure.
 
