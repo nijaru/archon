@@ -62,16 +62,6 @@ A journal write failure terminates the controller rather than accepting volatile
 work. Restart restores desired state; live leases still require agent
 reconciliation, not blind re-execution.
 
-Adoption requires member status and successful endpoint enumeration from the
-returning agent's current session. Every expected open binding must match its
-node, provider, scope, binding id, fence, and active phase; a running process alone
-is not ownership proof. Missing or inconsistent endpoint evidence blocks
-adoption and keeps recovery pending; it does not itself release occupied capacity.
-Stray endpoint closes must each be acknowledged; successful empty enumeration
-completes recovery for an idle machine. Adoption never reactivates resources or restarts execution. Re-register
-the agent to collect fresh recovery evidence; enumeration is not automatically
-retried.
-
 `--compact-every N` bounds the journal between snapshots; `0` disables compaction,
 not durability. Keep the log and its adjacent `.snapshot` file together and
 always restart with the same log path.
@@ -96,6 +86,20 @@ not distributed fencing or HA. Use a local filesystem with working file locks
 and fsync; unsupported locking fails boot. The lock is advisory on Unix: do not
 modify, delete, replace or externally rotate either durable file while the
 controller runs, and do not run older binaries that bypass locking.
+
+## Agent restart and recovery
+
+Adoption requires member status and successful endpoint enumeration from the
+returning agent's current session. Every expected open binding must match its
+node, provider, scope, binding ID, fence, and active phase. A running process alone
+is not ownership proof. Missing or inconsistent evidence blocks adoption; it
+does not release occupied capacity. Stray endpoint closes must each be
+acknowledged. Successful empty enumeration completes recovery for an idle machine.
+
+Adoption does not reactivate resources or restart execution. Re-register the
+agent to collect fresh recovery evidence; enumeration is not automatically
+retried. A report from a new session is not proof that an older execution has
+stopped.
 
 ## Stateful workloads
 

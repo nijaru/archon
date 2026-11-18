@@ -9,8 +9,9 @@ runtimes, drivers, networking and storage are external substrate.
 - `README.md`: current CLI, host prerequisites and behavior limitations.
 - `CONTRIBUTING.md`: contribution policy, DCO sign-off and required CI.
 - `crates/kernel`: pure resource decisions; `crates/sim`: deterministic failure scenarios.
-- `crates/node`: providers, execution, agent/controller reconciliation and persistence.
-- `crates/control` and `crates/cli`: current wire/API and user entry points.
+- `crates/node`: workload orchestration, agent protocol, provider execution and reconciliation.
+- `crates/control`: controller API, journal, snapshots and restart recovery.
+- `crates/cli`: operator and agent entry points.
 
 The maintainer works on `main` during R&D. External contributions follow
 `CONTRIBUTING.md`. Do not open a pull request unless requested.
