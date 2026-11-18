@@ -24,10 +24,8 @@ severity classes for this project).
 
 ## Scope notes
 
-- Without `--token-file` / `ARCHON_TOKEN`, links are encrypted but
-  unauthenticated by design (development mode); that is documented
-  behavior, not a vulnerability. A token provides shared-secret authentication,
-  **not** per-client/per-node identity, project authorization or an audit trail.
-  Do not treat it as a complete production security model.
-- The simulator (`archon-sim`) is a test oracle, not a security
-  boundary.
+- Tokenless mode is intentionally unauthenticated. Keep it on loopback in
+  a trusted lab. A shared token is not a tenant boundary. See the
+  [authentication setup and limits](README.md#link-authentication).
+- The simulator (`archon-sim`) checks modeled behavior; it does not qualify
+  real isolation or enforcement.

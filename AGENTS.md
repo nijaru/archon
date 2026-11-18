@@ -6,7 +6,8 @@ runtimes, drivers, networking and storage are external substrate.
 
 ## Navigation and workflow
 
-- `README.md`: current CLI, host prerequisites and behavior limitations.
+- `README.md`: quickstart, host prerequisites and implemented scope.
+- `docs/operations.md`: persistence, recovery and capacity reuse.
 - `CONTRIBUTING.md`: contribution policy, DCO sign-off and required CI.
 - `crates/kernel`: pure resource decisions; `crates/sim`: deterministic failure scenarios.
 - `crates/node`: workload orchestration, agent protocol, provider execution and reconciliation.
@@ -43,15 +44,7 @@ when an authorized redesign shows they need replacement.
 
 ## Verification
 
-```text
-cargo fmt --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p archon-sim
-```
-
-Dependency changes also require:
-`cargo deny check advisories bans licenses sources`.
+Run the [local checks in CONTRIBUTING.md](CONTRIBUTING.md#local-checks).
 
 CI's `privileged-enforcement` job runs the real Linux cgroup/device suite with
 `ARCHON_REQUIRE_PRIVILEGED_CGROUP=1`; ordinary unprivileged or macOS tests are not

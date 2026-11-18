@@ -19,7 +19,7 @@ contributor license agreement.
   `supply-chain` (cargo-deny).
 - The maintainer may additionally work directly on `main` during R&D.
 
-## Gates
+## Local checks
 
 Run these before opening a PR:
 
@@ -44,9 +44,9 @@ If you change dependencies, also run
   (`archon-sim`) for distributed ownership and failure invariants, and
   live Linux integration tests for enforcement and timing-sensitive
   proof.
-- Keep the public behavior in [`README.md`](README.md) accurate: CLI
-  usage, host prerequisites, and current limitations must describe what
-  is actually implemented.
+- Update the [README](README.md) when CLI usage, host prerequisites, or
+  implemented scope changes. Update the [lab operations guide](docs/operations.md)
+  when persistence, recovery, or capacity-reuse behavior changes.
 
 ## Security
 
