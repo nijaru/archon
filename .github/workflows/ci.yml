@@ -33,6 +33,14 @@ jobs:
           test_bin="$(find target/debug/deps -maxdepth 1 -type f -perm -111 -name 'cgroup_linux-*' | head -n 1)"
           test -n "$test_bin"
           sudo --preserve-env=ARCHON_REQUIRE_PRIVILEGED_CGROUP env ARCHON_LOG_DIR="$RUNNER_TEMP/archon-privileged-logs" "$test_bin" --nocapture
+      - name: Prove queued admission after native agent recovery
+        env:
+          ARCHON_REQUIRE_PRIVILEGED_CGROUP: "1"
+        run: |
+          set -o pipefail
+          test_bin="$(cargo test -p archon-cli --test native_recovery --no-run --message-format=json | jq -r 'select(.reason == "compiler-artifact" and .target.name == "native_recovery") | .executable')"
+          test -x "$test_bin"
+          sudo --preserve-env=ARCHON_REQUIRE_PRIVILEGED_CGROUP "$test_bin" --nocapture
 
   supply-chain:
     runs-on: ubuntu-latest
