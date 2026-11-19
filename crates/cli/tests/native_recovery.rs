@@ -44,6 +44,11 @@ impl Drop for TestDirs {
             }
         }
         let _ = fs::remove_dir(&self.cgroups);
+        if std::thread::panicking()
+            && let Ok(log) = fs::read_to_string(self.state.join("controller.stderr"))
+        {
+            eprintln!("controller stderr:\n{log}");
+        }
         let _ = fs::remove_dir_all(&self.state);
     }
 }
@@ -80,19 +85,26 @@ fn command() -> Command {
 }
 
 fn agent(addr: &str, dirs: &TestDirs) -> ChildGuard {
-    ChildGuard(
-        command()
-            .args(["agent", "--register", addr, "--id", "native-recovery"])
-            .arg("--cgroup-root")
-            .arg(&dirs.cgroups)
-            .env("ARCHON_EXECUTION_STATE_DIR", &dirs.state)
-            .env("ARCHON_LOG_DIR", dirs.state.join("execution-logs"))
-            .spawn()
-            .unwrap(),
-    )
+    ChildGuard(agent_command(addr, dirs).spawn().unwrap())
+}
+
+fn agent_command(addr: &str, dirs: &TestDirs) -> Command {
+    let mut agent = command();
+    agent
+        .args(["agent", "--register", addr, "--id", "native-recovery"])
+        .arg("--cgroup-root")
+        .arg(&dirs.cgroups)
+        .env("ARCHON_EXECUTION_STATE_DIR", &dirs.state)
+        .env("ARCHON_LOG_DIR", dirs.state.join("execution-logs"));
+    agent
 }
 
 fn controller(addr: &str, dirs: &TestDirs) -> ChildGuard {
+    let stderr = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dirs.state.join("controller.stderr"))
+        .unwrap();
     ChildGuard(
         command()
             .args([
@@ -105,6 +117,7 @@ fn controller(addr: &str, dirs: &TestDirs) -> ChildGuard {
                 "--log",
             ])
             .arg(dirs.state.join("journal"))
+            .stderr(stderr)
             .spawn()
             .unwrap(),
     )
@@ -287,6 +300,11 @@ fn recovery_with_queued_work(crash: Crash) {
     assert!(old_scope.is_dir());
     assert!(!marker.exists());
 
+    if crash == Crash::BothWhileActive {
+        assert_recovery_holds_without_record(&addr_arg, &dirs, &mut client, first, &old_scope);
+        assert!(!marker.exists());
+    }
+
     let _replacement = agent(&addr_arg, &dirs);
     // The competitor checks for the old scope in its first command. This
     // proves the order even if both changes happen between status polls.
@@ -308,4 +326,45 @@ fn recovery_with_queued_work(crash: Crash) {
             .any(|lease| lease.id == first && lease.state == "Revoked")
     );
     drop(plane);
+}
+
+fn assert_recovery_holds_without_record(
+    addr: &str,
+    dirs: &TestDirs,
+    client: &mut SecureStream,
+    lease: u64,
+    scope: &Path,
+) {
+    let empty_state = dirs.state.join("empty-execution-state");
+    fs::create_dir(&empty_state).unwrap();
+    let _without_record = ChildGuard(
+        agent_command(addr, dirs)
+            .env("ARCHON_EXECUTION_STATE_DIR", empty_state)
+            .spawn()
+            .unwrap(),
+    );
+    // Wait for the controller to receive the refusal, not merely for the
+    // replacement to connect. A refusal must leave occupancy intact.
+    let rejection = format!("execution stop for lease LeaseId({lease})");
+    until("controller to receive the stop refusal", || {
+        fs::read_to_string(dirs.state.join("controller.stderr"))
+            .ok()?
+            .lines()
+            .any(|line| line.contains(&rejection) && line.contains("is untracked"))
+            .then_some(())
+    });
+    let (queued, leases) = status(client);
+    assert_eq!(queued, 1);
+    assert!(
+        leases
+            .iter()
+            .any(|entry| entry.id == lease && entry.state == "Revoked")
+    );
+    assert!(!leases.iter().any(|entry| entry.owner == 2));
+    assert!(
+        fs::read_to_string(scope.join("cgroup.events"))
+            .unwrap()
+            .lines()
+            .any(|line| line == "populated 1")
+    );
 }
