@@ -638,10 +638,15 @@ fn print_response(response: ServerResponse) {
                     .exit_code
                     .map(|code| format!(" exit={code}"))
                     .unwrap_or_default();
+                let capacity = match lease.occupies_capacity {
+                    Some(true) => "held",
+                    Some(false) => "released",
+                    None => "unknown",
+                };
                 let command = lease.command.join(" ");
                 println!(
-                    "lease {} owner={} state={}{} [{}]",
-                    lease.id, lease.owner, lease.state, exit, command
+                    "lease {} owner={} state={} capacity={}{} [{}]",
+                    lease.id, lease.owner, lease.state, capacity, exit, command
                 );
             }
         }

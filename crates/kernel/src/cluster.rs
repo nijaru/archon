@@ -291,6 +291,14 @@ impl Cluster {
             .is_some_and(|lease| lease_occupies(lease, self.open_bindings(lease.id)))
     }
 
+    /// Iterate lease records with their scheduler occupancy in one pass over bindings.
+    pub fn leases_with_occupancy(&self) -> impl Iterator<Item = (&Lease, bool)> + '_ {
+        let open = self.open_binding_leases();
+        self.leases
+            .values()
+            .map(move |lease| (lease, lease_occupies(lease, open.contains(&lease.id))))
+    }
+
     pub fn children(&self, parent: LeaseId) -> Vec<LeaseId> {
         self.leases
             .values()

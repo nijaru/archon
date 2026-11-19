@@ -923,12 +923,12 @@ impl ControlPlane {
         let leases = self
             .service
             .cluster
-            .leases
-            .values()
-            .map(|lease| LeaseInfo {
+            .leases_with_occupancy()
+            .map(|(lease, occupies_capacity)| LeaseInfo {
                 id: lease.id.as_u64(),
                 owner: lease.owner.as_u64(),
                 state: format!("{:?}", lease.state),
+                occupies_capacity: Some(occupies_capacity),
                 expires_at: lease.expires_at,
                 exit_code: lease.exit_code,
                 command: self.service.lease_command_of(lease.id).unwrap_or_default(),

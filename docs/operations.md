@@ -40,6 +40,12 @@ controller runs, and do not run older binaries that bypass locking.
 
 ## Agent restart and recovery
 
+`archon status` reports capacity separately from lease state. A `Revoked` lease
+with `capacity=held` still counts against admission; revoke alone does not prove
+teardown. `capacity=released` means this lease no longer
+blocks reuse, though other leases or machine health can still prevent placement.
+`capacity=unknown` means the controller did not report occupancy.
+
 Adoption requires member status and successful endpoint enumeration from the
 returning agent's current session. Every expected open binding must match its
 node, provider, scope, binding ID, fence, and active phase. A running process alone

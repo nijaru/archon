@@ -89,6 +89,9 @@ pub struct LeaseInfo {
     pub id: u64,
     pub owner: u64,
     pub state: String,
+    /// Whether admission still accounts for this lease's claims. Older controllers omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occupies_capacity: Option<bool>,
     pub expires_at: u64,
     /// Outcome of a workload that finished on its own.
     #[serde(default)]

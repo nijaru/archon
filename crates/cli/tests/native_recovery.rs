@@ -288,6 +288,7 @@ fn recovery_with_queued_work(crash: Crash) {
     let (queued, leases) = status(&mut client);
     assert_eq!(queued, 1);
     let old = leases.iter().find(|lease| lease.id == first).unwrap();
+    assert_eq!(old.occupies_capacity, Some(true));
     assert_eq!(
         old.state,
         if crash == Crash::BothWhileActive {
@@ -315,16 +316,12 @@ fn recovery_with_queued_work(crash: Crash) {
     assert!(!old_scope.exists());
     let (queued, leases) = status(&mut client);
     assert_eq!(queued, 0);
-    assert!(
-        leases
-            .iter()
-            .any(|lease| lease.owner == 2 && lease.state == "Active")
-    );
-    assert!(
-        leases
-            .iter()
-            .any(|lease| lease.id == first && lease.state == "Revoked")
-    );
+    assert!(leases.iter().any(|lease| lease.owner == 2
+        && lease.state == "Active"
+        && lease.occupies_capacity == Some(true)));
+    assert!(leases.iter().any(|lease| lease.id == first
+        && lease.state == "Revoked"
+        && lease.occupies_capacity == Some(false)));
     drop(plane);
 }
 
@@ -355,12 +352,20 @@ fn assert_recovery_holds_without_record(
     });
     let (queued, leases) = status(client);
     assert_eq!(queued, 1);
-    assert!(
-        leases
-            .iter()
-            .any(|entry| entry.id == lease && entry.state == "Revoked")
-    );
+    assert!(leases.iter().any(|entry| entry.id == lease
+        && entry.state == "Revoked"
+        && entry.occupies_capacity == Some(true)));
     assert!(!leases.iter().any(|entry| entry.owner == 2));
+    let output = command().args(["-c", addr, "status"]).output().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.lines().any(|line| {
+            line.starts_with(&format!("lease {lease} "))
+                && line.contains("state=Revoked capacity=held")
+        }),
+        "{stdout}"
+    );
     assert!(
         fs::read_to_string(scope.join("cgroup.events"))
             .unwrap()
