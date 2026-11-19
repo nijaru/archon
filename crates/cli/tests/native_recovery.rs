@@ -152,19 +152,28 @@ fn populated_scope(root: &Path) -> Option<PathBuf> {
 
 #[test]
 fn queued_work_waits_for_native_recovery_after_agent_crash() {
-    recovery_with_queued_work(false);
+    recovery_with_queued_work(Crash::Agent);
 }
 
 #[test]
 fn queued_work_waits_for_native_recovery_after_controller_and_agent_crash() {
-    recovery_with_queued_work(true);
+    recovery_with_queued_work(Crash::BothAfterRevoke);
 }
 
-fn recovery_with_queued_work(restart_controller: bool) {
-    let name = format!(
-        "archon-native-recovery-{}-{restart_controller}",
-        std::process::id()
-    );
+#[test]
+fn unproven_active_work_is_reclaimed_without_operator_revoke() {
+    recovery_with_queued_work(Crash::BothWhileActive);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Crash {
+    Agent,
+    BothAfterRevoke,
+    BothWhileActive,
+}
+
+fn recovery_with_queued_work(crash: Crash) {
+    let name = format!("archon-native-recovery-{}-{crash:?}", std::process::id());
     let cgroups = Path::new("/sys/fs/cgroup").join(&name);
     if let Err(err) = fs::create_dir(&cgroups) {
         assert!(
@@ -216,6 +225,28 @@ fn recovery_with_queued_work(restart_controller: bool) {
         submit(&mut client, 2, 1, competitor.map(str::to_string).to_vec()),
         0
     );
+    if crash == Crash::BothWhileActive {
+        // Freeze the agent before killing the controller: neither side may
+        // observe the other's exit and perform its normal disconnect cleanup.
+        let pid = original.0.id();
+        assert!(
+            Command::new("kill")
+                .args(["-STOP", &pid.to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let proc_status = format!("/proc/{pid}/status");
+        until("original agent to stop", || {
+            fs::read_to_string(&proc_status)
+                .ok()?
+                .lines()
+                .any(|line| line.starts_with("State:\tT"))
+                .then_some(())
+        });
+        plane.0.kill().unwrap();
+        plane.0.wait().unwrap();
+    }
     original.0.kill().unwrap();
     original.0.wait().unwrap();
     assert!(
@@ -224,22 +255,34 @@ fn recovery_with_queued_work(restart_controller: bool) {
             .lines()
             .any(|line| line == "populated 1")
     );
-    assert!(matches!(
-        request(&mut client, ClientRequest::Revoke { lease: first }),
-        ServerResponse::Revoked
-    ));
-    if restart_controller {
-        // The API has acknowledged both the queued submission and the revoke.
-        // Replay must restore them, but must not treat the revoke as closure.
-        plane.0.kill().unwrap();
-        plane.0.wait().unwrap();
+    if crash != Crash::BothWhileActive {
+        assert!(matches!(
+            request(&mut client, ClientRequest::Revoke { lease: first }),
+            ServerResponse::Revoked
+        ));
+    }
+    if crash != Crash::Agent {
+        // Replay must preserve the queue and the first lease's ownership,
+        // regardless of whether revoke had already been committed.
+        if crash == Crash::BothAfterRevoke {
+            plane.0.kill().unwrap();
+            plane.0.wait().unwrap();
+        }
         drop(client);
         plane = controller(&addr_arg, &dirs);
         client = until("controller journal replay", || connect(addr).ok());
     }
     let (queued, leases) = status(&mut client);
     assert_eq!(queued, 1);
-    assert!(leases.iter().any(|lease| lease.id == first));
+    let old = leases.iter().find(|lease| lease.id == first).unwrap();
+    assert_eq!(
+        old.state,
+        if crash == Crash::BothWhileActive {
+            "Active"
+        } else {
+            "Revoked"
+        }
+    );
     assert!(!leases.iter().any(|lease| lease.owner == 2));
     assert!(old_scope.is_dir());
     assert!(!marker.exists());
@@ -254,6 +297,15 @@ fn recovery_with_queued_work(restart_controller: bool) {
     assert!(!old_scope.exists());
     let (queued, leases) = status(&mut client);
     assert_eq!(queued, 0);
-    assert!(leases.iter().any(|lease| lease.owner == 2));
+    assert!(
+        leases
+            .iter()
+            .any(|lease| lease.owner == 2 && lease.state == "Active")
+    );
+    assert!(
+        leases
+            .iter()
+            .any(|lease| lease.id == first && lease.state == "Revoked")
+    );
     drop(plane);
 }
