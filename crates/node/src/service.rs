@@ -173,7 +173,7 @@ pub struct NodeService {
     /// invariant that reusing a resource implies its member is gone.
     held_effects: BTreeSet<(BindingId, EffectPhase)>,
     /// Machines whose last probe failed, consumed by health policy.
-    unreachable: Vec<NodeId>,
+    unreachable: Vec<(NodeId, u64)>,
     queue: Vec<Queued>,
     /// Desired-state/execution intent for queued requests. Resource ordering
     /// still uses only `queue`; this map never enters kernel authority.
@@ -1379,7 +1379,10 @@ impl NodeService {
     /// [`NodeService::take_unreachable`].
     pub fn probe_agents(&mut self) {
         for machine in self.agents.keys().copied().collect::<Vec<_>>() {
-            let tag = Tag::Probe { machine };
+            let Some(&session) = self.cluster.sessions.get(&machine) else {
+                continue;
+            };
+            let tag = Tag::Probe { machine, session };
             if self.inflight.contains(&tag) {
                 continue;
             }
@@ -1397,6 +1400,11 @@ impl NodeService {
     /// Machines whose most recent probe failed; the caller decides policy.
     pub fn take_unreachable(&mut self) -> Vec<NodeId> {
         std::mem::take(&mut self.unreachable)
+            .into_iter()
+            .filter_map(|(machine, session)| {
+                (self.cluster.sessions.get(&machine) == Some(&session)).then_some(machine)
+            })
+            .collect()
     }
 
     /// Declare a machine unhealthy: stop placements there (quarantine) and
@@ -2422,7 +2430,9 @@ impl NodeService {
                         self.resolve_observed_completion(lease, &mut finished);
                     }
                 }
-                (Tag::Probe { machine }, Err(_)) => self.unreachable.push(*machine),
+                (Tag::Probe { machine, session }, Err(_)) => {
+                    self.unreachable.push((*machine, *session));
+                }
                 (Tag::Probe { .. }, Ok(_)) => {}
                 (Tag::Enumerate { machine, .. }, reply) => {
                     let machine = *machine;
@@ -2491,6 +2501,9 @@ impl NodeService {
     ///   if no program needs stop proof, or that proof is already present;
     ///   otherwise use ordinary held teardown (endpoint closure alone does
     ///   not prove execution stopped);
+    /// - absent generation for an unclosed terminal lease binding: reissue
+    ///   the fence. An omitted endpoint is not closure proof; replay discards
+    ///   old effects, so the current session must settle this binding;
     /// - open generation unknown to the kernel (no Binding record): a
     ///   true stray. Fence directly at the accepted fence — it closes the
     ///   open generation per the Endpoint protocol — and raise the
@@ -2568,6 +2581,28 @@ impl NodeService {
                 }
                 _ if endpoint.open => strays.push((binding, endpoint)),
                 _ => {}
+            }
+        }
+        let reported: BTreeSet<_> = endpoints
+            .iter()
+            .filter_map(|endpoint| endpoint.binding.map(BindingId::from_u64))
+            .collect();
+        for binding in self.cluster.machine_bindings(machine) {
+            let record = &self.cluster.bindings[&binding];
+            if !record.state.is_closed()
+                && !reported.contains(&binding)
+                && self.cluster.leases.get(&record.lease).is_some_and(|lease| {
+                    matches!(
+                        lease.state,
+                        archon_kernel::LeaseState::Released
+                            | archon_kernel::LeaseState::Expired
+                            | archon_kernel::LeaseState::Revoked
+                            | archon_kernel::LeaseState::Failed
+                            | archon_kernel::LeaseState::Completed
+                    )
+                })
+            {
+                fence_commands.push(Command::FenceBinding { binding });
             }
         }
         for command in fence_commands {

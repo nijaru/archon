@@ -92,6 +92,24 @@ fn agent(addr: &str, dirs: &TestDirs) -> ChildGuard {
     )
 }
 
+fn controller(addr: &str, dirs: &TestDirs) -> ChildGuard {
+    ChildGuard(
+        command()
+            .args([
+                "serve",
+                "--no-local",
+                "--listen",
+                addr,
+                "--probe-secs",
+                "1",
+                "--log",
+            ])
+            .arg(dirs.state.join("journal"))
+            .spawn()
+            .unwrap(),
+    )
+}
+
 fn submit(client: &mut SecureStream, owner: u64, cpus: u64, command: Vec<String>) -> u64 {
     match request(
         client,
@@ -134,7 +152,19 @@ fn populated_scope(root: &Path) -> Option<PathBuf> {
 
 #[test]
 fn queued_work_waits_for_native_recovery_after_agent_crash() {
-    let name = format!("archon-native-recovery-{}", std::process::id());
+    recovery_with_queued_work(false);
+}
+
+#[test]
+fn queued_work_waits_for_native_recovery_after_controller_and_agent_crash() {
+    recovery_with_queued_work(true);
+}
+
+fn recovery_with_queued_work(restart_controller: bool) {
+    let name = format!(
+        "archon-native-recovery-{}-{restart_controller}",
+        std::process::id()
+    );
     let cgroups = Path::new("/sys/fs/cgroup").join(&name);
     if let Err(err) = fs::create_dir(&cgroups) {
         assert!(
@@ -155,21 +185,7 @@ fn queued_work_waits_for_native_recovery_after_agent_crash() {
         .local_addr()
         .unwrap();
     let addr_arg = addr.to_string();
-    let _controller = ChildGuard(
-        command()
-            .args([
-                "serve",
-                "--no-local",
-                "--listen",
-                &addr_arg,
-                "--probe-secs",
-                "1",
-                "--log",
-            ])
-            .arg(dirs.state.join("journal"))
-            .spawn()
-            .unwrap(),
-    );
+    let mut plane = controller(&addr_arg, &dirs);
     let mut client = until("controller", || connect(addr).ok());
     let mut original = agent(&addr_arg, &dirs);
     // The first workload consumes the published CPU inventory. Submitting
@@ -212,8 +228,18 @@ fn queued_work_waits_for_native_recovery_after_agent_crash() {
         request(&mut client, ClientRequest::Revoke { lease: first }),
         ServerResponse::Revoked
     ));
+    if restart_controller {
+        // The API has acknowledged both the queued submission and the revoke.
+        // Replay must restore them, but must not treat the revoke as closure.
+        plane.0.kill().unwrap();
+        plane.0.wait().unwrap();
+        drop(client);
+        plane = controller(&addr_arg, &dirs);
+        client = until("controller journal replay", || connect(addr).ok());
+    }
     let (queued, leases) = status(&mut client);
     assert_eq!(queued, 1);
+    assert!(leases.iter().any(|lease| lease.id == first));
     assert!(!leases.iter().any(|lease| lease.owner == 2));
     assert!(old_scope.is_dir());
     assert!(!marker.exists());
@@ -229,4 +255,5 @@ fn queued_work_waits_for_native_recovery_after_agent_crash() {
     let (queued, leases) = status(&mut client);
     assert_eq!(queued, 0);
     assert!(leases.iter().any(|lease| lease.owner == 2));
+    drop(plane);
 }

@@ -75,7 +75,11 @@ For native executions with cgroup limits and no device grants, the agent records
 ownership before launch. A replacement using the same directory and cgroup root
 can stop that exact scope and answer repeated stop requests. It does not adopt
 or relaunch the workload. Replacement cleanup does not honor the old grace
-period because it has no child handle.
+period because it has no child handle. If the controller also restarts, replay
+restores queued submissions and pending revocations. A terminal binding omitted
+by the replacement agent is fenced again rather than treated as closed. Queued
+work can use that capacity only after the agent proves execution stop and the
+binding closes.
 
 Keep the state directory and its records intact while a controller could replay
 those attempts. Do not share them with workloads, move or replace either root,

@@ -69,6 +69,7 @@ pub enum Tag {
     },
     Probe {
         machine: NodeId,
+        session: u64,
     },
 }
 

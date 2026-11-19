@@ -667,13 +667,17 @@ fn terminal_recovery_requires_execution_proof_even_when_endpoint_is_closed() {
             )));
             assert_eq!(state.lock().unwrap().starts, 1, "recovery never relaunches");
 
-            // A new session with affirmative stop and endpoint proof can
-            // settle the held ownership, including after transport loss.
+            // A new session with affirmative stop and fence replies can
+            // settle the held ownership, even when enumeration omits the
+            // old binding entirely (as with a replacement agent).
             {
                 let mut fake = state.lock().unwrap();
                 fake.status_mode = ReplyMode::Normal;
                 fake.stop_mode = ReplyMode::Normal;
-                fake.endpoints = vec![cpu_endpoint(node.as_u64(), binding.as_u64(), true, fence)];
+                fake.endpoints = endpoint_open
+                    .into_iter()
+                    .map(|_| cpu_endpoint(node.as_u64(), binding.as_u64(), true, fence))
+                    .collect();
             }
             register(&mut recovered, &addr, "proof");
             settle(&mut recovered, 5);
