@@ -337,6 +337,124 @@ fn root_exit_leaves_descendants_until_confirmed_scope_removal() {
     cleanup_root(&root);
 }
 
+fn recovery_start() -> archon_node::protocol::AgentRequest {
+    use archon_node::protocol::AgentRequest;
+    AgentRequest::StartExecution {
+        lease: 41,
+        execution: Some(serde_json::from_value(serde_json::to_value([4_u8; 16]).unwrap()).unwrap()),
+        session: 1,
+        epoch: 1,
+        command: vec!["sh".into(), "-c".into(), "sleep 30 & wait".into()],
+        limits: LeaseLimits {
+            cpu_count: 1,
+            ..Default::default()
+        },
+        image: String::new(),
+        storage: vec![],
+        ports: vec![],
+        grace_secs: 0,
+        devices: vec![],
+    }
+}
+
+#[test]
+fn recovery_fixture_agent_process() {
+    use archon_node::{agent::LeaseAgent, protocol::AgentResponse};
+    let Some(state) = std::env::var_os("ARCHON_TEST_RECLAIM_CHILD") else {
+        return;
+    };
+    let state = std::path::PathBuf::from(state);
+    let mut agent = LeaseAgent::new(
+        ProcessRuntime::new()
+            .with_cgroup_root(root("replacement-reclaim"))
+            .with_execution_state(state.clone()),
+    );
+    let reply = agent.handle(recovery_start());
+    assert!(
+        matches!(reply, AgentResponse::ExecutionStarted { lease: 41 }),
+        "{reply:?}"
+    );
+    let scope = std::path::PathBuf::from(root("replacement-reclaim"))
+        .join(format!("execution-{}", "04".repeat(16)));
+    assert!(wait_until(Duration::from_secs(3), || {
+        fs::read_to_string(scope.join("cgroup.procs")).is_ok_and(|pids| pids.lines().count() >= 2)
+    }));
+    fs::write(state.join("ready"), "ready").unwrap();
+    // The parent kills this process without running the runtime destructor.
+    std::thread::park_timeout(Duration::from_secs(10));
+}
+
+#[test]
+fn replacement_agent_closes_exact_native_scope_and_rejects_replay() {
+    use archon_node::{
+        agent::LeaseAgent,
+        protocol::{AgentRequest, AgentResponse},
+    };
+    let name = "replacement-reclaim";
+    if !require_cgroup_writable(name) {
+        return;
+    }
+    let root = root(name);
+    fs::create_dir(&root).unwrap();
+    let state = std::env::temp_dir().join(format!("archon-reclaim-{}", std::process::id()));
+    fs::create_dir(&state).unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "recovery_fixture_agent_process", "--nocapture"])
+        .env("ARCHON_TEST_RECLAIM_CHILD", &state)
+        .spawn()
+        .unwrap();
+    let started = wait_until(Duration::from_secs(5), || state.join("ready").exists());
+    let _ = child.kill();
+    child.wait().unwrap();
+    assert!(started, "fixture failed to launch the workload");
+    let scope = std::path::Path::new(&root).join(format!("execution-{}", "04".repeat(16)));
+    assert!(
+        fs::read_to_string(scope.join("cgroup.events"))
+            .unwrap()
+            .lines()
+            .any(|s| s == "populated 1")
+    );
+    let AgentRequest::StartExecution { execution, .. } = recovery_start() else {
+        unreachable!()
+    };
+    let stop = |lease| AgentRequest::StopExecution {
+        lease,
+        execution,
+        session: 2,
+        epoch: 1,
+    };
+    let replacement = || {
+        LeaseAgent::new(
+            ProcessRuntime::new()
+                .with_cgroup_root(root.clone())
+                .with_execution_state(state.clone()),
+        )
+    };
+    let mut agent = replacement();
+    assert!(matches!(
+        agent.handle(stop(42)),
+        AgentResponse::ExecutionStopFailed { .. }
+    ));
+    assert!(scope.exists());
+    assert!(matches!(
+        agent.handle(stop(41)),
+        AgentResponse::ExecutionStopped { .. }
+    ));
+    assert!(!scope.exists());
+    let mut replacement_again = replacement();
+    assert!(matches!(
+        replacement_again.handle(recovery_start()),
+        AgentResponse::ExecutionFailed { .. }
+    ));
+    assert!(matches!(
+        replacement_again.handle(stop(41)),
+        AgentResponse::ExecutionStopped { .. }
+    ));
+    assert!(!scope.exists());
+    fs::remove_dir_all(state).unwrap();
+    cleanup_root(&root);
+}
+
 #[test]
 fn reused_lease_number_cannot_take_over_an_existing_scope() {
     let name = "unowned-scope";

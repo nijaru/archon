@@ -87,7 +87,7 @@ impl ExecutionSupervisor {
             // Device claims are enforced by the process executor's
             // cgroup-device filter.
             self.process
-                .activate(lease, start.command, start.limits, start.devices)
+                .activate_assigned(lease, id, start.command, start.limits, start.devices)
         } else {
             self.containers.activate(
                 lease,
@@ -139,7 +139,11 @@ impl ExecutionSupervisor {
     /// A missing handle in a replacement supervisor is not closure proof.
     pub(crate) fn stop(&mut self, lease: LeaseId, id: Option<ExecutionId>) -> Result<(), String> {
         let Some(record) = self.executions.get_mut(&lease) else {
-            return Err(format!("execution for lease {lease} is untracked"));
+            return if self.process.stop_assignment(lease, id, 0)? {
+                Ok(())
+            } else {
+                Err(format!("execution for lease {lease} is untracked"))
+            };
         };
         if record.id != id {
             return Err(format!("execution identity mismatch for lease {lease}"));
@@ -149,7 +153,7 @@ impl ExecutionSupervisor {
         };
         if self.containers.is_tracked(lease) {
             self.containers.terminate_with_grace(lease, grace)?;
-        } else {
+        } else if !self.process.stop_assignment(lease, id, grace)? {
             self.process.terminate_with_grace(lease, grace)?;
         }
         record.grace = None;

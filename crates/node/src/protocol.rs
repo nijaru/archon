@@ -23,6 +23,16 @@ impl ExecutionId {
         std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
         Ok(Self(bytes))
     }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn native_scope_name(self) -> String {
+        use std::fmt::Write;
+        let mut name = String::from("execution-");
+        for byte in self.0 {
+            write!(name, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        name
+    }
 }
 
 /// Connection greeting: role declaration, sent as the first framed

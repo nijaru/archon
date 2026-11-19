@@ -10,9 +10,11 @@ use std::time::Duration;
 
 use archon_kernel::LeaseId;
 
-use crate::protocol::LeaseLimits;
+#[cfg(target_os = "linux")]
+use crate::native_assignment::NativeAssignment;
 #[cfg(target_os = "linux")]
 use crate::protocol::{CpuList, CpuPlacement};
+use crate::protocol::{ExecutionId, LeaseLimits};
 
 #[cfg(target_os = "linux")]
 use crate::cgroup::CgroupGroup;
@@ -80,6 +82,8 @@ pub struct ProcessRuntime {
     /// Cgroup root for lease groups; empty means lifecycle-only enforcement.
     #[cfg(target_os = "linux")]
     cgroup_root: Option<String>,
+    #[cfg(target_os = "linux")]
+    execution_state: Option<std::path::PathBuf>,
 }
 
 impl ProcessRuntime {
@@ -112,7 +116,80 @@ impl ProcessRuntime {
     #[cfg(target_os = "linux")]
     pub fn with_cgroup_root(mut self, root: String) -> Self {
         self.cgroup_root = Some(root);
+        self.execution_state = std::env::var_os("ARCHON_EXECUTION_STATE_DIR").map(Into::into);
         self
+    }
+
+    /// Use a dedicated, existing local state directory for native recovery.
+    #[cfg(target_os = "linux")]
+    pub fn with_execution_state(mut self, path: std::path::PathBuf) -> Self {
+        self.execution_state = Some(path);
+        self
+    }
+
+    pub(crate) fn activate_assigned(
+        &mut self,
+        lease: LeaseId,
+        id: Option<ExecutionId>,
+        command: &[String],
+        limits: &LeaseLimits,
+        devices: &[crate::protocol::DeviceAccess],
+    ) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if let (Some(state), Some(root), Some(id)) = (&self.execution_state, &self.cgroup_root, id)
+            && devices.is_empty()
+            && !limits.is_empty()
+        {
+            let assignment = NativeAssignment::begin(state, std::path::Path::new(root), lease, id)?;
+            return self.activate_in_scope(lease, command, limits, devices, Some(&assignment.name));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = id;
+        self.activate(lease, command, limits, devices)
+    }
+
+    /// Recover closure only where an exact durable native assignment exists.
+    pub(crate) fn stop_assignment(
+        &mut self,
+        lease: LeaseId,
+        id: Option<ExecutionId>,
+        grace: u32,
+    ) -> Result<bool, String> {
+        #[cfg(target_os = "linux")]
+        if let (Some(state), Some(root), Some(id)) = (&self.execution_state, &self.cgroup_root, id)
+            && let Some(assignment) =
+                NativeAssignment::open(state, std::path::Path::new(root), lease, id)?
+        {
+            // The live owner can honor grace. After replacement there is no
+            // child handle or grace budget; recover the exact scope directly.
+            if let Some(group) = self.groups.get(&lease) {
+                if group.path().file_name() != Some(std::ffi::OsStr::new(&assignment.name)) {
+                    return Err(format!(
+                        "tracked scope for lease {lease} does not match its durable assignment"
+                    ));
+                }
+                self.terminate_with_grace(lease, grace)?;
+            } else {
+                assignment.close()?;
+            }
+            return Ok(true);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(id) = id
+            && self.groups.get(&lease).is_some_and(|group| {
+                group
+                    .path()
+                    .file_name()
+                    .is_some_and(|name| name == id.native_scope_name().as_str())
+            })
+        {
+            return Err(format!(
+                "durable execution record for lease {lease} is missing"
+            ));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (lease, id, grace);
+        Ok(false)
     }
 
     pub fn capabilities(&self) -> crate::protocol::RuntimeCapabilities {
@@ -177,6 +254,18 @@ impl ProcessRuntime {
         limits: &LeaseLimits,
         devices: &[crate::protocol::DeviceAccess],
     ) -> Result<(), String> {
+        self.activate_in_scope(lease, command, limits, devices, None)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+    fn activate_in_scope(
+        &mut self,
+        lease: LeaseId,
+        command: &[String],
+        limits: &LeaseLimits,
+        devices: &[crate::protocol::DeviceAccess],
+        scope_name: Option<&str>,
+    ) -> Result<(), String> {
         if self.children.contains_key(&lease) {
             return Ok(());
         }
@@ -210,7 +299,10 @@ impl ProcessRuntime {
 
         #[cfg(target_os = "linux")]
         let mut group = match (&self.cgroup_root, limits.is_empty() && devices.is_empty()) {
-            (Some(root), false) => Some(CgroupGroup::create(root, lease, limits)?),
+            (Some(root), false) => Some(match scope_name {
+                Some(name) => CgroupGroup::create_named(std::path::Path::new(root), name, limits)?,
+                None => CgroupGroup::create(root, lease, limits)?,
+            }),
             _ => None,
         };
 

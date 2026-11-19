@@ -32,9 +32,20 @@ impl CgroupGroup {
     /// device-only group needs no resource controller; it is still a valid
     /// cgroup-device BPF attach point.
     pub fn create(root: &str, lease: LeaseId, limits: &LeaseLimits) -> Result<Self, String> {
-        let root = PathBuf::from(root);
-        prepare_root(&root, limits)?;
-        let path = root.join(format!("lease-{}", lease.as_u64()));
+        Self::create_named(
+            Path::new(root),
+            &format!("lease-{}", lease.as_u64()),
+            limits,
+        )
+    }
+
+    pub(crate) fn create_named(
+        root: &Path,
+        name: &str,
+        limits: &LeaseLimits,
+    ) -> Result<Self, String> {
+        prepare_root(root, limits)?;
+        let path = root.join(name);
         // Lease numbers are local to a controller journal. A path collision
         // does not authorize taking over the existing execution scope.
         fs::create_dir(&path).map_err(|err| {
@@ -54,6 +65,20 @@ impl CgroupGroup {
             return Err(err);
         }
         Ok(group)
+    }
+
+    /// Only callers with independent ownership evidence may recover a scope.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn recover(path: PathBuf) -> Result<Option<Self>, String> {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => Ok(Some(Self { path })),
+            Ok(_) => Err(format!(
+                "execution scope {} is not a directory",
+                path.display()
+            )),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(format!("inspect {}: {err}", path.display())),
+        }
     }
 
     #[cfg(target_os = "linux")]

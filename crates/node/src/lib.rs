@@ -9,6 +9,8 @@ pub mod dispatch;
 mod executor;
 #[cfg(target_os = "linux")]
 mod linux_process;
+#[cfg(target_os = "linux")]
+mod native_assignment;
 pub mod protocol;
 mod provider;
 mod recovery;

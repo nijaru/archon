@@ -65,9 +65,24 @@ Do not downgrade with live leases.
 
 A reported root process exit does not bypass execution teardown. For a tracked
 native Linux cgroup, the agent must remove the execution scope before it
-acknowledges stop. A replacement agent with no record of an exposed execution
-refuses to acknowledge stop; capacity can remain occupied. This does not yet
-recover execution identity or preserve stop evidence across agent replacement.
+acknowledges stop.
+
+For same-boot cleanup after agent replacement, set `ARCHON_EXECUTION_STATE_DIR`
+on the remote agent (or controller for a local agent). Use an existing, private
+local directory on a filesystem with working locks and fsync, and an existing
+cgroup root dedicated to that agent. Enable this before launching workloads.
+For native executions with cgroup limits and no device grants, the agent records
+ownership before launch. A replacement using the same directory and cgroup root
+can stop that exact scope and answer repeated stop requests. It does not adopt
+or relaunch the workload. Replacement cleanup does not honor the old grace
+period because it has no child handle.
+
+Keep the state directory and its records intact while a controller could replay
+those attempts. Do not share them with workloads, move or replace either root,
+or change configuration during recovery. Records are retained to reject stale
+starts; automatic pruning is not implemented. Missing or invalid records and
+changed boot or cgroup-root identity do not prove closure. This recovery path
+does not cover OCI, devices, or earlier executions launched without records.
 
 Keep a cgroup root dedicated to one controller's journal. A start that finds an
 existing native scope at the requested lease number is refused without changing
