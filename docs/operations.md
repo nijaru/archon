@@ -57,8 +57,13 @@ bindings without an execution-stop reply. Before sending the first start, the
 controller durably withdraws that exception for the whole lease. A missing
 start reply or a journal from before this tracking was added does not prove
 that no start was sent. Do not downgrade a controller with live leases: older
-binaries do not maintain this dispatch record. This does not qualify agent-side
-stop evidence after process or runtime replacement.
+binaries do not maintain this dispatch record.
+
+A reported root process exit does not bypass execution teardown. For a tracked
+native Linux cgroup, the agent must remove the execution scope before it
+acknowledges stop. A replacement agent with no record of an exposed execution
+refuses to acknowledge stop; capacity can remain occupied. This does not yet
+recover execution identity or preserve stop evidence across agent replacement.
 
 ## Stateful workloads
 

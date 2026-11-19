@@ -210,7 +210,7 @@ impl LeaseAgent {
                     return AgentResponse::ExecutionStopFailed { lease, reason };
                 }
                 match self.execution.stop(LeaseId::from_u64(lease)) {
-                    Ok(_) => AgentResponse::ExecutionStopped { lease },
+                    Ok(()) => AgentResponse::ExecutionStopped { lease },
                     Err(reason) => {
                         eprintln!("archon: stop for lease {lease} failed: {reason}");
                         AgentResponse::ExecutionStopFailed { lease, reason }

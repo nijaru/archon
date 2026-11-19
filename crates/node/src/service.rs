@@ -3111,10 +3111,8 @@ impl NodeService {
     ) {
         self.member_status
             .insert((lease, machine), MemberStatus { running, exit_code });
-        // A terminal lease recovers through member shutdown, not adoption:
-        // an exited member records the stop proof (releasing held fences);
-        // a running or unknown member requires the ordinary member-stop
-        // path, and its held fences proceed only once the stop is proven.
+        // Process exit is an outcome, not closure of the execution scope.
+        // A descendant or provider-owned object may still be live.
         let terminal = matches!(
             self.cluster.leases.get(&lease).map(|record| record.state),
             Some(
@@ -3126,12 +3124,6 @@ impl NodeService {
             )
         );
         if terminal {
-            if let Some(session) = self.cluster.sessions.get(&machine).copied()
-                && !running
-                && exit_code.is_some()
-            {
-                self.execution_stopped.insert((lease, machine, session));
-            }
             if let Err(err) = self.maybe_stop_executions(lease) {
                 eprintln!(
                     "archon: stopping recovered terminal member lease {lease} on machine {machine} failed: {err}"
@@ -3169,11 +3161,6 @@ impl NodeService {
             }
             if let Some(session) = self.cluster.sessions.get(&machine).copied() {
                 self.execution_started.insert((lease, machine, session));
-                // A recovered member that already exited proves the member
-                // gone: resource teardown for this machine may proceed.
-                if !running {
-                    self.execution_stopped.insert((lease, machine, session));
-                }
             }
             self.resolve_observed_completion(lease, finished);
             self.recovery_events.push(RecoveryEvent::MemberRecovered {

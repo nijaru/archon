@@ -284,29 +284,23 @@ impl ProcessRuntime {
         Ok(())
     }
 
-    /// Kill the lease's process if it is still running. On Linux with a
-    /// cgroup, the whole group dies atomically and the group is removed.
+    /// Kill the lease's process if it is still running. For a tracked Linux
+    /// cgroup, success also requires removal of the execution scope.
     pub fn terminate(&mut self, lease: LeaseId) -> Result<bool, String> {
         #[cfg(target_os = "linux")]
         if let Some(group) = self.groups.get(&lease) {
-            // Kill before dropping the handle: an error keeps the group
-            // tracked for a later retry.
             group.kill()?;
+            // Keep the exact cleanup target on failure. The root may already
+            // have exited while other processes still occupy the group.
+            group.remove_after_kill()?;
+            self.groups.remove(&lease);
+            return self.reap(lease);
         }
-        #[cfg(target_os = "linux")]
-        if self.groups.contains_key(&lease) {
-            let killed = self.reap(lease)?;
-            // Destroy may race a still-exiting process; tolerate failure.
-            if let Some(group) = self.groups.remove(&lease) {
-                let _ = group.destroy();
-            }
-            return Ok(killed);
-        }
-        let Some(mut child) = self.children.remove(&lease) else {
+        let Some(child) = self.children.get_mut(&lease) else {
             return Ok(false);
         };
-        match child.try_wait() {
-            Ok(Some(_)) => Ok(false),
+        let killed = match child.try_wait() {
+            Ok(Some(_)) => false,
             Ok(None) => {
                 child
                     .kill()
@@ -314,10 +308,12 @@ impl ProcessRuntime {
                 child
                     .wait()
                     .map_err(|err| format!("reap lease {lease}: {err}"))?;
-                Ok(true)
+                true
             }
-            Err(err) => Err(format!("poll lease {lease}: {err}")),
-        }
+            Err(err) => return Err(format!("poll lease {lease}: {err}")),
+        };
+        self.children.remove(&lease);
+        Ok(killed)
     }
 
     /// Whether the lease has a running child.

@@ -286,6 +286,58 @@ fn placement_limits_pin_the_lease_cpuset() {
 }
 
 #[test]
+fn root_exit_leaves_descendants_until_confirmed_scope_removal() {
+    let name = "root-exit-descendant";
+    if !require_cgroup_writable(name) {
+        return;
+    }
+    let root = root(name);
+    let lease = LeaseId::from_u64(23);
+    let mut runtime = ProcessRuntime::new().with_cgroup_root(root.clone());
+    let limits = LeaseLimits {
+        cpu_count: 1,
+        ..Default::default()
+    };
+    runtime
+        .activate(
+            lease,
+            &["sh".into(), "-c".into(), "sleep 15 & exit 0".into()],
+            &limits,
+            &[],
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match runtime.status(lease) {
+            WorkStatus::Exited(0) => break,
+            WorkStatus::Running if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            status => panic!("expected root exit: {status:?}"),
+        }
+    }
+    let scope = std::path::Path::new(&root).join("lease-23");
+    let events = scope.join("cgroup.events");
+    assert!(
+        fs::read_to_string(&events)
+            .unwrap()
+            .lines()
+            .any(|s| s == "populated 1")
+    );
+
+    // A child cgroup prevents removing the parent even after killing all
+    // tasks. The failed stop must retain the scope for a subsequent retry.
+    let obstruction = scope.join("obstruction");
+    fs::create_dir(&obstruction).unwrap();
+    let failed = runtime.terminate(lease);
+    fs::remove_dir(obstruction).unwrap();
+    assert!(failed.is_err(), "kill alone is not a successful stop");
+    runtime.terminate(lease).unwrap();
+    assert!(!scope.exists(), "retry must remove the original scope");
+    cleanup_root(&root);
+}
+
+#[test]
 fn failed_launch_removes_the_lease_cgroup() {
     let root = root("failed-launch");
     if !require_cgroup_writable("failed-launch") {

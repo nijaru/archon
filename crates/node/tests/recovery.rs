@@ -684,7 +684,7 @@ fn terminal_recovery_requires_execution_proof_even_when_endpoint_is_closed() {
 }
 
 #[test]
-fn empty_enumeration_does_not_close_terminal_bindings() {
+fn root_exit_does_not_close_terminal_bindings() {
     let (addr, state) = spawn_fake_agent();
     let mut first = NodeService::new();
     register(&mut first, &addr, "empty");
@@ -697,12 +697,19 @@ fn empty_enumeration_does_not_close_terminal_bindings() {
     let mut recovered = NodeService::new();
     recovered.replay(commands).unwrap();
     recovered.restore_state(first.state_snapshot());
-    state.lock().unwrap().exit_code = Some(0);
-    state.lock().unwrap().endpoints.clear();
+    {
+        let mut fake = state.lock().unwrap();
+        fake.running = false;
+        fake.exit_code = Some(0);
+        fake.stop_mode = ReplyMode::Failed;
+        fake.endpoints.clear();
+    }
     register(&mut recovered, &addr, "empty");
     settle(&mut recovered, 5);
     assert!(recovered.cluster.occupies(LeaseId::from_u64(1)));
-    assert_eq!(state.lock().unwrap().fences, 0);
+    let fake = state.lock().unwrap();
+    assert!(fake.stops > 0, "root exit still requires a stop request");
+    assert_eq!(fake.fences, 0);
 }
 
 #[test]

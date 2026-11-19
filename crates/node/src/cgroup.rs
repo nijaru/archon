@@ -134,6 +134,26 @@ impl CgroupGroup {
         fs::remove_dir(&self.path).map_err(|err| format!("remove {}: {err}", self.path.display()))
     }
 
+    /// After cgroup.kill, descendants may still be exiting. Success means the
+    /// kernel accepted removal, not just that the kill write succeeded.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn remove_after_kill(&self) -> Result<(), String> {
+        use std::time::{Duration, Instant};
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match fs::remove_dir(&self.path) {
+                Ok(()) => return Ok(()),
+                Err(err)
+                    if err.raw_os_error() == Some(libc::EBUSY) && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => return Err(format!("remove {}: {err}", self.path.display())),
+            }
+        }
+    }
+
     fn write(&self, file: &str, content: &str) -> Result<(), String> {
         let path = self.path.join(file);
         let mut file = fs::OpenOptions::new()

@@ -32,8 +32,9 @@ pub(crate) struct ExecutionStart<'a> {
 pub(crate) struct ExecutionSupervisor {
     process: ProcessRuntime,
     containers: ContainerRuntime,
-    /// Drain budget per execution, captured at successful activation.
-    grace: BTreeMap<LeaseId, u32>,
+    /// Successful starts retain their drain budget. None records a confirmed
+    /// close for idempotent retries within this supervisor only.
+    executions: BTreeMap<LeaseId, Option<u32>>,
 }
 
 impl ExecutionSupervisor {
@@ -43,7 +44,7 @@ impl ExecutionSupervisor {
             containers: ContainerRuntime::new(
                 std::env::var("ARCHON_CONTAINER_ENGINE").unwrap_or_else(|_| "docker".to_string()),
             ),
-            grace: BTreeMap::new(),
+            executions: BTreeMap::new(),
         }
     }
 
@@ -61,6 +62,11 @@ impl ExecutionSupervisor {
         lease: LeaseId,
         start: ExecutionStart<'_>,
     ) -> Result<(), String> {
+        match self.executions.get(&lease) {
+            Some(None) => return Err(format!("execution for lease {lease} is closed")),
+            Some(Some(_)) => return Ok(()),
+            None => {}
+        }
         let result = if start.image.is_empty() {
             // Processes share the host filesystem and network; mounts and
             // ports are container-only concerns. Refuse rather than run a
@@ -86,7 +92,7 @@ impl ExecutionSupervisor {
             )
         };
         if result.is_ok() {
-            self.grace.insert(lease, start.grace_secs);
+            self.executions.insert(lease, Some(start.grace_secs));
         }
         result
     }
@@ -107,15 +113,48 @@ impl ExecutionSupervisor {
         }
     }
 
-    /// Drain and terminate one execution with the grace budget captured at
-    /// activation. Repeated calls are idempotent against the concrete
-    /// runtimes' Lease tracking.
-    pub(crate) fn stop(&mut self, lease: LeaseId) -> Result<bool, String> {
-        let grace = self.grace.remove(&lease).unwrap_or(0);
+    /// A missing handle in a replacement supervisor is not closure proof.
+    pub(crate) fn stop(&mut self, lease: LeaseId) -> Result<(), String> {
+        let grace = match self.executions.get(&lease) {
+            Some(Some(grace)) => *grace,
+            Some(None) => return Ok(()),
+            None => return Err(format!("execution for lease {lease} is untracked")),
+        };
         if self.containers.is_tracked(lease) {
-            self.containers.terminate_with_grace(lease, grace)
+            self.containers.terminate_with_grace(lease, grace)?;
         } else {
-            self.process.terminate_with_grace(lease, grace)
+            self.process.terminate_with_grace(lease, grace)?;
         }
+        self.executions.insert(lease, None);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_tracked_execution_can_report_stop() {
+        let lease = LeaseId::from_u64(193);
+        let mut supervisor = ExecutionSupervisor::new(ProcessRuntime::new());
+        let command = ["sleep".into(), "15".into()];
+        let limits = LeaseLimits::default();
+        let start = || ExecutionStart {
+            command: &command,
+            limits: &limits,
+            image: "",
+            storage: &[],
+            ports: &[],
+            grace_secs: 0,
+            devices: &[],
+        };
+        supervisor.start(lease, start()).unwrap();
+        let mut replacement = ExecutionSupervisor::new(ProcessRuntime::new());
+        assert!(replacement.stop(lease).is_err());
+        assert!(matches!(supervisor.status(lease), WorkStatus::Running));
+        supervisor.stop(lease).unwrap();
+        supervisor.stop(lease).unwrap();
+        assert!(supervisor.start(lease, start()).is_err());
     }
 }
