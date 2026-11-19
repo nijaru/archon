@@ -157,6 +157,9 @@ pub struct NodeService {
     /// Kernel BindingState becomes Active when activation is committed, before
     /// the Agent ack, so execution barriers must use this stronger proof.
     provider_activations: BTreeSet<(BindingId, u64, u64)>,
+    /// Program leases for which no StartExecution could have been sent.
+    /// Remove durably before dispatching the first member; absence is unknown.
+    undispatched_execution: BTreeSet<LeaseId>,
     /// Workload members whose execution start was acknowledged for an exact
     /// Agent session. A new Agent session naturally requires a new start.
     execution_started: BTreeSet<(LeaseId, NodeId, u64)>,
@@ -227,6 +230,9 @@ pub struct NodeService {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServiceState {
     pub requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,
+    /// Older records contain no negative execution evidence.
+    #[serde(default)]
+    undispatched_execution: BTreeSet<LeaseId>,
     /// Queued-but-unadmitted work. Restored on snapshot recovery so a
     /// restart never silently drops submitted requests. Absent (defaulted)
     /// in snapshots written before queue persistence existed.
@@ -961,6 +967,7 @@ impl NodeService {
             inflight: BTreeSet::new(),
             member_status: BTreeMap::new(),
             provider_activations: BTreeSet::new(),
+            undispatched_execution: BTreeSet::new(),
             execution_started: BTreeSet::new(),
             execution_stopped: BTreeSet::new(),
             held_effects: BTreeSet::new(),
@@ -1201,6 +1208,9 @@ impl NodeService {
             .queued_workloads
             .remove(&request_id)
             .unwrap_or_else(|| WorkloadSpec::resource_only(admission.request.clone()));
+        if workload.execution.has_program() {
+            self.undispatched_execution.insert(lease);
+        }
         self.requests.insert(lease, (workload, admission.owner));
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
         // The OpenLease record must carry the post-admission queue and payload.
@@ -1219,6 +1229,7 @@ impl NodeService {
             prepare_deadline: self.cluster.now.saturating_add(20),
             priority: admission.request.priority,
         }) {
+            self.undispatched_execution.remove(&lease);
             self.queue.insert(queue_index, queued);
             let (workload, _) = self
                 .requests
@@ -1260,6 +1271,7 @@ impl NodeService {
     pub fn state_snapshot(&self) -> ServiceState {
         ServiceState {
             requests: self.requests.clone(),
+            undispatched_execution: self.undispatched_execution.clone(),
             queue: self.queue.clone(),
             queued_workloads: self.queued_workloads.clone(),
             restart_handled: self.restart_handled.clone(),
@@ -1296,6 +1308,7 @@ impl NodeService {
         self.next_session = state.next_session;
         self.next_binding = state.next_binding;
         self.requests = state.requests;
+        self.undispatched_execution = state.undispatched_execution;
         // Provider/execution acknowledgements are observations of the current
         // Agent sessions, never durable controller state. Recovery proves them
         // again from live Agents before adopting authority.
@@ -2612,11 +2625,13 @@ impl NodeService {
         self.cluster.bindings.get(&binding).map(|r| r.lease)
     }
 
-    /// Whether a lease's member on one machine is proven stopped for the
-    /// machine's current Agent session. A stop acknowledgement or a known
-    /// recovered exit is required: cleared start observations or unknown
-    /// status after a restart must never imply a member is gone.
+    /// Whether teardown may proceed independently of execution. A durable
+    /// never-dispatched record needs no agent observation; otherwise use the
+    /// current session's stop evidence. Missing evidence is not proof.
     fn member_stop_proven(&self, lease: LeaseId, machine: NodeId) -> bool {
+        if self.undispatched_execution.contains(&lease) {
+            return true;
+        }
         let Some(session) = self.cluster.sessions.get(&machine).copied() else {
             return false;
         };
@@ -2765,6 +2780,11 @@ impl NodeService {
                 grace_secs: execution.grace_secs,
                 devices: self.lease_devices_on_machine(lease, machine),
             };
+            // After this durable boundary even a lost reply or replacement
+            // agent cannot turn an attempted start into a never-sent start.
+            if self.undispatched_execution.remove(&lease) {
+                self.persist(None);
+            }
             self.dispatch(
                 machine,
                 Tag::ExecutionStart {
@@ -2781,10 +2801,8 @@ impl NodeService {
     /// Stop each workload member exactly once per Agent session when the
     /// root Lease has gone terminal. Resource teardown for a machine waits
     /// for that machine's stop proof, so capacity reuse still implies the
-    /// member is gone. Every member of a terminal program-carrying lease
-    /// is stopped, including members whose start was refused or whose
-    /// start observation was lost to a restart: the agent's stop is
-    /// idempotent, and only the stop acknowledgement proves the member gone.
+    /// member is gone. If any start could have escaped, require the existing
+    /// member-stop evidence even when a start observation was lost.
     fn maybe_stop_executions(&mut self, lease: LeaseId) -> Result<(), Error> {
         let Some(record) = self.cluster.leases.get(&lease) else {
             return Ok(());
@@ -2811,7 +2829,7 @@ impl NodeService {
                 continue;
             };
             let key = (lease, machine, session);
-            if self.execution_stopped.contains(&key)
+            if self.member_stop_proven(lease, machine)
                 || self.inflight.iter().any(|tag| {
                     matches!(
                         tag,

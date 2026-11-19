@@ -23,6 +23,11 @@ const WAIT: Duration = Duration::from_secs(3);
 struct State {
     endpoints: Vec<EnumeratedEndpoint>,
     starts: usize,
+    stops: usize,
+    activate_reply_lost: bool,
+    start_reply_lost: bool,
+    stop_proven: bool,
+    durable_start_exposure: Option<bool>,
     activates: usize,
     failed_fences: BTreeSet<u64>,
     fences: Vec<(u64, u64, BindingScope, u64)>,
@@ -137,17 +142,33 @@ impl AgentClient for Agent {
                         .find(|e| e.binding == Some(binding))
                         .unwrap()
                         .phase = EndpointPhase::Active;
-                    Ok(AgentResponse::Activated { binding })
+                    if state.activate_reply_lost {
+                        Err("activation reply lost".into())
+                    } else {
+                        Ok(AgentResponse::Activated { binding })
+                    }
                 }
                 AgentRequest::StartExecution { lease, .. } => {
+                    if let Some(exposed) = state.durable_start_exposure {
+                        assert!(exposed, "start reached the agent before the durable sink");
+                    }
                     state.starts += 1;
-                    Ok(AgentResponse::ExecutionStarted { lease })
+                    if state.start_reply_lost {
+                        Err("start reply lost".into())
+                    } else {
+                        Ok(AgentResponse::ExecutionStarted { lease })
+                    }
                 }
                 AgentRequest::StopExecution { lease, .. } => {
-                    Ok(AgentResponse::ExecutionStopFailed {
-                        lease,
-                        reason: "test retains uncertain execution occupancy".into(),
-                    })
+                    state.stops += 1;
+                    if state.stop_proven {
+                        Ok(AgentResponse::ExecutionStopped { lease })
+                    } else {
+                        Ok(AgentResponse::ExecutionStopFailed {
+                            lease,
+                            reason: "test retains uncertain execution occupancy".into(),
+                        })
+                    }
                 }
                 AgentRequest::Status { lease } => Ok(AgentResponse::Running {
                     lease: lease + u64::from(self.wrong_status_lease),
@@ -234,6 +255,11 @@ fn settle(service: &mut NodeService) {
 }
 
 fn submit(service: &mut NodeService, id: u64) {
+    enqueue(service, id, 1);
+    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(id)));
+}
+
+fn enqueue(service: &mut NodeService, id: u64, cpus: u64) {
     service.submit(
         WorkloadSpec {
             resources: Request {
@@ -242,7 +268,7 @@ fn submit(service: &mut NodeService, id: u64) {
                 needs: vec![
                     Need {
                         kind: ResourceClass::Cpu,
-                        quantity: qty(CapacityDimension::Count, 1),
+                        quantity: qty(CapacityDimension::Count, cpus),
                         filters: vec![],
                     },
                     Need {
@@ -269,7 +295,6 @@ fn submit(service: &mut NodeService, id: u64) {
         },
         OwnerId::from_u64(1),
     );
-    assert_eq!(service.admit_one().unwrap(), Some(RequestId::from_u64(id)));
 }
 
 fn started() -> (NodeService, Arc<Mutex<State>>, NodeId) {
@@ -287,6 +312,67 @@ fn restart(first: NodeService) -> NodeService {
     let mut recovered = NodeService::new();
     recovered.restore(first.cluster.clone(), first.state_snapshot());
     recovered
+}
+
+#[test]
+fn activation_reply_loss_recovers_without_an_execution_stop() {
+    let state = Arc::new(Mutex::new(State {
+        activate_reply_lost: true,
+        ..State::default()
+    }));
+    let mut first = NodeService::new();
+    register(&mut first, Agent::new(&state));
+    enqueue(&mut first, 1, 4);
+    assert_eq!(first.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+    settle(&mut first);
+    assert_eq!(state.lock().unwrap().starts, 0);
+    let mut recovered = restart(first);
+    let mut agent = Agent::new(&state);
+    agent.status = (false, None);
+    register(&mut recovered, agent);
+    settle(&mut recovered);
+    assert_eq!(state.lock().unwrap().stops, 0);
+    assert!(!recovered.cluster.occupies(LeaseId::from_u64(1)));
+    enqueue(&mut recovered, 2, 4);
+    assert_eq!(recovered.admit_one().unwrap(), Some(RequestId::from_u64(2)));
+}
+
+#[test]
+fn lost_start_reply_blocks_competitor_until_current_agent_proves_stop() {
+    let state = Arc::new(Mutex::new(State {
+        start_reply_lost: true,
+        durable_start_exposure: Some(false),
+        ..State::default()
+    }));
+    let mut first = NodeService::new();
+    register(&mut first, Agent::new(&state));
+    let agent_state = state.clone();
+    first.set_durable_sink(Some(Box::new(move |command, snapshot| {
+        if command.is_none() && snapshot.requests.contains_key(&LeaseId::from_u64(1)) {
+            let serialized = serde_json::to_value(snapshot).unwrap();
+            if serialized["undispatched_execution"] == serde_json::json!([]) {
+                agent_state.lock().unwrap().durable_start_exposure = Some(true);
+            }
+        }
+    })));
+    enqueue(&mut first, 1, 4);
+    assert_eq!(first.admit_one().unwrap(), Some(RequestId::from_u64(1)));
+    settle(&mut first);
+    assert_eq!(state.lock().unwrap().starts, 1);
+
+    let mut recovered = restart(first);
+    register(&mut recovered, Agent::new(&state));
+    settle(&mut recovered);
+    enqueue(&mut recovered, 2, 4);
+    assert_eq!(recovered.admit_one().unwrap(), None);
+    assert!(recovered.cluster.occupies(LeaseId::from_u64(1)));
+    assert!(state.lock().unwrap().fences.is_empty());
+
+    state.lock().unwrap().stop_proven = true;
+    register(&mut recovered, Agent::new(&state));
+    settle(&mut recovered);
+    assert!(!recovered.cluster.occupies(LeaseId::from_u64(1)));
+    assert_eq!(recovered.admit_one().unwrap(), Some(RequestId::from_u64(2)));
 }
 
 fn assert_held(service: &mut NodeService, old_session: u64) {

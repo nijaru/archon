@@ -52,6 +52,14 @@ agent to collect fresh recovery evidence; enumeration is not automatically
 retried. A report from a new session is not proof that an older execution has
 stopped.
 
+For a lease that never dispatched a start, failed preparation can close its
+bindings without an execution-stop reply. Before sending the first start, the
+controller durably withdraws that exception for the whole lease. A missing
+start reply or a journal from before this tracking was added does not prove
+that no start was sent. Do not downgrade a controller with live leases: older
+binaries do not maintain this dispatch record. This does not qualify agent-side
+stop evidence after process or runtime replacement.
+
 ## Stateful workloads
 
 Host-path mounts are raw attachments, not storage placement claims or exclusive
