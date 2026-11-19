@@ -24,8 +24,8 @@ use crate::dispatch::{
     AgentHandle, AgentReply, Delivery, EffectPhase, Inbox, Job, Tag, direct_job, spawn_worker,
 };
 use crate::protocol::{
-    AgentRequest, AgentResponse, CpuList, CpuPlacement, ExecutionCapabilities, LeaseLimits,
-    read_frame, write_frame,
+    AgentRequest, AgentResponse, CpuList, CpuPlacement, ExecutionCapabilities, ExecutionId,
+    LeaseLimits, read_frame, write_frame,
 };
 use crate::recovery::{MachineRecovery, MemberStatus, same_generation};
 use crate::runtime::ProcessRuntime;
@@ -157,9 +157,8 @@ pub struct NodeService {
     /// Kernel BindingState becomes Active when activation is committed, before
     /// the Agent ack, so execution barriers must use this stronger proof.
     provider_activations: BTreeSet<(BindingId, u64, u64)>,
-    /// Program leases for which no StartExecution could have been sent.
-    /// Remove durably before dispatching the first member; absence is unknown.
-    undispatched_execution: BTreeSet<LeaseId>,
+    /// Execution identity and dispatch boundary share one durable record.
+    execution_assignments: BTreeMap<LeaseId, ExecutionAssignment>,
     /// Workload members whose execution start was acknowledged for an exact
     /// Agent session. A new Agent session naturally requires a new start.
     execution_started: BTreeSet<(LeaseId, NodeId, u64)>,
@@ -230,9 +229,9 @@ pub struct NodeService {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServiceState {
     pub requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,
-    /// Older records contain no negative execution evidence.
+    /// A missing legacy assignment is not proof that no start was sent.
     #[serde(default)]
-    undispatched_execution: BTreeSet<LeaseId>,
+    execution_assignments: BTreeMap<LeaseId, ExecutionAssignment>,
     /// Queued-but-unadmitted work. Restored on snapshot recovery so a
     /// restart never silently drops submitted requests. Absent (defaulted)
     /// in snapshots written before queue persistence existed.
@@ -261,6 +260,20 @@ pub struct ServiceState {
     pub next_request_id: u64,
     pub next_session: u64,
     pub next_binding: u64,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+enum ExecutionAssignment {
+    Undispatched(ExecutionId),
+    Exposed(ExecutionId),
+}
+
+impl ExecutionAssignment {
+    fn id(self) -> ExecutionId {
+        match self {
+            Self::Undispatched(id) | Self::Exposed(id) => id,
+        }
+    }
 }
 
 /// One registered machine's identity in the controller.
@@ -967,7 +980,7 @@ impl NodeService {
             inflight: BTreeSet::new(),
             member_status: BTreeMap::new(),
             provider_activations: BTreeSet::new(),
-            undispatched_execution: BTreeSet::new(),
+            execution_assignments: BTreeMap::new(),
             execution_started: BTreeSet::new(),
             execution_stopped: BTreeSet::new(),
             held_effects: BTreeSet::new(),
@@ -1202,14 +1215,23 @@ impl NodeService {
         };
         self.validate_allocation_bindings(&admission.allocation)?;
         let request_id = admission.request.id;
+        let assignment = self
+            .queued_workloads
+            .get(&request_id)
+            .filter(|workload| workload.execution.has_program())
+            .map(|_| ExecutionId::generate().map(ExecutionAssignment::Undispatched))
+            .transpose()
+            .map_err(|err| Error::Refused {
+                explanation: format!("cannot assign execution identity: {err}"),
+            })?;
         let lease = LeaseId::from_u64(self.next_lease);
         self.next_lease += 1;
         let workload = self
             .queued_workloads
             .remove(&request_id)
             .unwrap_or_else(|| WorkloadSpec::resource_only(admission.request.clone()));
-        if workload.execution.has_program() {
-            self.undispatched_execution.insert(lease);
+        if let Some(assignment) = assignment {
+            self.execution_assignments.insert(lease, assignment);
         }
         self.requests.insert(lease, (workload, admission.owner));
         let expires_at = self.cluster.now.saturating_add(admission.request.lifetime);
@@ -1229,7 +1251,7 @@ impl NodeService {
             prepare_deadline: self.cluster.now.saturating_add(20),
             priority: admission.request.priority,
         }) {
-            self.undispatched_execution.remove(&lease);
+            self.execution_assignments.remove(&lease);
             self.queue.insert(queue_index, queued);
             let (workload, _) = self
                 .requests
@@ -1271,7 +1293,7 @@ impl NodeService {
     pub fn state_snapshot(&self) -> ServiceState {
         ServiceState {
             requests: self.requests.clone(),
-            undispatched_execution: self.undispatched_execution.clone(),
+            execution_assignments: self.execution_assignments.clone(),
             queue: self.queue.clone(),
             queued_workloads: self.queued_workloads.clone(),
             restart_handled: self.restart_handled.clone(),
@@ -1308,7 +1330,7 @@ impl NodeService {
         self.next_session = state.next_session;
         self.next_binding = state.next_binding;
         self.requests = state.requests;
-        self.undispatched_execution = state.undispatched_execution;
+        self.execution_assignments = state.execution_assignments;
         // Provider/execution acknowledgements are observations of the current
         // Agent sessions, never durable controller state. Recovery proves them
         // again from live Agents before adopting authority.
@@ -1361,7 +1383,14 @@ impl NodeService {
             if self.inflight.contains(&tag) {
                 continue;
             }
-            self.dispatch(machine, tag, AgentRequest::Status { lease: 0 });
+            self.dispatch(
+                machine,
+                tag,
+                AgentRequest::Status {
+                    lease: 0,
+                    execution: None,
+                },
+            );
         }
     }
 
@@ -2629,7 +2658,10 @@ impl NodeService {
     /// never-dispatched record needs no agent observation; otherwise use the
     /// current session's stop evidence. Missing evidence is not proof.
     fn member_stop_proven(&self, lease: LeaseId, machine: NodeId) -> bool {
-        if self.undispatched_execution.contains(&lease) {
+        if matches!(
+            self.execution_assignments.get(&lease),
+            Some(ExecutionAssignment::Undispatched(_))
+        ) {
             return true;
         }
         let Some(session) = self.cluster.sessions.get(&machine).copied() else {
@@ -2768,8 +2800,10 @@ impl NodeService {
             {
                 continue;
             }
+            let assignment = self.execution_assignments.get(&lease).copied();
             let request = AgentRequest::StartExecution {
                 lease: lease.as_u64(),
+                execution: assignment.map(ExecutionAssignment::id),
                 session,
                 epoch: self.cluster.epoch,
                 command: execution.command.clone(),
@@ -2782,7 +2816,9 @@ impl NodeService {
             };
             // After this durable boundary even a lost reply or replacement
             // agent cannot turn an attempted start into a never-sent start.
-            if self.undispatched_execution.remove(&lease) {
+            if let Some(ExecutionAssignment::Undispatched(id)) = assignment {
+                self.execution_assignments
+                    .insert(lease, ExecutionAssignment::Exposed(id));
                 self.persist(None);
             }
             self.dispatch(
@@ -2852,6 +2888,11 @@ impl NodeService {
                 },
                 AgentRequest::StopExecution {
                     lease: lease.as_u64(),
+                    execution: self
+                        .execution_assignments
+                        .get(&lease)
+                        .copied()
+                        .map(ExecutionAssignment::id),
                     session,
                     epoch: self.cluster.epoch,
                 },
@@ -2883,6 +2924,11 @@ impl NodeService {
             tag,
             AgentRequest::Status {
                 lease: lease.as_u64(),
+                execution: self
+                    .execution_assignments
+                    .get(&lease)
+                    .copied()
+                    .map(ExecutionAssignment::id),
             },
         );
     }

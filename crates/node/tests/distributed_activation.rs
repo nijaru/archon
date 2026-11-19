@@ -98,7 +98,7 @@ impl AgentClient for RecordingAgent {
                 });
                 Ok(AgentResponse::Fenced { binding })
             }
-            AgentRequest::Status { lease } => Ok(AgentResponse::Running {
+            AgentRequest::Status { lease, .. } => Ok(AgentResponse::Running {
                 lease,
                 running: true,
                 exit_code: None,

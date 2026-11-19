@@ -144,7 +144,7 @@ impl AgentClient for StatusAgent {
                 self.close_endpoint(binding);
                 Ok(AgentResponse::Fenced { binding })
             }
-            AgentRequest::Status { lease } => {
+            AgentRequest::Status { lease, .. } => {
                 self.events.lock().expect("event lock").push(Event::Status);
                 let status = self.status.lock().expect("status lock").status;
                 Ok(AgentResponse::Running {

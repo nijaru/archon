@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use archon_kernel::LeaseId;
 
 use crate::container::{ContainerConfig, ContainerRuntime};
-use crate::protocol::{DeviceAccess, ExecutionCapabilities, LeaseLimits};
+use crate::protocol::{DeviceAccess, ExecutionCapabilities, ExecutionId, LeaseLimits};
 use crate::runtime::{ProcessRuntime, WorkStatus};
 use crate::workload::{PortPublish, StorageMount};
 
@@ -32,9 +32,13 @@ pub(crate) struct ExecutionStart<'a> {
 pub(crate) struct ExecutionSupervisor {
     process: ProcessRuntime,
     containers: ContainerRuntime,
-    /// Successful starts retain their drain budget. None records a confirmed
-    /// close for idempotent retries within this supervisor only.
-    executions: BTreeMap<LeaseId, Option<u32>>,
+    executions: BTreeMap<LeaseId, TrackedExecution>,
+}
+
+struct TrackedExecution {
+    id: Option<ExecutionId>,
+    /// None records confirmed closure for retries within this supervisor.
+    grace: Option<u32>,
 }
 
 impl ExecutionSupervisor {
@@ -55,17 +59,23 @@ impl ExecutionSupervisor {
         }
     }
 
-    /// Start one execution idempotently by Lease identity. Resource-provider
+    /// Start one execution idempotently by attempt identity. Resource-provider
     /// activation is deliberately outside this method.
     pub(crate) fn start(
         &mut self,
         lease: LeaseId,
+        id: Option<ExecutionId>,
         start: ExecutionStart<'_>,
     ) -> Result<(), String> {
-        match self.executions.get(&lease) {
-            Some(None) => return Err(format!("execution for lease {lease} is closed")),
-            Some(Some(_)) => return Ok(()),
-            None => {}
+        if let Some(existing) = self.executions.get(&lease) {
+            if existing.id != id {
+                return Err(format!("execution identity mismatch for lease {lease}"));
+            }
+            return if existing.grace.is_some() {
+                Ok(())
+            } else {
+                Err(format!("execution for lease {lease} is closed"))
+            };
         }
         let result = if start.image.is_empty() {
             // Processes share the host filesystem and network; mounts and
@@ -92,12 +102,25 @@ impl ExecutionSupervisor {
             )
         };
         if result.is_ok() {
-            self.executions.insert(lease, Some(start.grace_secs));
+            self.executions.insert(
+                lease,
+                TrackedExecution {
+                    id,
+                    grace: Some(start.grace_secs),
+                },
+            );
         }
         result
     }
 
-    pub(crate) fn status(&mut self, lease: LeaseId) -> WorkStatus {
+    pub(crate) fn status(&mut self, lease: LeaseId, id: Option<ExecutionId>) -> WorkStatus {
+        if !self
+            .executions
+            .get(&lease)
+            .is_some_and(|record| record.id == id && record.grace.is_some())
+        {
+            return WorkStatus::Gone;
+        }
         if self.containers.is_tracked(lease) {
             self.containers.status(lease)
         } else {
@@ -114,18 +137,22 @@ impl ExecutionSupervisor {
     }
 
     /// A missing handle in a replacement supervisor is not closure proof.
-    pub(crate) fn stop(&mut self, lease: LeaseId) -> Result<(), String> {
-        let grace = match self.executions.get(&lease) {
-            Some(Some(grace)) => *grace,
-            Some(None) => return Ok(()),
-            None => return Err(format!("execution for lease {lease} is untracked")),
+    pub(crate) fn stop(&mut self, lease: LeaseId, id: Option<ExecutionId>) -> Result<(), String> {
+        let Some(record) = self.executions.get_mut(&lease) else {
+            return Err(format!("execution for lease {lease} is untracked"));
+        };
+        if record.id != id {
+            return Err(format!("execution identity mismatch for lease {lease}"));
+        }
+        let Some(grace) = record.grace else {
+            return Ok(());
         };
         if self.containers.is_tracked(lease) {
             self.containers.terminate_with_grace(lease, grace)?;
         } else {
             self.process.terminate_with_grace(lease, grace)?;
         }
-        self.executions.insert(lease, None);
+        record.grace = None;
         Ok(())
     }
 }
@@ -149,12 +176,18 @@ mod tests {
             grace_secs: 0,
             devices: &[],
         };
-        supervisor.start(lease, start()).unwrap();
+        let id = Some(ExecutionId::generate().unwrap());
+        let other = Some(ExecutionId::generate().unwrap());
+        supervisor.start(lease, id, start()).unwrap();
         let mut replacement = ExecutionSupervisor::new(ProcessRuntime::new());
-        assert!(replacement.stop(lease).is_err());
-        assert!(matches!(supervisor.status(lease), WorkStatus::Running));
-        supervisor.stop(lease).unwrap();
-        supervisor.stop(lease).unwrap();
-        assert!(supervisor.start(lease, start()).is_err());
+        assert!(replacement.stop(lease, id).is_err());
+        assert!(supervisor.start(lease, other, start()).is_err());
+        assert!(supervisor.stop(lease, other).is_err());
+        assert!(supervisor.stop(lease, None).is_err());
+        assert_eq!(supervisor.status(lease, other), WorkStatus::Gone);
+        assert_eq!(supervisor.status(lease, id), WorkStatus::Running);
+        supervisor.stop(lease, id).unwrap();
+        supervisor.stop(lease, id).unwrap();
+        assert!(supervisor.start(lease, id, start()).is_err());
     }
 }

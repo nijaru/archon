@@ -52,12 +52,16 @@ agent to collect fresh recovery evidence; enumeration is not automatically
 retried. A report from a new session is not proof that an older execution has
 stopped.
 
-For a lease that never dispatched a start, failed preparation can close its
-bindings without an execution-stop reply. Before sending the first start, the
-controller durably withdraws that exception for the whole lease. A missing
-start reply or a journal from before this tracking was added does not prove
-that no start was sent. Do not downgrade a controller with live leases: older
-binaries do not maintain this dispatch record.
+New program leases have a journaled execution ID distinct from the lease
+number. The controller records that the attempt may have been exposed before
+sending the first start, and sends the same ID on status and stop after restart.
+A lease proven never dispatched can close its bindings without an execution-stop
+reply. A missing start reply or an older record without an assignment does not
+prove that no start was sent.
+
+Drain before upgrading across this execution protocol change. Controllers and
+agents must use matching versions; old agents must not ignore the execution ID.
+Do not downgrade with live leases.
 
 A reported root process exit does not bypass execution teardown. For a tracked
 native Linux cgroup, the agent must remove the execution scope before it

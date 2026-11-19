@@ -75,7 +75,7 @@ impl AgentClient for EnforcingTestExecutor {
                 self.running.remove(&lease);
                 AgentResponse::Fenced { binding }
             }
-            AgentRequest::Status { lease } => AgentResponse::Running {
+            AgentRequest::Status { lease, .. } => AgentResponse::Running {
                 lease,
                 running: self.running.contains(&lease),
                 exit_code: None,

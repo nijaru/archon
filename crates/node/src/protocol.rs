@@ -11,6 +11,20 @@ use crate::workload::{PortPublish, StorageMount};
 use archon_kernel::BindingScope;
 use serde::{Deserialize, Serialize};
 
+/// Controller-assigned identity for one admitted execution attempt. Lease
+/// numbers are journal-local; this identifier also distinguishes journals.
+/// Members on different hosts share an attempt ID but have separate scopes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionId([u8; 16]);
+
+impl ExecutionId {
+    pub(crate) fn generate() -> std::io::Result<Self> {
+        let mut bytes = [0; 16];
+        std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        Ok(Self(bytes))
+    }
+}
+
 /// Connection greeting: role declaration, sent as the first framed
 /// message after the Noise handshake authenticates and encrypts the link.
 /// One claimed device handed to an execution adapter: its stable `id`
@@ -205,8 +219,13 @@ pub enum AgentRequest {
     },
     /// Start exactly one workload member on this Agent after the controller
     /// has observed every resource Binding for the rigid root as Active.
+    // A legacy agent would silently ignore an added JSON field. Use a new
+    // wire discriminant so it cannot execute without checking identity.
+    #[serde(rename = "StartExecutionV2")]
     StartExecution {
         lease: u64,
+        #[serde(default)]
+        execution: Option<ExecutionId>,
         session: u64,
         epoch: u64,
         command: Vec<String>,
@@ -232,8 +251,11 @@ pub enum AgentRequest {
     /// StartExecution: it never closes or fences resource Bindings, and the
     /// controller may release a machine's resources only after that
     /// machine's member stop is proven.
+    #[serde(rename = "StopExecutionV2")]
     StopExecution {
         lease: u64,
+        #[serde(default)]
+        execution: Option<ExecutionId>,
         session: u64,
         epoch: u64,
     },
@@ -259,7 +281,12 @@ pub enum AgentRequest {
     },
     /// Liveness probe for a lease's execution. Read-only: carries no
     /// session, so probing never touches fencing generations.
-    Status { lease: u64 },
+    #[serde(rename = "StatusV2")]
+    Status {
+        lease: u64,
+        #[serde(default)]
+        execution: Option<ExecutionId>,
+    },
     /// A lease's captured output. Read-only like Status.
     Logs { lease: u64 },
     /// Read-only enumeration of every provider endpoint this agent holds:

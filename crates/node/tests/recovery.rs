@@ -186,7 +186,7 @@ fn spawn_fake_agent() -> (String, Arc<Mutex<FakeState>>) {
                             close_endpoint(&mut shared.lock().unwrap(), binding);
                             AgentResponse::Released { binding }
                         }
-                        AgentRequest::Status { lease } => {
+                        AgentRequest::Status { lease, .. } => {
                             let state = shared.lock().unwrap();
                             match state.status_mode {
                                 ReplyMode::Normal => AgentResponse::Running {

@@ -27,7 +27,9 @@ struct State {
     activate_reply_lost: bool,
     start_reply_lost: bool,
     stop_proven: bool,
-    durable_start_exposure: Option<bool>,
+    check_durable_identity: bool,
+    durable_start_identity: Option<archon_node::protocol::ExecutionId>,
+    first_start_identity: Option<archon_node::protocol::ExecutionId>,
     activates: usize,
     failed_fences: BTreeSet<u64>,
     fences: Vec<(u64, u64, BindingScope, u64)>,
@@ -148,9 +150,16 @@ impl AgentClient for Agent {
                         Ok(AgentResponse::Activated { binding })
                     }
                 }
-                AgentRequest::StartExecution { lease, .. } => {
-                    if let Some(exposed) = state.durable_start_exposure {
-                        assert!(exposed, "start reached the agent before the durable sink");
+                AgentRequest::StartExecution {
+                    lease, execution, ..
+                } => {
+                    if state.check_durable_identity && lease == 1 {
+                        assert!(execution.is_some());
+                        assert_eq!(
+                            execution, state.durable_start_identity,
+                            "start must match durable exposure"
+                        );
+                        state.first_start_identity = execution;
                     }
                     state.starts += 1;
                     if state.start_reply_lost {
@@ -159,7 +168,15 @@ impl AgentClient for Agent {
                         Ok(AgentResponse::ExecutionStarted { lease })
                     }
                 }
-                AgentRequest::StopExecution { lease, .. } => {
+                AgentRequest::StopExecution {
+                    lease, execution, ..
+                } => {
+                    if state.check_durable_identity && lease == 1 {
+                        assert_eq!(
+                            execution, state.first_start_identity,
+                            "stop must retain identity after restore"
+                        );
+                    }
                     state.stops += 1;
                     if state.stop_proven {
                         Ok(AgentResponse::ExecutionStopped { lease })
@@ -170,7 +187,7 @@ impl AgentClient for Agent {
                         })
                     }
                 }
-                AgentRequest::Status { lease } => Ok(AgentResponse::Running {
+                AgentRequest::Status { lease, .. } => Ok(AgentResponse::Running {
                     lease: lease + u64::from(self.wrong_status_lease),
                     running: self.status.0,
                     exit_code: self.status.1,
@@ -310,7 +327,11 @@ fn started() -> (NodeService, Arc<Mutex<State>>, NodeId) {
 
 fn restart(first: NodeService) -> NodeService {
     let mut recovered = NodeService::new();
-    recovered.restore(first.cluster.clone(), first.state_snapshot());
+    let snapshot = serde_json::to_vec(&first.state_snapshot()).unwrap();
+    recovered.restore(
+        first.cluster.clone(),
+        serde_json::from_slice(&snapshot).unwrap(),
+    );
     recovered
 }
 
@@ -341,7 +362,7 @@ fn activation_reply_loss_recovers_without_an_execution_stop() {
 fn lost_start_reply_blocks_competitor_until_current_agent_proves_stop() {
     let state = Arc::new(Mutex::new(State {
         start_reply_lost: true,
-        durable_start_exposure: Some(false),
+        check_durable_identity: true,
         ..State::default()
     }));
     let mut first = NodeService::new();
@@ -350,8 +371,10 @@ fn lost_start_reply_blocks_competitor_until_current_agent_proves_stop() {
     first.set_durable_sink(Some(Box::new(move |command, snapshot| {
         if command.is_none() && snapshot.requests.contains_key(&LeaseId::from_u64(1)) {
             let serialized = serde_json::to_value(snapshot).unwrap();
-            if serialized["undispatched_execution"] == serde_json::json!([]) {
-                agent_state.lock().unwrap().durable_start_exposure = Some(true);
+            let exposed = &serialized["execution_assignments"]["1"]["Exposed"];
+            if !exposed.is_null() {
+                agent_state.lock().unwrap().durable_start_identity =
+                    Some(serde_json::from_value(exposed.clone()).unwrap());
             }
         }
     })));

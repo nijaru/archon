@@ -61,7 +61,7 @@ impl AgentClient for ProofExecutor {
                 Ok(AgentResponse::Fenced { binding })
             }
             AgentRequest::Release { binding, .. } => Ok(AgentResponse::Released { binding }),
-            AgentRequest::Status { lease } => Ok(AgentResponse::Running {
+            AgentRequest::Status { lease, .. } => Ok(AgentResponse::Running {
                 lease,
                 running: true,
                 exit_code: None,

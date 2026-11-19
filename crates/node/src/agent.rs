@@ -51,8 +51,8 @@ impl LeaseAgent {
             AgentRequest::Register { .. } => {
                 self.failed_none("Register is not handled by an agent")
             }
-            AgentRequest::Status { lease } => {
-                let status = self.execution.status(LeaseId::from_u64(lease));
+            AgentRequest::Status { lease, execution } => {
+                let status = self.execution.status(LeaseId::from_u64(lease), execution);
                 AgentResponse::Running {
                     lease,
                     running: status == WorkStatus::Running,
@@ -119,6 +119,7 @@ impl LeaseAgent {
             }
             AgentRequest::StartExecution {
                 lease,
+                execution,
                 session,
                 epoch,
                 command,
@@ -134,6 +135,7 @@ impl LeaseAgent {
                 }
                 let result = self.execution.start(
                     LeaseId::from_u64(lease),
+                    execution,
                     ExecutionStart {
                         command: &command,
                         limits: &limits,
@@ -202,6 +204,7 @@ impl LeaseAgent {
             }
             AgentRequest::StopExecution {
                 lease,
+                execution,
                 session,
                 epoch,
             } => {
@@ -209,7 +212,7 @@ impl LeaseAgent {
                     eprintln!("archon: stop for lease {lease} refused: {reason}");
                     return AgentResponse::ExecutionStopFailed { lease, reason };
                 }
-                match self.execution.stop(LeaseId::from_u64(lease)) {
+                match self.execution.stop(LeaseId::from_u64(lease), execution) {
                     Ok(()) => AgentResponse::ExecutionStopped { lease },
                     Err(reason) => {
                         eprintln!("archon: stop for lease {lease} failed: {reason}");
