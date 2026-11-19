@@ -65,6 +65,12 @@ acknowledges stop. A replacement agent with no record of an exposed execution
 refuses to acknowledge stop; capacity can remain occupied. This does not yet
 recover execution identity or preserve stop evidence across agent replacement.
 
+Keep a cgroup root dedicated to one controller's journal. A start that finds an
+existing native scope at the requested lease number is refused without changing
+that scope. Lease numbers can recur in independent journals; neither a directory
+name nor an empty scope proves ownership. Reconcile old scopes before reusing a
+root rather than deleting them to unblock admission.
+
 ## Stateful workloads
 
 Host-path mounts are raw attachments, not storage placement claims or exclusive

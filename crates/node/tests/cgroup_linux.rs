@@ -338,6 +338,58 @@ fn root_exit_leaves_descendants_until_confirmed_scope_removal() {
 }
 
 #[test]
+fn reused_lease_number_cannot_take_over_an_existing_scope() {
+    let name = "unowned-scope";
+    if !require_cgroup_writable(name) {
+        return;
+    }
+    let root = root(name);
+    let lease = LeaseId::from_u64(1);
+    let scope = std::path::Path::new(&root).join("lease-1");
+    let command = ["sleep".into(), "15".into()];
+    let mut owner = ProcessRuntime::new().with_cgroup_root(root.clone());
+    owner
+        .activate(
+            lease,
+            &command,
+            &LeaseLimits {
+                cpu_count: 1,
+                ..Default::default()
+            },
+            &[],
+        )
+        .unwrap();
+    let members = fs::read_to_string(scope.join("cgroup.procs")).unwrap();
+    assert!(!members.trim().is_empty());
+    let original_limit = fs::read_to_string(scope.join("cpu.max")).unwrap();
+    let mut newcomer = ProcessRuntime::new().with_cgroup_root(root.clone());
+    let err = newcomer
+        .activate(
+            lease,
+            &command,
+            &LeaseLimits {
+                cpu_count: 2,
+                ..Default::default()
+            },
+            &[],
+        )
+        .expect_err("a second runtime does not own the existing scope");
+    assert!(err.contains("ownership unproven"), "{err}");
+    assert!(!newcomer.terminate(lease).unwrap());
+    assert_eq!(
+        fs::read_to_string(scope.join("cgroup.procs")).unwrap(),
+        members
+    );
+    assert_eq!(
+        fs::read_to_string(scope.join("cpu.max")).unwrap(),
+        original_limit
+    );
+    assert!(matches!(owner.status(lease), WorkStatus::Running));
+    owner.terminate(lease).unwrap();
+    cleanup_root(&root);
+}
+
+#[test]
 fn failed_launch_removes_the_lease_cgroup() {
     let root = root("failed-launch");
     if !require_cgroup_writable("failed-launch") {

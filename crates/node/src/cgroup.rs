@@ -35,14 +35,18 @@ impl CgroupGroup {
         let root = PathBuf::from(root);
         prepare_root(&root, limits)?;
         let path = root.join(format!("lease-{}", lease.as_u64()));
-        if let Err(err) = fs::create_dir(&path) {
-            if err.kind() != std::io::ErrorKind::AlreadyExists {
-                return Err(format!("create {}: {err}", path.display()));
+        // Lease numbers are local to a controller journal. A path collision
+        // does not authorize taking over the existing execution scope.
+        fs::create_dir(&path).map_err(|err| {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                format!(
+                    "execution scope {} already exists; ownership unproven",
+                    path.display()
+                )
+            } else {
+                format!("create {}: {err}", path.display())
             }
-            // A previous controller run left the group behind (lease ids
-            // restart at 1); kill its stragglers and reuse it.
-            Self { path: path.clone() }.kill()?;
-        }
+        })?;
         let group = Self { path };
         if let Err(err) = group.configure_limits(limits) {
             let _ = group.kill();
