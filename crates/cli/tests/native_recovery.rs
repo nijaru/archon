@@ -358,6 +358,15 @@ case "$1" in
     start)
         touch "$ARCHON_EXECUTION_STATE_DIR/start-attempted"
         exit 1;;
+    container)
+        case "$*" in
+            *label=archon.assignment=*)
+                if [ ! -f "$ARCHON_EXECUTION_STATE_DIR/allow-label-query" ]; then
+                    touch "$ARCHON_EXECUTION_STATE_DIR/label-query-missed"
+                    exit 0
+                fi;;
+        esac
+        exec docker "$@";;
     *) exec docker "$@";;
 esac
 "#,
@@ -383,7 +392,20 @@ esac
         request(&mut client, ClientRequest::Submit(job)),
         ServerResponse::Submitted { .. }
     ));
-    until("failed create to release capacity", || {
+    until("first teardown lookup to miss", || {
+        fs::read_to_string(dirs.state.join("controller.stderr"))
+            .ok()?
+            .contains("Docker create label did not resolve to one exact container")
+            .then_some(())
+    });
+    assert!(dirs.state.join("label-query-missed").exists());
+    let (queue, leases) = status(&mut client);
+    assert_eq!(queue, 0);
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].state, "Failed");
+    assert_eq!(leases[0].occupies_capacity, Some(true));
+    fs::write(dirs.state.join("allow-label-query"), "").unwrap();
+    until("periodic teardown retry to release capacity", || {
         let (queue, leases) = status(&mut client);
         (queue == 0
             && leases.len() == 1

@@ -126,9 +126,11 @@ replace the daemon state or execution records while assignments can be live.
 The agent records a unique label before creating a Docker container. If the
 create reply is lost, it can recover the container ID from exactly one
 matching container on the recorded daemon. No match is not proof of closure:
-the create request may still be in flight. Capacity stays held when identity
-or removal cannot be proven, including when a record is missing, unreadable,
-or refers to a different daemon. Podman does not use durable OCI records.
+the create request may still be in flight. The controller periodically retries
+unconfirmed stops for open bindings on registered agents. Capacity stays held
+when identity or removal cannot be proven, including when a record is
+missing, unreadable, or refers to a different daemon. Podman does not use
+durable OCI records.
 
 Keep a cgroup root dedicated to one controller's journal. A start that finds an
 existing native scope at the requested lease number is refused without changing

@@ -167,6 +167,7 @@ pub struct NodeService {
     /// after this proof; like the start set, it is controller observation,
     /// never durable authority.
     execution_stopped: BTreeSet<(LeaseId, NodeId, u64)>,
+    next_stop_retry: Instant,
     /// Resource-close effects (Release/Fence) held while a machine's member
     /// execution stop is still pending. The kernel keeps those bindings open
     /// (capacity stays occupied) until the stop is proven, preserving the
@@ -986,6 +987,7 @@ impl NodeService {
             execution_assignments: BTreeMap::new(),
             execution_started: BTreeSet::new(),
             execution_stopped: BTreeSet::new(),
+            next_stop_retry: Instant::now(),
             unreachable: Vec::new(),
             queue: Vec::new(),
             queued_workloads: BTreeMap::new(),
@@ -2089,7 +2091,9 @@ impl NodeService {
             .expect("clock")
             .as_secs();
         self.cluster.set_now(now);
-        self.expire_due()
+        let expired = self.expire_due()?;
+        self.retry_unproven_stops();
+        Ok(expired)
     }
 
     /// Whether the lease's process is running, per the agent.
@@ -2941,44 +2945,73 @@ impl NodeService {
             return Ok(());
         }
         for machine in self.lease_machines(lease) {
-            let Some(session) = self.cluster.sessions.get(&machine).copied() else {
-                continue;
-            };
-            let key = (lease, machine, session);
-            if self.member_stop_proven(lease, machine)
-                || self.inflight.iter().any(|tag| {
-                    matches!(
-                        tag,
-                        Tag::ExecutionStop {
-                            lease: pending_lease,
-                            machine: pending_machine,
-                            session: pending_session,
-                        } if (*pending_lease, *pending_machine, *pending_session) == key
-                    )
-                })
-            {
-                continue;
-            }
-            self.dispatch(
-                machine,
-                Tag::ExecutionStop {
-                    lease,
-                    machine,
-                    session,
-                },
-                AgentRequest::StopExecution {
-                    lease: lease.as_u64(),
-                    execution: self
-                        .execution_assignments
-                        .get(&lease)
-                        .copied()
-                        .map(ExecutionAssignment::id),
-                    session,
-                    epoch: self.cluster.epoch,
-                },
-            );
+            self.request_execution_stop(lease, machine);
         }
         Ok(())
+    }
+
+    /// Retry from the authoritative open bindings, not a second teardown
+    /// queue. Pace retries independently of maintenance frequency and let
+    /// the session's reconciliation own machines still being recovered.
+    fn retry_unproven_stops(&mut self) {
+        let now = Instant::now();
+        if now < self.next_stop_retry {
+            return;
+        }
+        self.next_stop_retry = now + Duration::from_secs(5);
+        let members: BTreeSet<_> = self
+            .cluster
+            .bindings
+            .values()
+            .filter(|binding| !binding.state.is_closed())
+            .filter(|binding| {
+                self.cluster
+                    .leases
+                    .get(&binding.lease)
+                    .is_some_and(|lease| self.terminal_lease(lease.state))
+                    && self
+                        .requests
+                        .get(&binding.lease)
+                        .is_some_and(|(workload, _)| workload.execution.has_program())
+            })
+            .filter_map(|binding| {
+                let machine = self.cluster.graph.machine_of(binding.node)?;
+                (self.agents.contains_key(&machine)
+                    && !self.recovering_machines.contains_key(&machine))
+                .then_some((binding.lease, machine))
+            })
+            .collect();
+        for (lease, machine) in members {
+            self.request_execution_stop(lease, machine);
+        }
+    }
+
+    fn request_execution_stop(&mut self, lease: LeaseId, machine: NodeId) {
+        let Some(session) = self.cluster.sessions.get(&machine).copied() else {
+            return;
+        };
+        let tag = Tag::ExecutionStop {
+            lease,
+            machine,
+            session,
+        };
+        if self.member_stop_proven(lease, machine) || self.inflight.contains(&tag) {
+            return;
+        }
+        self.dispatch(
+            machine,
+            tag,
+            AgentRequest::StopExecution {
+                lease: lease.as_u64(),
+                execution: self
+                    .execution_assignments
+                    .get(&lease)
+                    .copied()
+                    .map(ExecutionAssignment::id),
+                session,
+                epoch: self.cluster.epoch,
+            },
+        );
     }
 
     fn request_status(&mut self, lease: LeaseId) {
