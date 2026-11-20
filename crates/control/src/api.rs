@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use archon_node::service::PendingTeardown;
+
 pub use archon_node::protocol::{
     Greeting, MAX_FRAME, read_payload, set_stream_limits, write_frame,
 };
@@ -100,6 +102,8 @@ pub struct LeaseInfo {
     /// Whether admission still accounts for this lease's claims. Older controllers omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occupies_capacity: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teardown_pending: Option<PendingTeardown>,
     pub expires_at: u64,
     /// Outcome of a workload that finished on its own.
     #[serde(default)]

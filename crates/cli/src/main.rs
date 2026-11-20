@@ -649,10 +649,19 @@ fn print_response(response: ServerResponse) {
                     Some(false) => "released",
                     None => "unknown",
                 };
+                let teardown = match lease.teardown_pending {
+                    Some(archon_control::api::PendingTeardown::ExecutionStop) => {
+                        " teardown=execution-stop"
+                    }
+                    Some(archon_control::api::PendingTeardown::BindingClosure) => {
+                        " teardown=binding-closure"
+                    }
+                    None => "",
+                };
                 let command = lease.command.join(" ");
                 println!(
-                    "lease {} owner={} state={} capacity={}{} [{}]",
-                    lease.id, lease.owner, lease.state, capacity, exit, command
+                    "lease {} owner={} state={} capacity={}{}{} [{}]",
+                    lease.id, lease.owner, lease.state, capacity, teardown, exit, command
                 );
             }
         }

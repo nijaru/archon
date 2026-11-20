@@ -226,6 +226,14 @@ pub struct NodeService {
     history: Vec<Command>,
 }
 
+/// The first unmet teardown condition for a terminal lease with open bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingTeardown {
+    ExecutionStop,
+    BindingClosure,
+}
+
 /// Restorable controller-side state that lives outside the kernel log.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServiceState {
@@ -1970,6 +1978,45 @@ impl NodeService {
     /// APIs such as the current log view. Lifecycle status never uses this.
     fn lease_machine(&self, lease: LeaseId) -> Option<NodeId> {
         self.lease_machines(lease).into_iter().next()
+    }
+
+    /// Explain why terminal leases still hold capacity, from the same
+    /// bindings and current-session proof used by teardown itself.
+    pub fn pending_teardowns(&self) -> BTreeMap<LeaseId, PendingTeardown> {
+        let mut pending = BTreeMap::new();
+        for binding in self
+            .cluster
+            .bindings
+            .values()
+            .filter(|binding| !binding.state.is_closed())
+        {
+            if !self
+                .cluster
+                .leases
+                .get(&binding.lease)
+                .is_some_and(|lease| self.terminal_lease(lease.state))
+            {
+                continue;
+            }
+            let has_program = self
+                .requests
+                .get(&binding.lease)
+                .is_some_and(|(workload, _)| workload.execution.has_program());
+            let needs_stop = has_program
+                && self
+                    .cluster
+                    .graph
+                    .machine_of(binding.node)
+                    .is_none_or(|machine| !self.member_stop_proven(binding.lease, machine));
+            if needs_stop {
+                pending.insert(binding.lease, PendingTeardown::ExecutionStop);
+            } else {
+                pending
+                    .entry(binding.lease)
+                    .or_insert(PendingTeardown::BindingClosure);
+            }
+        }
+        pending
     }
 
     /// The command executing under a lease, for status reporting.

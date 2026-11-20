@@ -898,6 +898,7 @@ impl ControlPlane {
     }
 
     fn status(&self) -> ServerResponse {
+        let pending = self.service.pending_teardowns();
         let leases = self
             .service
             .cluster
@@ -907,6 +908,7 @@ impl ControlPlane {
                 owner: lease.owner.as_u64(),
                 state: format!("{:?}", lease.state),
                 occupies_capacity: Some(occupies_capacity),
+                teardown_pending: pending.get(&lease.id).copied(),
                 expires_at: lease.expires_at,
                 exit_code: lease.exit_code,
                 command: self.service.lease_command_of(lease.id).unwrap_or_default(),

@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use archon_kernel::{
     BindingScope, CapacityDimension, EndpointPhase, LeaseId, LeaseState, Need, NodeId, OwnerId,
@@ -14,7 +14,7 @@ use archon_node::discover::MachineDescription;
 use archon_node::protocol::{
     AgentRequest, AgentResponse, EnumeratedEndpoint, ExecutionCapabilities, RuntimeCapabilities,
 };
-use archon_node::service::{AgentClient, NodeService, RecoveryEvent};
+use archon_node::service::{AgentClient, NodeService, PendingTeardown, RecoveryEvent};
 use archon_node::workload::{ExecutionSpec, WorkloadSpec};
 
 const WAIT: Duration = Duration::from_secs(3);
@@ -333,6 +333,42 @@ fn restart(first: NodeService) -> NodeService {
         serde_json::from_slice(&snapshot).unwrap(),
     );
     recovered
+}
+
+#[test]
+fn teardown_status_changes_after_execution_stop_before_binding_closure() {
+    let state = Arc::new(Mutex::new(State {
+        stop_proven: true,
+        ..State::default()
+    }));
+    let mut agent = Agent::new(&state);
+    let (entered, release) = agent.pause(Point::Fence);
+    let mut service = NodeService::new();
+    register(&mut service, agent);
+    submit(&mut service, 1);
+    settle(&mut service);
+    let lease = LeaseId::from_u64(1);
+    assert!(service.pending_teardowns().is_empty());
+    service.revoke(lease).unwrap();
+    // Drive the stop acknowledgement and its derived fence effect. The
+    // fake provider keeps the fence reply outstanding until explicitly released.
+    let deadline = Instant::now() + WAIT;
+    while entered.try_recv().is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "no fence request after stop proof"
+        );
+        service.drive(Duration::from_millis(10)).unwrap();
+    }
+    assert!(service.cluster.occupies(lease));
+    assert_eq!(
+        service.pending_teardowns().get(&lease),
+        Some(&PendingTeardown::BindingClosure)
+    );
+    release.send(()).unwrap();
+    settle(&mut service);
+    assert!(!service.cluster.occupies(lease));
+    assert!(service.pending_teardowns().is_empty());
 }
 
 #[test]

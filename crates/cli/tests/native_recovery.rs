@@ -730,7 +730,7 @@ fn assert_recovery_holds_without_record(
     assert!(
         stdout.lines().any(|line| {
             line.starts_with(&format!("lease {lease} "))
-                && line.contains("state=Revoked capacity=held")
+                && line.contains("state=Revoked capacity=held teardown=execution-stop")
         }),
         "{stdout}"
     );

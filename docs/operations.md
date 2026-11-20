@@ -57,8 +57,11 @@ against the same state does not preserve this guarantee.
 
 `archon status` reports capacity separately from lease state. A `Revoked` lease
 with `capacity=held` still counts against admission; revoke alone does not prove
-teardown. `capacity=released` means this lease no longer
-blocks reuse, though other leases or machine health can still prevent placement.
+teardown. For a terminal lease, `teardown=execution-stop` means the controller
+still needs proof that execution stopped. `teardown=binding-closure` means it
+is waiting for open resource bindings to close. `capacity=released` means this
+lease no longer blocks reuse, though other leases or machine health can still
+prevent placement.
 `capacity=unknown` means the controller did not report occupancy.
 
 Adoption requires member status and successful endpoint enumeration from the
