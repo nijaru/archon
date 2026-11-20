@@ -167,7 +167,7 @@ pub struct NodeService {
     /// after this proof; like the start set, it is controller observation,
     /// never durable authority.
     execution_stopped: BTreeSet<(LeaseId, NodeId, u64)>,
-    next_stop_retry: Instant,
+    next_teardown_retry: Instant,
     /// Resource-close effects (Release/Fence) held while a machine's member
     /// execution stop is still pending. The kernel keeps those bindings open
     /// (capacity stays occupied) until the stop is proven, preserving the
@@ -995,7 +995,7 @@ impl NodeService {
             execution_assignments: BTreeMap::new(),
             execution_started: BTreeSet::new(),
             execution_stopped: BTreeSet::new(),
-            next_stop_retry: Instant::now(),
+            next_teardown_retry: Instant::now(),
             unreachable: Vec::new(),
             queue: Vec::new(),
             queued_workloads: BTreeMap::new(),
@@ -2139,7 +2139,7 @@ impl NodeService {
             .as_secs();
         self.cluster.set_now(now);
         let expired = self.expire_due()?;
-        self.retry_unproven_stops();
+        self.retry_pending_teardowns();
         Ok(expired)
     }
 
@@ -2322,13 +2322,16 @@ impl NodeService {
                         binding,
                         session,
                         fence,
-                        phase: _,
+                        phase,
                     },
                     reply,
                 ) => {
                     let binding = *binding;
                     match reply {
-                        Ok(AgentResponse::Prepared { handle, .. }) => {
+                        Ok(AgentResponse::Prepared {
+                            binding: got,
+                            handle,
+                        }) if *phase == EffectPhase::Prepare && got == binding.as_u64() => {
                             let lease = self.binding_lease(binding);
                             self.commit_lenient(Command::RecordBindingPrepared {
                                 binding,
@@ -2340,7 +2343,9 @@ impl NodeService {
                                 self.maybe_activate(lease);
                             }
                         }
-                        Ok(AgentResponse::Activated { .. }) => {
+                        Ok(AgentResponse::Activated { binding: got })
+                            if *phase == EffectPhase::Activate && got == binding.as_u64() =>
+                        {
                             let lease = self.binding_lease(binding);
                             let accepted = self.try_commit_lenient(Command::RecordBindingActive {
                                 binding,
@@ -2355,27 +2360,44 @@ impl NodeService {
                                 }
                             }
                         }
-                        Ok(AgentResponse::Released { .. }) => {
+                        Ok(AgentResponse::Released { binding: got })
+                            if *phase == EffectPhase::Release && got == binding.as_u64() =>
+                        {
                             self.commit_lenient(Command::RecordBindingReleased {
                                 binding,
                                 session: *session,
                                 fence: *fence,
                             })
                         }
-                        Ok(AgentResponse::Fenced { .. }) => {
+                        Ok(AgentResponse::Fenced { binding: got })
+                            if *phase == EffectPhase::Fence && got == binding.as_u64() =>
+                        {
                             self.commit_lenient(Command::RecordBindingFenced {
                                 binding,
                                 session: *session,
                                 fence: *fence,
                             })
                         }
-                        Ok(AgentResponse::Failed { reason, .. }) => {
+                        Ok(AgentResponse::Failed {
+                            binding: got,
+                            reason,
+                        }) if got == binding.as_u64()
+                            && matches!(phase, EffectPhase::Prepare | EffectPhase::Activate) =>
+                        {
                             self.commit_lenient(Command::RecordBindingFailed {
                                 binding,
                                 session: *session,
                                 reason,
                                 fence: *fence,
                             })
+                        }
+                        Ok(AgentResponse::Failed {
+                            binding: got,
+                            reason,
+                        }) if got == binding.as_u64() => {
+                            // A refused close says nothing about closure. Keep
+                            // the binding open for paced teardown retry.
+                            eprintln!("archon: close for binding {binding} refused: {reason}");
                         }
                         Ok(other) => {
                             eprintln!(
@@ -2820,28 +2842,31 @@ impl NodeService {
             {
                 continue;
             }
-            // Use the same close operation as the terminal transition:
-            // voluntary release composes with the ordinary release path.
-            let effect = if release {
-                Effect::Release {
-                    binding,
-                    node: record.node,
-                    provider: record.provider,
-                    fence: record.fence,
-                    session: record.agent_session,
-                    epoch: self.cluster.epoch,
-                }
-            } else {
-                Effect::Fence {
-                    binding,
-                    node: record.node,
-                    provider: record.provider,
-                    fence: record.fence,
-                    session: record.agent_session,
-                    epoch: self.cluster.epoch,
-                }
-            };
-            self.pending.push_back(effect);
+            self.pending
+                .push_back(self.binding_close_effect(record, release));
+        }
+    }
+
+    fn binding_close_effect(&self, binding: &archon_kernel::Binding, release: bool) -> Effect {
+        let epoch = self.cluster.epoch;
+        if release {
+            Effect::Release {
+                binding: binding.id,
+                node: binding.node,
+                provider: binding.provider,
+                fence: binding.fence,
+                session: binding.agent_session,
+                epoch,
+            }
+        } else {
+            Effect::Fence {
+                binding: binding.id,
+                node: binding.node,
+                provider: binding.provider,
+                fence: binding.fence,
+                session: binding.agent_session,
+                epoch,
+            }
         }
     }
 
@@ -3000,37 +3025,35 @@ impl NodeService {
     /// Retry from the authoritative open bindings, not a second teardown
     /// queue. Pace retries independently of maintenance frequency and let
     /// the session's reconciliation own machines still being recovered.
-    fn retry_unproven_stops(&mut self) {
+    fn retry_pending_teardowns(&mut self) {
         let now = Instant::now();
-        if now < self.next_stop_retry {
+        if now < self.next_teardown_retry {
             return;
         }
-        self.next_stop_retry = now + Duration::from_secs(5);
-        let members: BTreeSet<_> = self
+        self.next_teardown_retry = now + Duration::from_secs(5);
+        let effects: Vec<_> = self
             .cluster
             .bindings
             .values()
             .filter(|binding| !binding.state.is_closed())
-            .filter(|binding| {
-                self.cluster
-                    .leases
-                    .get(&binding.lease)
-                    .is_some_and(|lease| self.terminal_lease(lease.state))
-                    && self
-                        .requests
-                        .get(&binding.lease)
-                        .is_some_and(|(workload, _)| workload.execution.has_program())
-            })
             .filter_map(|binding| {
+                let lease = self.cluster.leases.get(&binding.lease)?;
                 let machine = self.cluster.graph.machine_of(binding.node)?;
-                (self.agents.contains_key(&machine)
-                    && !self.recovering_machines.contains_key(&machine))
-                .then_some((binding.lease, machine))
+                if !self.terminal_lease(lease.state)
+                    || !self.agents.contains_key(&machine)
+                    || self.recovering_machines.contains_key(&machine)
+                {
+                    return None;
+                }
+                Some(self.binding_close_effect(
+                    binding,
+                    lease.state == archon_kernel::LeaseState::Released,
+                ))
             })
             .collect();
-        for (lease, machine) in members {
-            self.request_execution_stop(lease, machine);
-        }
+        // The ordinary route checks the current generation and requests stop
+        // instead of closing a binding when execution proof is missing.
+        self.pending.extend(effects);
     }
 
     fn request_execution_stop(&mut self, lease: LeaseId, machine: NodeId) {
@@ -3504,6 +3527,9 @@ impl NodeService {
                 .bindings
                 .get(&binding_id)
                 .ok_or(Error::UnknownBinding(binding_id))?;
+            if record.state.is_closed() {
+                return Ok(Vec::new());
+            }
             (
                 record.lease,
                 record.agent_session,

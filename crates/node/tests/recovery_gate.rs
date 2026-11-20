@@ -32,6 +32,8 @@ struct State {
     first_start_identity: Option<archon_node::protocol::ExecutionId>,
     activates: usize,
     failed_fences: BTreeSet<u64>,
+    wrong_fence_reply: bool,
+    refuse_fence: bool,
     fences: Vec<(u64, u64, BindingScope, u64)>,
 }
 
@@ -208,6 +210,15 @@ impl AgentClient for Agent {
                     state.fences.push((node, provider, scope, fence));
                     if state.failed_fences.contains(&binding) {
                         Err("stray closure unproven".into())
+                    } else if state.wrong_fence_reply {
+                        Ok(AgentResponse::Fenced {
+                            binding: binding + 1000,
+                        })
+                    } else if state.refuse_fence {
+                        Ok(AgentResponse::Failed {
+                            binding,
+                            reason: "temporary provider failure".into(),
+                        })
                     } else {
                         for endpoint in &mut state.endpoints {
                             if endpoint.binding == Some(binding) {
@@ -369,6 +380,39 @@ fn teardown_status_changes_after_execution_stop_before_binding_closure() {
     settle(&mut service);
     assert!(!service.cluster.occupies(lease));
     assert!(service.pending_teardowns().is_empty());
+}
+
+#[test]
+fn maintenance_retries_unproven_binding_closure_without_repeating_stop() {
+    for wrong_reply in [true, false] {
+        let (mut service, state, _) = started();
+        {
+            let mut fixture = state.lock().unwrap();
+            fixture.stop_proven = true;
+            fixture.wrong_fence_reply = wrong_reply;
+            fixture.refuse_fence = !wrong_reply;
+        }
+        let lease = LeaseId::from_u64(1);
+        service.revoke(lease).unwrap();
+        settle(&mut service);
+        assert_eq!(
+            service.pending_teardowns().get(&lease),
+            Some(&PendingTeardown::BindingClosure)
+        );
+        assert!(service.cluster.occupies(lease));
+        {
+            let mut fixture = state.lock().unwrap();
+            assert_eq!(fixture.stops, 1);
+            assert_eq!(fixture.fences.len(), 2, "no immediate retry loop");
+            fixture.wrong_fence_reply = false;
+            fixture.refuse_fence = false;
+        }
+        service.tick().unwrap();
+        settle(&mut service);
+        assert!(!service.cluster.occupies(lease));
+        assert!(service.pending_teardowns().is_empty());
+        assert_eq!(state.lock().unwrap().stops, 1);
+    }
 }
 
 #[test]
