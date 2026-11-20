@@ -47,7 +47,13 @@ impl Drop for TestDirs {
             }
         }
         let _ = fs::remove_dir(&self.cgroups);
-        for id in recorded_containers(&self.state) {
+        let lost_create = fs::read_to_string(self.state.join("created-id"))
+            .ok()
+            .filter(|id| full_container_id(id.trim()));
+        for id in recorded_containers(&self.state)
+            .into_iter()
+            .chain(lost_create.map(|id| id.trim().to_owned()))
+        {
             let _ = Command::new("docker").args(["rm", "-f", &id]).output();
         }
         if std::thread::panicking()
@@ -185,10 +191,33 @@ fn recorded_containers(state: &Path) -> Vec<String> {
         .filter_map(|entry| {
             let text = fs::read_to_string(entry.path()).ok()?;
             let (_, id) = text.split_once('\n')?;
-            (id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                .then(|| id.to_owned())
+            full_container_id(id).then(|| id.to_owned())
         })
         .collect()
+}
+
+fn full_container_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn assert_docker_removed(id: &str) {
+    assert!(full_container_id(id));
+    let output = Command::new("docker")
+        .args([
+            "container",
+            "ls",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            "--filter",
+            &format!("id={id}"),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success() && output.stdout.is_empty(),
+        "container not proven removed: {output:?}"
+    );
 }
 
 fn docker_running(id: &str) -> bool {
@@ -286,22 +315,7 @@ fn queued_work_waits_for_exact_docker_agent_recovery() {
             .into_iter()
             .find(|id| *id != old && docker_running(id))
     });
-    let output = Command::new("docker")
-        .args([
-            "container",
-            "ls",
-            "--all",
-            "--quiet",
-            "--no-trunc",
-            "--filter",
-            &format!("id={old}"),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success() && output.stdout.is_empty(),
-        "old container not proven removed: {output:?}"
-    );
+    assert_docker_removed(&old);
     let (queued, leases) = status(&mut client);
     assert_eq!(queued, 0);
     assert!(
@@ -315,6 +329,73 @@ fn queued_work_waits_for_exact_docker_agent_recovery() {
             .any(|lease| lease.owner == 2 && lease.occupies_capacity == Some(true))
     );
     drop(plane);
+}
+
+#[test]
+fn docker_agent_recovers_after_a_lost_create_reply() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(image) = std::env::var("ARCHON_TEST_DOCKER_IMAGE") else {
+        return;
+    };
+    let state =
+        std::env::temp_dir().join(format!("archon-docker-lost-create-{}", std::process::id()));
+    fs::create_dir(&state).unwrap();
+    let dirs = TestDirs {
+        cgroups: state.join("unused-cgroups"),
+        state,
+    };
+    let wrapper = dirs.state.join("docker-fault");
+    fs::write(
+        &wrapper,
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+    create)
+        docker "$@" > "$ARCHON_EXECUTION_STATE_DIR/created-id"
+        echo 'injected lost create reply' >&2
+        exit 1;;
+    start)
+        touch "$ARCHON_EXECUTION_STATE_DIR/start-attempted"
+        exit 1;;
+    *) exec docker "$@";;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let addr = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let addr_arg = addr.to_string();
+    let _plane = controller(&addr_arg, &dirs);
+    let mut client = until("controller", || connect(addr).ok());
+    let _agent = ChildGuard(
+        agent_command(&addr_arg, &dirs)
+            .env("ARCHON_CONTAINER_ENGINE", wrapper)
+            .spawn()
+            .unwrap(),
+    );
+    let mut job = submission(1, 1, vec!["sleep".into(), "120".into()]);
+    job.image = Some(image);
+    assert!(matches!(
+        request(&mut client, ClientRequest::Submit(job)),
+        ServerResponse::Submitted { .. }
+    ));
+    until("failed create to release capacity", || {
+        let (queue, leases) = status(&mut client);
+        (queue == 0
+            && leases.len() == 1
+            && leases[0].state == "Failed"
+            && leases[0].occupies_capacity == Some(false))
+        .then_some(())
+    });
+    let created = fs::read_to_string(dirs.state.join("created-id")).unwrap();
+    let id = created.trim();
+    assert!(!dirs.state.join("start-attempted").exists());
+    assert_eq!(recorded_containers(&dirs.state), [id]);
+    assert_docker_removed(id);
 }
 
 #[test]
