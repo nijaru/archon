@@ -469,6 +469,58 @@ fn queue_len_of(response: ServerResponse) -> usize {
 }
 
 #[test]
+fn submit_does_not_return_the_lease_of_an_older_queued_request() {
+    use archon_control::server::AgentLink;
+
+    let path = temp_log("submit-lease-attribution");
+    let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+    assert!(matches!(
+        plane.handle(submit_request()),
+        ServerResponse::Submitted {
+            request: 1,
+            lease: 0
+        }
+    ));
+    drop(plane);
+
+    let mut plane = ControlPlane::boot(
+        AgentLink::Remote {
+            addr: spawn_test_agent(),
+            token: None,
+        },
+        path.clone(),
+        0,
+    )
+    .unwrap();
+    let mut newer = submit_request();
+    if let ClientRequest::Submit { owner, cpus, .. } = &mut newer {
+        *owner = 2;
+        // The enforcing fixture publishes just four CPUs. Only the older
+        // request can fit, regardless of the scheduler's ranking policy.
+        *cpus = 5;
+    }
+    let reply = plane.handle(newer);
+    assert!(
+        matches!(
+            reply,
+            ServerResponse::Submitted {
+                request: 2,
+                lease: 0
+            }
+        ),
+        "{reply:?}"
+    );
+    let ServerResponse::Status { queue_len, leases } = plane.handle(ClientRequest::Status) else {
+        panic!("expected status");
+    };
+    assert_eq!(queue_len, 1);
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].owner, 1);
+    drop(plane);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn snapshot_preserves_queued_work_across_restarts() {
     let dir = std::env::temp_dir().join(format!("archon-queue-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

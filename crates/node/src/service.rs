@@ -1194,7 +1194,12 @@ impl NodeService {
     /// Admit one request using the default scheduler policy and drive its
     /// lease to Active. Returns the admitted request id, or None when nothing fits.
     pub fn admit_one(&mut self) -> Result<Option<RequestId>, Error> {
-        self.admit_one_with_policy(&archon_kernel::AdmissionPolicy::default())
+        Ok(self.admit_one_with_lease()?.map(|(request, _)| request))
+    }
+
+    /// Return the exact request and lease opened by this admission.
+    pub fn admit_one_with_lease(&mut self) -> Result<Option<(RequestId, LeaseId)>, Error> {
+        self.admit_next(&archon_kernel::AdmissionPolicy::default())
     }
 
     /// Admit one request under an explicit scheduler policy. Policy changes
@@ -1204,6 +1209,13 @@ impl NodeService {
         &mut self,
         policy: &archon_kernel::AdmissionPolicy,
     ) -> Result<Option<RequestId>, Error> {
+        Ok(self.admit_next(policy)?.map(|(request, _)| request))
+    }
+
+    fn admit_next(
+        &mut self,
+        policy: &archon_kernel::AdmissionPolicy,
+    ) -> Result<Option<(RequestId, LeaseId)>, Error> {
         let exclusions = self.execution_exclusions();
         let Some(admission) =
             self.cluster
@@ -1263,7 +1275,7 @@ impl NodeService {
         // Activation waits for every binding's Prepare ack; a lease without
         // enforced bindings activates right away.
         self.maybe_activate(lease);
-        Ok(Some(request_id))
+        Ok(Some((request_id, lease)))
     }
 
     /// Every command applied since construction, in order.

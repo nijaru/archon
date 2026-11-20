@@ -691,14 +691,12 @@ impl ControlPlane {
         };
         request.keep_alive = keep_alive;
         self.service.submit(request, OwnerId::from_u64(owner));
-        match self.service.admit_one() {
-            Ok(Some(_)) => ServerResponse::Submitted {
+        match self.service.admit_one_with_lease() {
+            Ok(admission) => ServerResponse::Submitted {
                 request: id.as_u64(),
-                lease: self.lease_of_request(),
-            },
-            Ok(None) => ServerResponse::Submitted {
-                request: id.as_u64(),
-                lease: 0,
+                lease: admission
+                    .filter(|(admitted, _)| *admitted == id)
+                    .map_or(0, |(_, lease)| lease.as_u64()),
             },
             Err(err) => ServerResponse::Error {
                 reason: err.to_string(),
@@ -906,17 +904,6 @@ impl ControlPlane {
             }
             Err(reason) => ServerResponse::Error { reason },
         }
-    }
-
-    fn lease_of_request(&self) -> u64 {
-        // v0 admits one request per submit; the newest lease is its lease.
-        self.service
-            .cluster
-            .leases
-            .keys()
-            .max()
-            .map(|id| id.as_u64())
-            .unwrap_or(0)
     }
 
     fn status(&self) -> ServerResponse {
