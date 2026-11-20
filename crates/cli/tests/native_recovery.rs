@@ -47,6 +47,9 @@ impl Drop for TestDirs {
             }
         }
         let _ = fs::remove_dir(&self.cgroups);
+        for id in recorded_containers(&self.state) {
+            let _ = Command::new("docker").args(["rm", "-f", &id]).output();
+        }
         if std::thread::panicking()
             && let Ok(log) = fs::read_to_string(self.state.join("controller.stderr"))
         {
@@ -93,10 +96,13 @@ fn agent(addr: &str, dirs: &TestDirs) -> ChildGuard {
 
 fn agent_command(addr: &str, dirs: &TestDirs) -> Command {
     let mut agent = command();
+    agent.args(["agent", "--register", addr, "--id", "recovery-test"]);
+    if dirs.cgroups.is_dir() {
+        agent.arg("--cgroup-root").arg(&dirs.cgroups);
+    } else {
+        agent.env_remove("ARCHON_CGROUP_ROOT");
+    }
     agent
-        .args(["agent", "--register", addr, "--id", "native-recovery"])
-        .arg("--cgroup-root")
-        .arg(&dirs.cgroups)
         .env("ARCHON_EXECUTION_STATE_DIR", &dirs.state)
         .env("ARCHON_LOG_DIR", dirs.state.join("execution-logs"));
     agent
@@ -168,6 +174,148 @@ fn populated_scope(root: &Path) -> Option<PathBuf> {
             fs::read_to_string(scope.join("cgroup.procs"))
                 .is_ok_and(|pids| pids.lines().count() >= 2)
         })
+}
+
+fn recorded_containers(state: &Path) -> Vec<String> {
+    fs::read_dir(state)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().as_encoded_bytes().starts_with(b"oci-"))
+        .filter_map(|entry| {
+            let record: serde_json::Value =
+                serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
+            let id = record["container"].as_str()?;
+            (id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .then(|| id.to_owned())
+        })
+        .collect()
+}
+
+fn docker_running(id: &str) -> bool {
+    Command::new("docker")
+        .args(["inspect", "--format", "{{.State.Running}}", id])
+        .output()
+        .is_ok_and(|out| out.status.success() && out.stdout == b"true\n")
+}
+
+#[test]
+fn queued_work_waits_for_exact_docker_agent_recovery() {
+    // Opt in explicitly: the test runs two containers in the local daemon.
+    let Some(image) = std::env::var_os("ARCHON_TEST_DOCKER_IMAGE") else {
+        return;
+    };
+    let image = image.into_string().unwrap();
+    let state = std::env::temp_dir().join(format!("archon-docker-recovery-{}", std::process::id()));
+    fs::create_dir(&state).unwrap();
+    let dirs = TestDirs {
+        cgroups: state.join("unused-cgroups"),
+        state,
+    };
+    let addr = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let addr_arg = addr.to_string();
+    let mut plane = controller(&addr_arg, &dirs);
+    let mut client = until("controller", || connect(addr).ok());
+    let docker_agent = |state: &Path| {
+        ChildGuard(
+            agent_command(&addr_arg, &dirs)
+                .env("ARCHON_CONTAINER_ENGINE", "docker")
+                .env("ARCHON_EXECUTION_STATE_DIR", state)
+                .spawn()
+                .unwrap(),
+        )
+    };
+    let mut original = docker_agent(&dirs.state);
+    let job = |owner, cpus| {
+        let mut intent = submission(owner, cpus, vec!["sleep".into(), "120".into()]);
+        intent.image = Some(image.clone());
+        ClientRequest::Submit(intent)
+    };
+    assert!(matches!(
+        request(&mut client, job(1, archon_node::discover::describe().cpus)),
+        ServerResponse::Submitted { .. }
+    ));
+    let old = until("first Docker workload", || {
+        recorded_containers(&dirs.state)
+            .into_iter()
+            .find(|id| docker_running(id))
+    });
+    let (_, leases) = status(&mut client);
+    let first = leases.iter().find(|lease| lease.owner == 1).unwrap().id;
+    assert!(matches!(
+        request(&mut client, job(2, 1)),
+        ServerResponse::Submitted { lease: 0, .. }
+    ));
+    original.0.kill().unwrap();
+    original.0.wait().unwrap();
+    assert!(docker_running(&old));
+    assert!(matches!(
+        request(&mut client, ClientRequest::Revoke { lease: first }),
+        ServerResponse::Revoked
+    ));
+    plane.0.kill().unwrap();
+    plane.0.wait().unwrap();
+    drop(client);
+    plane = controller(&addr_arg, &dirs);
+    client = until("controller journal replay", || connect(addr).ok());
+    let empty_state = dirs.state.join("empty-state");
+    fs::create_dir(&empty_state).unwrap();
+    let without_record = docker_agent(&empty_state);
+    until("replacement to refuse stop without the record", || {
+        fs::read_to_string(dirs.state.join("controller.stderr"))
+            .ok()?
+            .lines()
+            .any(|line| {
+                line.contains(&format!("execution stop for lease LeaseId({first})"))
+                    && line.contains("is untracked")
+            })
+            .then_some(())
+    });
+    assert!(docker_running(&old));
+    let (queued, leases) = status(&mut client);
+    assert_eq!(queued, 1);
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].occupies_capacity, Some(true));
+    drop(without_record);
+
+    let _replacement = docker_agent(&dirs.state);
+    until("queued Docker workload to start", || {
+        recorded_containers(&dirs.state)
+            .into_iter()
+            .find(|id| *id != old && docker_running(id))
+    });
+    let output = Command::new("docker")
+        .args([
+            "container",
+            "ls",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            "--filter",
+            &format!("id={old}"),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success() && output.stdout.is_empty(),
+        "old container not proven removed: {output:?}"
+    );
+    let (queued, leases) = status(&mut client);
+    assert_eq!(queued, 0);
+    assert!(
+        leases
+            .iter()
+            .any(|lease| lease.id == first && lease.occupies_capacity == Some(false))
+    );
+    assert!(
+        leases
+            .iter()
+            .any(|lease| lease.owner == 2 && lease.occupies_capacity == Some(true))
+    );
+    drop(plane);
 }
 
 #[test]

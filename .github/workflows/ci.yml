@@ -41,6 +41,12 @@ jobs:
           test_bin="$(cargo test -p archon-cli --test native_recovery --no-run --message-format=json | jq -r 'select(.reason == "compiler-artifact" and .target.name == "native_recovery") | .executable')"
           test -x "$test_bin"
           sudo --preserve-env=ARCHON_REQUIRE_PRIVILEGED_CGROUP "$test_bin" --nocapture
+      - name: Prove queued admission after Docker agent recovery
+        env:
+          ARCHON_TEST_DOCKER_IMAGE: busybox:1.37.0
+        run: |
+          docker pull "$ARCHON_TEST_DOCKER_IMAGE"
+          cargo test -p archon-cli --test native_recovery queued_work_waits_for_exact_docker_agent_recovery -- --nocapture
 
   supply-chain:
     runs-on: ubuntu-latest
