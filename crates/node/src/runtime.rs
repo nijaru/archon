@@ -546,7 +546,7 @@ fn numa_mems_list() -> CpuList {
             &mut mode as *mut i32,
             &mut mask as *mut usize,
             std::mem::size_of::<usize>() * 8,
-            0 as *mut libc::c_void,
+            std::ptr::null_mut::<libc::c_void>(),
             2u64, // MPOL_F_MEMS_ALLOWED
         ) == 0
         {

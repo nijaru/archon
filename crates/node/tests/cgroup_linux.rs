@@ -594,14 +594,14 @@ fn memory_limit_kills_an_overallocating_process() {
     }
     cleanup_root(&root);
     let mut service = NodeService::local(Some(root.clone()));
-    // Keep a large string live in awk so the 16 MiB limit OOM-kills the
-    // workload without depending on a utility's buffering behavior.
+    // Grow a live string past 16 MiB without relying on awk's
+    // implementation-specific sprintf buffer limit.
     service.submit(
         request(
             1,
             vec![
                 "awk".into(),
-                "BEGIN { a=sprintf(\"%*s\", 67108864, \"x\"); while (1) system(\"sleep 1\") }"
+                "BEGIN { a=\"x\"; for (i=0; i<26; i++) a=a a; while (1) system(\"sleep 1\") }"
                     .into(),
             ],
             16,
