@@ -226,11 +226,10 @@ fn wrong_token_is_rejected_before_any_work() {
     if let Ok(mut stream) =
         TcpStream::connect(&addr).and_then(|stream| establish_initiator(stream, Some("wrong")))
     {
-        write_frame(&mut stream, &Greeting::Client).expect("send greeting");
-        assert!(
-            read_response(&mut stream).is_err(),
-            "wrong token must close the connection"
-        );
+        let result = write_frame(&mut stream, &Greeting::Client)
+            .and_then(|()| write_frame(&mut stream, &ClientRequest::Status))
+            .and_then(|()| read_response(&mut stream));
+        assert!(result.is_err(), "wrong token must close the connection");
     }
 
     // Right token: requests are served.
