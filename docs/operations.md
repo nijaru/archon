@@ -109,6 +109,14 @@ starts; automatic pruning is not implemented. Missing or invalid records and
 changed boot or cgroup-root identity do not prove closure. This recovery path
 does not cover OCI, devices, or earlier executions launched without records.
 
+For OCI jobs, the agent obtains the engine's full container ID before asking
+it to start. If the start reply fails, the same agent can still remove that
+exact container before acknowledging teardown. If a removal reply is lost,
+a successful engine query that confirms the exact ID is absent also proves
+closure. If the create reply never provides an ID, or the agent is replaced,
+Archon cannot prove OCI closure and keeps capacity held. Keep the engine
+context fixed while the agent is running.
+
 Keep a cgroup root dedicated to one controller's journal. A start that finds an
 existing native scope at the requested lease number is refused without changing
 that scope. Lease numbers can recur in independent journals; neither a directory

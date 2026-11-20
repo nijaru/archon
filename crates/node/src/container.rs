@@ -103,7 +103,7 @@ impl ContainerRuntime {
 
     pub fn activate(&mut self, lease: LeaseId, cfg: ContainerConfig) -> Result<(), String> {
         if self.containers.contains_key(&lease) {
-            return Ok(());
+            return Err(format!("container for lease {lease} is already tracked"));
         }
         let name = self.name(lease);
         let count = cfg.limits.cpu_count;
@@ -111,11 +111,9 @@ impl ContainerRuntime {
         if let Some(dir) = &self.cdi_spec_dir {
             cmd.arg("--cdi-spec-dir").arg(dir);
         }
-        cmd.arg("run")
-            // No --rm: the adapter removes containers on teardown, and a
-            // removed container's exit code is unreadable, which would
-            // misreport natural completion as failure.
-            .arg("-d")
+        // Obtain the immutable engine ID before allowing the workload to run.
+        // Keep the container after exit so status is observable until teardown.
+        cmd.arg("create")
             .arg("--name")
             .arg(&name)
             .arg("--pull")
@@ -152,34 +150,39 @@ impl ContainerRuntime {
         let output = cmd
             .stdin(Stdio::null())
             .output()
-            .map_err(|err| format!("run {}: {err}", self.engine))?;
+            .map_err(|err| format!("{} create: {err}", self.engine))?;
         if !output.status.success() {
             return Err(format!(
-                "{} run failed: {}",
+                "{} create failed: {}",
                 self.engine,
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
-        self.containers.insert(lease, name);
+        let text = String::from_utf8_lossy(&output.stdout);
+        let id = text.trim();
+        if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "{} create did not return a full container ID",
+                self.engine
+            ));
+        }
+        self.containers.insert(lease, id.to_owned());
+        let started = Command::new(&self.engine)
+            .args(["start", id])
+            .output()
+            .map_err(|err| format!("{} start: {err}", self.engine))?;
+        if !started.status.success() {
+            return Err(format!(
+                "{} start {id}: {}",
+                self.engine,
+                String::from_utf8_lossy(&started.stderr).trim()
+            ));
+        }
         Ok(())
     }
 
-    /// Whether this lease runs as a container (vs a bare process).
-    pub fn is_tracked(&self, lease: LeaseId) -> bool {
-        self.containers.contains_key(&lease)
-    }
-
     pub fn terminate(&mut self, lease: LeaseId) -> Result<bool, String> {
-        let Some(name) = self.containers.remove(&lease) else {
-            return Ok(false);
-        };
-        let output = Command::new(&self.engine)
-            .arg("rm")
-            .arg("-f")
-            .arg(&name)
-            .output()
-            .map_err(|err| format!("{} rm: {err}", self.engine))?;
-        Ok(output.status.success())
+        self.terminate_with_grace(lease, 0)
     }
 
     pub fn is_running(&mut self, lease: LeaseId) -> bool {
@@ -191,30 +194,34 @@ impl ContainerRuntime {
         let Some(name) = self.containers.get(&lease) else {
             return super::runtime::WorkStatus::Gone;
         };
-        let inspect = |format: &str| {
-            Command::new(&self.engine)
-                .arg("inspect")
-                .arg("-f")
-                .arg(format)
-                .arg(name)
-                .output()
+        let Ok(output) = Command::new(&self.engine)
+            .args([
+                "inspect",
+                "-f",
+                "{{.State.Status}} {{.State.ExitCode}}",
+                name,
+            ])
+            .output()
+        else {
+            return super::runtime::WorkStatus::Gone;
         };
-        match inspect("{{.State.Running}}") {
-            Ok(output)
-                if output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).trim() == "true" =>
-            {
+        if !output.status.success() {
+            return super::runtime::WorkStatus::Gone;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut fields = text.split_whitespace();
+        match (
+            fields.next(),
+            fields.next().and_then(|code| code.parse().ok()),
+            fields.next(),
+        ) {
+            (Some("running" | "paused" | "restarting"), Some(_), None) => {
                 super::runtime::WorkStatus::Running
             }
-            Ok(_) => {
-                let code = inspect("{{.State.ExitCode}}")
-                    .ok()
-                    .filter(|output| output.status.success())
-                    .and_then(|output| String::from_utf8_lossy(&output.stdout).trim().parse().ok())
-                    .unwrap_or(-1);
+            (Some("exited" | "stopped"), Some(code), None) => {
                 super::runtime::WorkStatus::Exited(code)
             }
-            Err(_) => super::runtime::WorkStatus::Gone,
+            _ => super::runtime::WorkStatus::Gone,
         }
     }
 
@@ -236,52 +243,63 @@ impl ContainerRuntime {
             .unwrap_or_default()
     }
 
-    /// Stop with a SIGTERM grace budget before removing the container.
-    /// Stop with a SIGTERM grace budget, then remove. The container stays
-    /// tracked until cleanup is positively confirmed: a failed engine
-    /// command returns an error (an uncertain failure the controller
-    /// treats as lease failure) instead of acknowledging teardown while
-    /// the workload may still run.
+    /// Drain, then remove the exact container. Keep its ID until removal
+    /// is confirmed; engine failures do not prove closure.
     pub fn terminate_with_grace(
         &mut self,
         lease: LeaseId,
         grace_secs: u32,
     ) -> Result<bool, String> {
         let Some(name) = self.containers.get(&lease) else {
-            return Ok(false);
+            return Err(format!(
+                "container for lease {lease} has no confirmed engine ID"
+            ));
         };
-        let name = name.clone();
-        let stop = Command::new(&self.engine)
-            .arg("stop")
-            .arg("-t")
-            .arg(grace_secs.to_string())
-            .arg(&name)
-            .output()
-            .map_err(|err| format!("{} stop: {err}", self.engine))?;
-        if !stop.status.success() {
-            return Err(format!(
-                "{} stop {}: {}",
-                self.engine,
-                name,
-                String::from_utf8_lossy(&stop.stderr).trim()
-            ));
-        }
-        let rm = Command::new(&self.engine)
-            .arg("rm")
-            .arg("-f")
-            .arg(&name)
-            .output()
-            .map_err(|err| format!("{} rm: {err}", self.engine))?;
-        if !rm.status.success() {
-            return Err(format!(
-                "{} rm {}: {}",
-                self.engine,
-                name,
-                String::from_utf8_lossy(&rm.stderr).trim()
-            ));
+        let teardown = (|| {
+            if grace_secs > 0 {
+                self.engine_teardown(&["stop", "-t", &grace_secs.to_string(), name])?;
+            }
+            self.engine_teardown(&["rm", "-f", name])
+        })();
+        if let Err(err) = teardown {
+            // Removal might have succeeded before the CLI lost its reply. A
+            // successful all-containers query can prove that this immutable
+            // ID is absent; a failed inspect, stop or list cannot.
+            let absent = Command::new(&self.engine)
+                .args([
+                    "container",
+                    "ls",
+                    "--all",
+                    "--quiet",
+                    "--no-trunc",
+                    "--filter",
+                    &format!("id={name}"),
+                ])
+                .output()
+                .is_ok_and(|output| {
+                    output.status.success() && output.stdout.iter().all(u8::is_ascii_whitespace)
+                });
+            if !absent {
+                return Err(err);
+            }
         }
         self.containers.remove(&lease);
         Ok(true)
+    }
+
+    fn engine_teardown(&self, args: &[&str]) -> Result<(), String> {
+        let output = Command::new(&self.engine)
+            .args(args)
+            .output()
+            .map_err(|err| format!("{} {args:?}: {err}", self.engine))?;
+        if !output.status.success() {
+            return Err(format!(
+                "{} {args:?}: {}",
+                self.engine,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(())
     }
 }
 
