@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use archon_control::api::{self, ClientRequest, Greeting, ServerResponse};
+use archon_control::api::{self, ClientRequest, Greeting, ServerResponse, Submission};
 use archon_node::agent::LeaseAgent;
 use archon_node::protocol::{self, AgentRequest, AgentResponse};
 use archon_node::runtime::ProcessRuntime;
@@ -126,22 +126,26 @@ fn controller(addr: &str, dirs: &TestDirs) -> ChildGuard {
     )
 }
 
+fn submission(owner: u64, cpus: u64, command: Vec<String>) -> Submission {
+    Submission {
+        owner,
+        cpus,
+        memory_mib: 0,
+        lifetime_secs: 120,
+        command,
+        keep_alive: false,
+        volumes: vec![],
+        ports: vec![],
+        grace_secs: 0,
+        image: None,
+        gpus: 0,
+    }
+}
+
 fn submit(client: &mut SecureStream, owner: u64, cpus: u64, command: Vec<String>) -> u64 {
     match request(
         client,
-        ClientRequest::Submit(archon_control::api::Submission {
-            owner,
-            cpus,
-            memory_mib: 0,
-            lifetime_secs: 120,
-            command,
-            keep_alive: false,
-            volumes: vec![],
-            ports: vec![],
-            grace_secs: 0,
-            image: None,
-            gpus: 0,
-        }),
+        ClientRequest::Submit(submission(owner, cpus, command)),
     ) {
         ServerResponse::Submitted { lease, .. } => lease,
         other => panic!("submit failed: {other:?}"),
@@ -278,17 +282,42 @@ fn recovery_with_queued_work(crash: Crash) {
     // The first workload consumes the published CPU inventory. Submitting
     // before registration completes is fine: maintenance will place it.
     let cpus = archon_node::discover::describe().cpus;
-    submit(
-        &mut client,
+    let incumbent = submission(
         1,
         cpus,
         vec!["sh".into(), "-c".into(), "sleep 120 & wait".into()],
     );
+    let first_request = if crash == Crash::LostStopReply {
+        let keyed = ClientRequest::SubmitOnce {
+            key: "incumbent".into(),
+            submission: incumbent,
+        };
+        let mut abandoned = connect(addr).unwrap();
+        api::write_frame(&mut abandoned, &keyed).unwrap();
+        drop(abandoned); // Lose the submit reply independently of the agent link.
+        Some(keyed)
+    } else {
+        assert!(matches!(
+            request(&mut client, ClientRequest::Submit(incumbent)),
+            ServerResponse::Submitted { .. }
+        ));
+        None
+    };
     let old_scope = until("first workload and its descendant", || {
         populated_scope(&dirs.cgroups)
     });
     let (_, leases) = status(&mut client);
     let first = leases.iter().find(|lease| lease.owner == 1).unwrap().id;
+    if let Some(keyed) = first_request {
+        let receipt = request(&mut client, keyed);
+        assert!(
+            matches!(receipt, ServerResponse::Submitted { request: 1, lease } if lease == first),
+            "{receipt:?}"
+        );
+        let (queued, leases) = status(&mut client);
+        assert_eq!(queued, 0, "submit retry must not enqueue a second job");
+        assert_eq!(leases.len(), 1);
+    }
 
     let marker = dirs.state.join("successor");
     let competitor = [
