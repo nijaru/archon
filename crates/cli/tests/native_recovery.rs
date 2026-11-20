@@ -8,7 +8,10 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use archon_control::api::{self, ClientRequest, Greeting, ServerResponse};
-use archon_node::transport::{SecureStream, establish_initiator};
+use archon_node::agent::LeaseAgent;
+use archon_node::protocol::{self, AgentRequest, AgentResponse};
+use archon_node::runtime::ProcessRuntime;
+use archon_node::transport::{SecureStream, establish_initiator, establish_responder};
 
 const TOKEN: &str = "archon-test-native-recovery";
 
@@ -178,11 +181,64 @@ fn unproven_active_work_is_reclaimed_without_operator_revoke() {
     recovery_with_queued_work(Crash::BothWhileActive);
 }
 
+#[test]
+fn queued_work_waits_for_a_fresh_stop_reply_after_native_scope_removal() {
+    recovery_with_queued_work(Crash::LostStopReply);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Crash {
     Agent,
     BothAfterRevoke,
     BothWhileActive,
+    LostStopReply,
+}
+
+// Relay the real agent's protocol so teardown runs normally. Disconnect only
+// after the agent has returned a successful stop, without forwarding its reply.
+fn lose_stop_reply(listener: TcpListener, controller: SocketAddr) -> io::Result<AgentRequest> {
+    listener.set_nonblocking(true)?;
+    let agent = until("agent to connect to the relay", || {
+        match listener.accept() {
+            Ok((socket, _)) => Some(socket),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => None,
+            Err(err) => panic!("agent accept: {err}"),
+        }
+    });
+    let upstream = TcpStream::connect_timeout(&controller, Duration::from_secs(2))?;
+    for socket in [&agent, &upstream] {
+        socket.set_nonblocking(false)?;
+        socket.set_read_timeout(Some(Duration::from_secs(20)))?;
+        socket.set_write_timeout(Some(Duration::from_secs(2)))?;
+    }
+    let mut agent = establish_responder(agent, Some(TOKEN))?;
+    let mut upstream = establish_initiator(upstream, Some(TOKEN))?;
+    api::write_frame(&mut upstream, &api::read_greeting(&mut agent)?)?;
+    let mut start = None;
+    loop {
+        let request = protocol::read_request(&mut upstream)?;
+        protocol::write_frame(&mut agent, &request)?;
+        let reply = protocol::read_frame(&mut agent)?;
+        match (&request, &reply) {
+            (AgentRequest::StartExecution { .. }, AgentResponse::ExecutionStarted { .. }) => {
+                start = Some(request.clone());
+            }
+            (
+                AgentRequest::StopExecution {
+                    lease, execution, ..
+                },
+                AgentResponse::ExecutionStopped { .. },
+            ) => {
+                let start = start.expect("stop must follow a successful start");
+                assert!(matches!(&start, AgentRequest::StartExecution {
+                    lease: started_lease, execution: Some(started_id), ..
+                } if started_lease == lease && Some(started_id) == execution.as_ref()));
+                return Ok(start);
+            }
+            _ => {}
+        }
+        protocol::write_response(&mut upstream, &reply)?;
+    }
 }
 
 fn recovery_with_queued_work(crash: Crash) {
@@ -209,7 +265,16 @@ fn recovery_with_queued_work(crash: Crash) {
     let addr_arg = addr.to_string();
     let mut plane = controller(&addr_arg, &dirs);
     let mut client = until("controller", || connect(addr).ok());
-    let mut original = agent(&addr_arg, &dirs);
+    let (mut original, relay) = if crash == Crash::LostStopReply {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let original = agent(&listener.local_addr().unwrap().to_string(), &dirs);
+        (
+            original,
+            Some(std::thread::spawn(move || lose_stop_reply(listener, addr))),
+        )
+    } else {
+        (agent(&addr_arg, &dirs), None)
+    };
     // The first workload consumes the published CPU inventory. Submitting
     // before registration completes is fine: maintenance will place it.
     let cpus = archon_node::discover::describe().cpus;
@@ -260,21 +325,45 @@ fn recovery_with_queued_work(crash: Crash) {
         plane.0.kill().unwrap();
         plane.0.wait().unwrap();
     }
+    if let Some(relay) = relay {
+        assert!(matches!(
+            request(&mut client, ClientRequest::Revoke { lease: first }),
+            ServerResponse::Revoked
+        ));
+        let start = relay.join().unwrap().unwrap();
+        assert!(!old_scope.exists(), "scope survived a successful stop");
+        // Use a fresh runtime, so a rejection must come from durable state,
+        // not from the original agent's cached stop receipt.
+        let mut replay = LeaseAgent::new(
+            ProcessRuntime::new()
+                .with_cgroup_root(dirs.cgroups.to_str().unwrap().into())
+                .with_execution_state(dirs.state.clone()),
+        );
+        let reply = replay.handle(start);
+        assert!(
+            matches!(&reply, AgentResponse::ExecutionFailed { reason, .. }
+            if reason.contains("reserve single-use execution")),
+            "{reply:?}"
+        );
+        assert!(!old_scope.exists());
+    }
     original.0.kill().unwrap();
     original.0.wait().unwrap();
-    assert!(
-        fs::read_to_string(old_scope.join("cgroup.events"))
-            .unwrap()
-            .lines()
-            .any(|line| line == "populated 1")
-    );
-    if crash != Crash::BothWhileActive {
+    if crash != Crash::LostStopReply {
+        assert!(
+            fs::read_to_string(old_scope.join("cgroup.events"))
+                .unwrap()
+                .lines()
+                .any(|line| line == "populated 1")
+        );
+    }
+    if matches!(crash, Crash::Agent | Crash::BothAfterRevoke) {
         assert!(matches!(
             request(&mut client, ClientRequest::Revoke { lease: first }),
             ServerResponse::Revoked
         ));
     }
-    if crash != Crash::Agent {
+    if matches!(crash, Crash::BothAfterRevoke | Crash::BothWhileActive) {
         // Replay must preserve the queue and the first lease's ownership,
         // regardless of whether revoke had already been committed.
         if crash == Crash::BothAfterRevoke {
@@ -298,7 +387,7 @@ fn recovery_with_queued_work(crash: Crash) {
         }
     );
     assert!(!leases.iter().any(|lease| lease.owner == 2));
-    assert!(old_scope.is_dir());
+    assert_eq!(old_scope.is_dir(), crash != Crash::LostStopReply);
     assert!(!marker.exists());
 
     if crash == Crash::BothWhileActive {
