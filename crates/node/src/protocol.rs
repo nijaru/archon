@@ -26,8 +26,12 @@ impl ExecutionId {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn native_scope_name(self) -> String {
+        self.scope_name("execution-")
+    }
+
+    pub(crate) fn scope_name(self, prefix: &str) -> String {
         use std::fmt::Write;
-        let mut name = String::from("execution-");
+        let mut name = String::from(prefix);
         for byte in self.0 {
             write!(name, "{byte:02x}").expect("writing to a String cannot fail");
         }

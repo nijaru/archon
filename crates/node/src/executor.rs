@@ -49,11 +49,13 @@ enum ExecutionState {
 
 impl ExecutionSupervisor {
     pub(crate) fn new(process: ProcessRuntime) -> Self {
+        let containers = ContainerRuntime::new(
+            std::env::var("ARCHON_CONTAINER_ENGINE").unwrap_or_else(|_| "docker".to_string()),
+        )
+        .with_execution_state(std::env::var_os("ARCHON_EXECUTION_STATE_DIR").map(Into::into));
         Self {
             process,
-            containers: ContainerRuntime::new(
-                std::env::var("ARCHON_CONTAINER_ENGINE").unwrap_or_else(|_| "docker".to_string()),
-            ),
+            containers,
             executions: BTreeMap::new(),
         }
     }
@@ -110,8 +112,9 @@ impl ExecutionSupervisor {
 
         // Keep the OCI assignment even when the engine's reply is uncertain.
         // It cannot be retried as a fresh start or stopped as a native process.
-        let result = self.containers.activate(
+        let result = self.containers.activate_assigned(
             lease,
+            id,
             ContainerConfig {
                 image: start.image,
                 command: start.command,
@@ -161,7 +164,9 @@ impl ExecutionSupervisor {
     /// A missing handle in a replacement supervisor is not closure proof.
     pub(crate) fn stop(&mut self, lease: LeaseId, id: Option<ExecutionId>) -> Result<(), String> {
         let Some(record) = self.executions.get_mut(&lease) else {
-            return if self.process.stop_assignment(lease, id, 0)? {
+            return if self.process.stop_assignment(lease, id, 0)?
+                || self.containers.stop_assignment(lease, id)?
+            {
                 Ok(())
             } else {
                 Err(format!("execution for lease {lease} is untracked"))
@@ -173,7 +178,7 @@ impl ExecutionSupervisor {
         match record.state {
             ExecutionState::Closed => return Ok(()),
             ExecutionState::Container { grace, .. } => {
-                self.containers.terminate_with_grace(lease, grace)?;
+                self.containers.stop_assigned(lease, id, grace)?;
             }
             ExecutionState::Native(grace) => {
                 if !self.process.stop_assignment(lease, id, grace)? {
@@ -215,6 +220,7 @@ set -eu
 cd "$(dirname "$0")"
 case "$1" in
     --version) echo 'Docker version test';;
+    info) if [ -e wrong-daemon ]; then echo other-daemon; else echo fixture-daemon; fi;;
     create) echo create >> calls; [ ! -e fail-create ]; echo {container};;
     start) [ "$2" = {container} ]; echo start >> calls; [ -e confirm-start ];;
     inspect) [ "$4" = {container} ]; exit 1;;
@@ -292,6 +298,43 @@ esac
                 .unwrap_err()
                 .contains("no confirmed engine ID")
         );
+
+        let durable_supervisor = || {
+            let mut supervisor = ExecutionSupervisor::new(ProcessRuntime::new());
+            supervisor.containers = ContainerRuntime::new(engine.to_str().unwrap().into())
+                .with_execution_state(Some(dir.0.clone()));
+            supervisor
+        };
+        fs::remove_file(dir.0.join("fail-create")).unwrap();
+        fs::remove_file(dir.0.join("absent")).unwrap();
+        let mut original = durable_supervisor();
+        original.start(lease, id, start()).unwrap();
+        drop(original);
+        let mut replacement = durable_supervisor();
+        assert!(
+            replacement
+                .start(lease, id, start())
+                .unwrap_err()
+                .contains("reserve OCI assignment")
+        );
+        assert!(replacement.stop(lease, other).is_err());
+        assert!(replacement.stop(LeaseId::from_u64(4), id).is_err());
+        fs::write(dir.0.join("wrong-daemon"), "").unwrap();
+        assert!(
+            replacement
+                .stop(lease, id)
+                .unwrap_err()
+                .contains("Docker daemon")
+        );
+        fs::remove_file(dir.0.join("wrong-daemon")).unwrap();
+        assert!(
+            replacement.stop(lease, id).is_err(),
+            "live ID still present"
+        );
+        fs::write(dir.0.join("absent"), "").unwrap();
+        replacement.stop(lease, id).unwrap();
+        durable_supervisor().stop(lease, id).unwrap();
+        assert!(durable_supervisor().start(lease, id, start()).is_err());
     }
 
     #[test]

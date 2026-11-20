@@ -4,13 +4,16 @@
 //! container, which kills it regardless of what it is doing.
 
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use archon_kernel::LeaseId;
 
 use crate::workload::{PortPublish, StorageMount};
 
-use crate::protocol::LeaseLimits;
+use crate::protocol::{ExecutionId, LeaseLimits};
 
 /// Everything one activation needs, bundled so the executor seam stays
 /// two arguments wide.
@@ -31,6 +34,7 @@ pub struct ContainerRuntime {
     /// A recognized Docker/Podman CLI answered --version successfully.
     available: bool,
     containers: BTreeMap<LeaseId, String>,
+    execution_state: Option<PathBuf>,
     /// Engine is podman: volume mounts need the SELinux relabel suffix.
     relabels: bool,
     /// Explicit opt-in for provider-native CDI names. The default remains
@@ -80,10 +84,16 @@ impl ContainerRuntime {
             namespace: format!("{}-{}-{seq}", std::process::id(), lease_namespace_salt()),
             available,
             containers: BTreeMap::new(),
+            execution_state: None,
             relabels,
             use_cdi,
             cdi_spec_dir,
         }
+    }
+
+    pub(crate) fn with_execution_state(mut self, state: Option<PathBuf>) -> Self {
+        self.execution_state = state;
+        self
     }
 
     pub fn capabilities(&self) -> crate::protocol::RuntimeCapabilities {
@@ -102,9 +112,34 @@ impl ContainerRuntime {
     }
 
     pub fn activate(&mut self, lease: LeaseId, cfg: ContainerConfig) -> Result<(), String> {
+        self.activate_assigned(lease, None, cfg)
+    }
+
+    pub(crate) fn activate_assigned(
+        &mut self,
+        lease: LeaseId,
+        id: Option<ExecutionId>,
+        cfg: ContainerConfig,
+    ) -> Result<(), String> {
         if self.containers.contains_key(&lease) {
             return Err(format!("container for lease {lease} is already tracked"));
         }
+        let durable = if let Some((state, path)) = self.assignment_path(id) {
+            if !self.available {
+                return Err("cannot confirm Docker engine for a durable OCI assignment".into());
+            }
+            let daemon = self.daemon_id()?;
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|err| format!("reserve OCI assignment {}: {err}", path.display()))?;
+            file.try_lock()
+                .map_err(|err| format!("lock {}: {err}", path.display()))?;
+            Some((state.to_owned(), file, daemon))
+        } else {
+            None
+        };
         let name = self.name(lease);
         let count = cfg.limits.cpu_count;
         let mut cmd = Command::new(&self.engine);
@@ -160,13 +195,25 @@ impl ContainerRuntime {
         }
         let text = String::from_utf8_lossy(&output.stdout);
         let id = text.trim();
-        if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if !full_container_id(id) {
             return Err(format!(
                 "{} create did not return a full container ID",
                 self.engine
             ));
         }
         self.containers.insert(lease, id.to_owned());
+        // Retain the lock through the start command. An empty/torn record is
+        // not recoverable, and the workload cannot launch before the full
+        // immutable ID and single-use gate are synced.
+        if let Some((state, file, daemon)) = &durable {
+            let record = OciAssignment {
+                daemon: daemon.clone(),
+                lease,
+                container: id.to_owned(),
+            };
+            serde_json::to_writer(file, &record).map_err(|err| err.to_string())?;
+            sync_assignment(file, state)?;
+        }
         let started = Command::new(&self.engine)
             .args(["start", id])
             .output()
@@ -176,6 +223,83 @@ impl ContainerRuntime {
                 "{} start {id}: {}",
                 self.engine,
                 String::from_utf8_lossy(&started.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+
+    fn assignment_path(&self, id: Option<ExecutionId>) -> Option<(&std::path::Path, PathBuf)> {
+        let (state, id) = self.execution_state.as_deref().zip(id)?;
+        (!self.relabels).then(|| (state, state.join(id.scope_name("oci-"))))
+    }
+
+    fn daemon_id(&self) -> Result<String, String> {
+        let output = Command::new(&self.engine)
+            .args(["info", "--format", "{{.ID}}"])
+            .output()
+            .map_err(|err| format!("identify Docker daemon: {err}"))?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let id = text.trim();
+        if !output.status.success()
+            || id.is_empty()
+            || id.len() > 128
+            || id.contains(char::is_whitespace)
+        {
+            return Err("Docker daemon identity unavailable".into());
+        }
+        Ok(id.to_owned())
+    }
+
+    pub(crate) fn stop_assignment(
+        &self,
+        lease: LeaseId,
+        id: Option<ExecutionId>,
+    ) -> Result<bool, String> {
+        let Some((state, path)) = self.assignment_path(id) else {
+            return Ok(false);
+        };
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(format!("open {}: {err}", path.display())),
+        };
+        file.try_lock()
+            .map_err(|err| format!("lock {}: {err}", path.display()))?;
+        let mut bytes = Vec::new();
+        (&file)
+            .take(4097)
+            .read_to_end(&mut bytes)
+            .map_err(|err| err.to_string())?;
+        if bytes.len() > 4096 {
+            return Err("oversized OCI assignment".into());
+        }
+        let record: OciAssignment = serde_json::from_slice(&bytes)
+            .map_err(|err| format!("read {}: {err}", path.display()))?;
+        if record.lease != lease
+            || !full_container_id(&record.container)
+            || record.daemon != self.daemon_id()?
+        {
+            return Err(
+                "OCI assignment does not match lease, container ID, or Docker daemon".into(),
+            );
+        }
+        // A process could have died after writing but before syncing.
+        sync_assignment(&file, state)?;
+        self.remove_container(&record.container, 0)?;
+        Ok(true)
+    }
+
+    pub(crate) fn stop_assigned(
+        &mut self,
+        lease: LeaseId,
+        id: Option<ExecutionId>,
+        grace_secs: u32,
+    ) -> Result<(), String> {
+        if self.containers.contains_key(&lease) {
+            self.terminate_with_grace(lease, grace_secs)?;
+        } else if !self.stop_assignment(lease, id)? {
+            return Err(format!(
+                "container for lease {lease} has no confirmed engine ID"
             ));
         }
         Ok(())
@@ -255,6 +379,12 @@ impl ContainerRuntime {
                 "container for lease {lease} has no confirmed engine ID"
             ));
         };
+        self.remove_container(name, grace_secs)?;
+        self.containers.remove(&lease);
+        Ok(true)
+    }
+
+    fn remove_container(&self, name: &str, grace_secs: u32) -> Result<(), String> {
         let teardown = (|| {
             if grace_secs > 0 {
                 self.engine_teardown(&["stop", "-t", &grace_secs.to_string(), name])?;
@@ -283,8 +413,7 @@ impl ContainerRuntime {
                 return Err(err);
             }
         }
-        self.containers.remove(&lease);
-        Ok(true)
+        Ok(())
     }
 
     fn engine_teardown(&self, args: &[&str]) -> Result<(), String> {
@@ -301,6 +430,23 @@ impl ContainerRuntime {
         }
         Ok(())
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct OciAssignment {
+    daemon: String,
+    lease: LeaseId,
+    container: String,
+}
+
+fn sync_assignment(file: &File, state: &std::path::Path) -> Result<(), String> {
+    file.sync_all()
+        .and_then(|_| File::open(state)?.sync_all())
+        .map_err(|err| format!("sync OCI assignment: {err}"))
+}
+
+fn full_container_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn lease_namespace_salt() -> u64 {

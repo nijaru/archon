@@ -113,9 +113,20 @@ For OCI jobs, the agent obtains the engine's full container ID before asking
 it to start. If the start reply fails, the same agent can still remove that
 exact container before acknowledging teardown. If a removal reply is lost,
 a successful engine query that confirms the exact ID is absent also proves
-closure. If the create reply never provides an ID, or the agent is replaced,
-Archon cannot prove OCI closure and keeps capacity held. Keep the engine
-context fixed while the agent is running.
+closure.
+
+With Docker and `ARCHON_EXECUTION_STATE_DIR` configured, the agent also
+persists the execution ID's single-use record, lease, daemon ID, and full
+container ID before sending start. A replacement agent using the same state
+directory and Docker daemon can remove that container without a grace period.
+This is stop recovery, not adoption or automatic restart. Keep the engine
+context fixed while an agent is running, and don't roll back, clone, or
+replace the daemon state or execution records while assignments can be live.
+
+If the create reply never provides the container ID, the record is missing or
+unreadable, or the daemon identity doesn't match, replacement-agent closure
+remains unproven and capacity stays held. Podman does not use durable OCI
+records.
 
 Keep a cgroup root dedicated to one controller's journal. A start that finds an
 existing native scope at the requested lease number is refused without changing
