@@ -183,9 +183,8 @@ fn recorded_containers(state: &Path) -> Vec<String> {
         .flatten()
         .filter(|entry| entry.file_name().as_encoded_bytes().starts_with(b"oci-"))
         .filter_map(|entry| {
-            let record: serde_json::Value =
-                serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
-            let id = record["container"].as_str()?;
+            let text = fs::read_to_string(entry.path()).ok()?;
+            let (_, id) = text.split_once('\n')?;
             (id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
                 .then(|| id.to_owned())
         })

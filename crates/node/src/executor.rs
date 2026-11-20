@@ -227,9 +227,13 @@ case "$1" in
     stop) [ "$2 $3 $4" = '-t 7 {container}' ]; echo stop >> calls;;
     rm) [ "$2 $3" = '-f {container}' ]; echo rm >> calls; [ -e confirm-removal ];;
     container)
-        [ "$*" = 'container ls --all --quiet --no-trunc --filter id={container}' ]
-        [ ! -e fail-list ]
-        if [ ! -e absent ]; then echo {container}; fi;;
+        case "$7" in
+            label=archon.assignment=*) if [ -e found-create ]; then echo {container}; fi;;
+            id={container})
+                [ ! -e fail-list ]
+                if [ ! -e absent ]; then echo {container}; fi;;
+            *) exit 2;;
+        esac;;
     *) exit 2;;
 esac
 "#
@@ -335,6 +339,23 @@ esac
         replacement.stop(lease, id).unwrap();
         durable_supervisor().stop(lease, id).unwrap();
         assert!(durable_supervisor().start(lease, id, start()).is_err());
+
+        // No match could mean the original create has not arrived yet.
+        fs::write(dir.0.join("fail-create"), "").unwrap();
+        let mut uncertain = durable_supervisor();
+        assert!(uncertain.start(lease, other, start()).is_err());
+        assert!(
+            uncertain
+                .stop(lease, other)
+                .unwrap_err()
+                .contains("did not resolve")
+        );
+        fs::write(dir.0.join("found-create"), "").unwrap();
+        uncertain.stop(lease, other).unwrap();
+        // Once the positively identified ID is recorded, we can prove
+        // closure again without the now-removed label.
+        fs::remove_file(dir.0.join("found-create")).unwrap();
+        durable_supervisor().stop(lease, other).unwrap();
     }
 
     #[test]

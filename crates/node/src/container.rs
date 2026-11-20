@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -136,7 +136,18 @@ impl ContainerRuntime {
                 .map_err(|err| format!("reserve OCI assignment {}: {err}", path.display()))?;
             file.try_lock()
                 .map_err(|err| format!("lock {}: {err}", path.display()))?;
-            Some((state.to_owned(), file, daemon))
+            let label = ExecutionId::generate()
+                .map_err(|err| err.to_string())?
+                .scope_name("archon.assignment=");
+            let record = OciAssignment {
+                lease,
+                daemon,
+                container: None,
+                label: Some(label),
+            };
+            serde_json::to_writer(&file, &record).map_err(|err| err.to_string())?;
+            sync_assignment(&file, state)?;
+            Some((state.to_owned(), file, record))
         } else {
             None
         };
@@ -153,6 +164,10 @@ impl ContainerRuntime {
             .arg(&name)
             .arg("--pull")
             .arg("missing");
+        if let Some((_, _, record)) = &durable {
+            cmd.arg("--label")
+                .arg(record.label.as_deref().expect("new assignment label"));
+        }
         if count > 0 {
             cmd.arg(format!("--cpus={count}"));
         }
@@ -202,17 +217,10 @@ impl ContainerRuntime {
             ));
         }
         self.containers.insert(lease, id.to_owned());
-        // Retain the lock through the start command. An empty/torn record is
-        // not recoverable, and the workload cannot launch before the full
-        // immutable ID and single-use gate are synced.
-        if let Some((state, file, daemon)) = &durable {
-            let record = OciAssignment {
-                daemon: daemon.clone(),
-                lease,
-                container: id.to_owned(),
-            };
-            serde_json::to_writer(file, &record).map_err(|err| err.to_string())?;
-            sync_assignment(file, state)?;
+        // Keep the record locked through start. The immutable ID must be
+        // durable before the daemon can be asked to run the workload.
+        if let Some((state, file, _)) = &durable {
+            record_container(file, state, id)?;
         }
         let started = Command::new(&self.engine)
             .args(["start", id])
@@ -273,20 +281,65 @@ impl ContainerRuntime {
         if bytes.len() > 4096 {
             return Err("oversized OCI assignment".into());
         }
-        let record: OciAssignment = serde_json::from_slice(&bytes)
+        let mut lines = bytes.splitn(2, |byte| *byte == b'\n');
+        let record: OciAssignment = serde_json::from_slice(lines.next().unwrap_or_default())
             .map_err(|err| format!("read {}: {err}", path.display()))?;
-        if record.lease != lease
-            || !full_container_id(&record.container)
-            || record.daemon != self.daemon_id()?
-        {
-            return Err(
-                "OCI assignment does not match lease, container ID, or Docker daemon".into(),
-            );
+        if record.lease != lease || record.daemon != self.daemon_id()? {
+            return Err("OCI assignment does not match lease or Docker daemon".into());
         }
-        // A process could have died after writing but before syncing.
-        sync_assignment(&file, state)?;
-        self.remove_container(&record.container, 0)?;
+        // Older records stored the immutable ID in the JSON object. New
+        // records append it after the synced, pre-create reservation.
+        let appended = lines
+            .next()
+            .map(|line| std::str::from_utf8(line).unwrap_or_default());
+        let id = if let Some(id) = record.container.as_deref().or(appended) {
+            if !full_container_id(id) {
+                return Err("invalid OCI assignment container ID".into());
+            }
+            sync_assignment(&file, state)?;
+            id.to_owned()
+        } else {
+            let label = record
+                .label
+                .as_deref()
+                .ok_or("OCI assignment has no create label")?;
+            // Absence alone cannot resolve create: a request could still
+            // arrive at Docker. Require one positive match before teardown.
+            let id = self.container_for_label(label)?;
+            record_container(&file, state, &id)?;
+            id
+        };
+        self.remove_container(&id, 0)?;
         Ok(true)
+    }
+
+    fn container_for_label(&self, label: &str) -> Result<String, String> {
+        if !label
+            .strip_prefix("archon.assignment=")
+            .is_some_and(|value| {
+                value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            return Err("invalid OCI assignment create label".into());
+        }
+        let output = Command::new(&self.engine)
+            .args([
+                "container",
+                "ls",
+                "--all",
+                "--quiet",
+                "--no-trunc",
+                "--filter",
+                &format!("label={label}"),
+            ])
+            .output()
+            .map_err(|err| format!("query Docker create label: {err}"))?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let id = text.trim();
+        if !output.status.success() || !full_container_id(id) {
+            return Err("Docker create label did not resolve to one exact container".into());
+        }
+        Ok(id.to_owned())
     }
 
     pub(crate) fn stop_assigned(
@@ -436,7 +489,15 @@ impl ContainerRuntime {
 struct OciAssignment {
     daemon: String,
     lease: LeaseId,
-    container: String,
+    container: Option<String>,
+    label: Option<String>,
+}
+
+fn record_container(mut file: &File, state: &std::path::Path, id: &str) -> Result<(), String> {
+    file.seek(SeekFrom::End(0))
+        .and_then(|_| file.write_all(format!("\n{id}").as_bytes()))
+        .map_err(|err| format!("record OCI container ID: {err}"))?;
+    sync_assignment(file, state)
 }
 
 fn sync_assignment(file: &File, state: &std::path::Path) -> Result<(), String> {
