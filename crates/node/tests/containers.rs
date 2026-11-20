@@ -1,8 +1,8 @@
 //! Container execution tests: a lease whose request carries an image runs
 //! as an OCI container with the lease's limits; volumes bind to the host,
 //! ports publish onto the host, and lease termination kills the container.
-//! Skipped when no container engine is reachable. One sequential test:
-//! containers share the engine's name space, so scenarios must not race.
+//! Skipped when no container engine is reachable. Each fixture discovers
+//! and cleans up only containers carrying its unique command argument.
 
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
@@ -115,40 +115,101 @@ fn submit_container(
     service.admit_one().expect("admit")
 }
 
-/// The namespaced container for a lease; names end in `-lease-<id>`.
-fn find_container(lease: LeaseId) -> Option<String> {
-    let suffix = format!("lease-{}", lease.as_u64());
-    let output = Command::new("docker")
-        .args([
-            "ps",
-            "--filter",
-            &format!("name={suffix}"),
-            "--format",
-            "{{.Names}}",
-        ])
-        .output()
-        .expect("docker ps");
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find(|name| name.ends_with(&suffix))
-        .map(String::from)
+struct ContainerFixture(String);
+
+impl ContainerFixture {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        Self(format!(
+            "archon-test-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    fn command(&self, script: &str) -> Vec<String> {
+        vec!["sh".into(), "-c".into(), script.into(), self.0.clone()]
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let listed = Command::new("docker")
+            .args([
+                "container",
+                "ls",
+                "-aq",
+                "--no-trunc",
+                "--filter",
+                "name=archon-",
+            ])
+            .output();
+        let Ok(output) = listed else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|id| {
+                serde_json::from_str::<Vec<String>>(&docker_inspect("{{json .Config.Cmd}}", id))
+                    .is_ok_and(|args| args.last() == Some(&self.0))
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn wait_running(&self, service: &mut NodeService) -> String {
+        let mut id = None;
+        assert!(
+            wait_until(Duration::from_secs(30), || {
+                service.drive(Duration::from_millis(20)).unwrap();
+                id = self
+                    .ids()
+                    .into_iter()
+                    .find(|id| docker_inspect("{{.State.Running}}", id) == "true");
+                id.is_some()
+            }),
+            "the fixture's container must run"
+        );
+        id.unwrap()
+    }
 }
 
-fn wait_until_container(service: &mut NodeService, lease: LeaseId) -> Option<String> {
-    let mut name = None;
-    wait_until(Duration::from_secs(30), || {
-        // Agent acks advance asynchronously; pump them between polls.
-        let _ = service.drive(Duration::from_millis(20));
-        name = find_container(lease);
-        name.is_some()
-    });
-    name
+impl Drop for ContainerFixture {
+    fn drop(&mut self) {
+        for id in self.ids() {
+            let _ = Command::new("docker").args(["rm", "-f", &id]).output();
+        }
+    }
 }
 
-/// Container discovery matches by lease-id suffix, so concurrent tests
-/// would see each other's containers; docker tests also contend for the
-/// engine. Run them one at a time.
-static DOCKER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn wait_removed(service: &mut NodeService, lease: LeaseId, id: &str) {
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            service.drive(Duration::from_millis(20)).unwrap();
+            if service.cluster.occupies(lease) {
+                return false;
+            }
+            Command::new("docker")
+                .args([
+                    "container",
+                    "ls",
+                    "-aq",
+                    "--no-trunc",
+                    "--filter",
+                    &format!("id={id}"),
+                ])
+                .output()
+                .is_ok_and(|out| out.status.success() && out.stdout.is_empty())
+        }),
+        "revoke must remove {id} and release its capacity"
+    );
+}
 
 fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
@@ -163,24 +224,12 @@ fn wait_until(deadline: Duration, mut check: impl FnMut() -> bool) -> bool {
 
 #[test]
 fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
-    let _docker = DOCKER_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !engine_available() {
         eprintln!("skipping: docker not reachable");
         return;
     }
-    // Remove containers left by earlier crashed runs so name discovery
-    // only sees this run's containers.
-    let stale = Command::new("docker")
-        .args(["ps", "-aq", "--filter", "name=archon-"])
-        .output()
-        .expect("list stale");
-    for id in String::from_utf8_lossy(&stale.stdout).lines() {
-        if !id.is_empty() {
-            let _ = Command::new("docker").arg("rm").arg("-f").arg(id).output();
-        }
-    }
+    let first = ContainerFixture::new();
+    let second = ContainerFixture::new();
 
     // Part 1: lifecycle + limits.
     let addr = spawn_agent();
@@ -193,21 +242,13 @@ fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
             "busybox:latest",
             vec![],
             vec![],
-            vec!["sleep".into(), "30".into()],
+            first.command("exec sleep 30"),
         ),
         Some(RequestId::from_u64(1))
     );
     let lease = LeaseId::from_u64(1);
-    let name = wait_until_container(&mut service, lease);
-    let name = name.unwrap_or_else(|| format!("archon-lease-{}", lease.as_u64()));
+    let name = first.wait_running(&mut service);
 
-    assert!(
-        wait_until(Duration::from_secs(10), || {
-            let _ = service.drive(Duration::from_millis(20));
-            docker_inspect("{{.State.Running}}", &name) == "true"
-        }),
-        "the lease's container must be running"
-    );
     assert_eq!(
         docker_inspect("{{.HostConfig.NanoCpus}}", &name),
         "1000000000",
@@ -215,13 +256,7 @@ fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
     );
 
     service.revoke(lease).expect("revoke");
-    assert!(
-        wait_until(Duration::from_secs(10), || {
-            let _ = service.drive(Duration::from_millis(20));
-            find_container(lease).is_none()
-        }),
-        "revoke must remove the container"
-    );
+    wait_removed(&mut service, lease, &name);
 
     // Part 2: volumes round-trip and ports publish.
     let host_dir = std::env::temp_dir().join(format!("archon-vol-{}", std::process::id()));
@@ -239,16 +274,12 @@ fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
                 container_port: 8080,
                 host_port: None,
             }],
-            vec![
-                "sh".into(),
-                "-c".into(),
-                "echo stored > /data/proof && httpd -f -p 8080 && sleep 30".into(),
-            ],
+            second.command("echo stored > /data/proof && exec httpd -f -p 8080"),
         ),
         Some(RequestId::from_u64(2))
     );
     let lease2 = LeaseId::from_u64(2);
-    let name2 = wait_until_container(&mut service, lease2).expect("container appears");
+    let name2 = second.wait_running(&mut service);
 
     let wrote = wait_until(Duration::from_secs(30), || {
         let _ = service.drive(Duration::from_millis(20));
@@ -263,6 +294,7 @@ fn container_leases_run_with_limits_volumes_and_ports_then_die_on_revoke() {
     );
 
     service.revoke(lease2).expect("revoke");
+    wait_removed(&mut service, lease2, &name2);
     let _ = std::fs::remove_dir_all(&host_dir);
 }
 
@@ -272,14 +304,6 @@ fn docker_inspect(fmt: &str, name: &str) -> String {
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .unwrap_or_default()
-}
-
-fn busybox_drain_command() -> Vec<String> {
-    vec![
-        "sh".into(),
-        "-c".into(),
-        "trap 'echo drained > /marker/done; exit 0' TERM; sleep 60 & wait".into(),
-    ]
 }
 
 /// A container submission template with storage mounted at /marker.
@@ -320,13 +344,11 @@ fn submit_request_template(
 
 #[test]
 fn container_revoke_drains_within_grace() {
-    let _docker = DOCKER_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !engine_available() {
         eprintln!("skipping: docker not reachable");
         return;
     }
+    let fixture = ContainerFixture::new();
     let addr = spawn_agent();
     let mut service = NodeService::new();
     service.register_remote(&addr).expect("register");
@@ -336,15 +358,19 @@ fn container_revoke_drains_within_grace() {
     let dir = std::env::temp_dir().join(format!("archon-drain-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
-    let mut request = submit_request_template(1, busybox_drain_command(), &dir);
+    let drain = fixture.command(
+        "trap 'echo drained > /marker/done; exit 0' TERM; touch /marker/ready; sleep 60 & wait",
+    );
+    let mut request = submit_request_template(1, drain, &dir);
     request.execution.grace_secs = 10;
     service.submit(request, OwnerId::from_u64(1));
     service.cluster.set_now(1);
     service.admit_one().expect("admit");
     let lease = LeaseId::from_u64(1);
+    let id = fixture.wait_running(&mut service);
     assert!(
-        wait_until_container(&mut service, lease).is_some(),
-        "container must run"
+        wait_until(Duration::from_secs(5), || dir.join("ready").exists()),
+        "TERM handler must be installed"
     );
 
     // Revoke with drain budget; the trap writes the marker before exit.
@@ -354,5 +380,6 @@ fn container_revoke_drains_within_grace() {
         dir.join("done").exists()
     });
     assert!(drained, "graceful TERM must reach the container workload");
+    wait_removed(&mut service, lease, &id);
     let _ = std::fs::remove_dir_all(&dir);
 }
