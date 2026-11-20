@@ -38,7 +38,7 @@ Without a token, Noise encrypts the connection but does not authenticate peers. 
 
 - **Placement and execution:** exclusive leases over a resource graph, native and OCI execution, Linux cgroup-based CPU and memory enforcement, device claims, and multi-node agents. OCI execution uses Docker or Podman on the node.
 - **Workload management:** finite jobs and service groups with fixed, bounded-elastic, or per-machine replica counts. Replica management does not provide revisioned rollouts, ready endpoint discovery, or rollback.
-- **Persistence and recovery:** a single-controller journal and targeted agent reconciliation. Durable client retry deduplication, distributed HA, and safe storage-writer failover are not implemented. The recovery checks do not establish end-to-end execution fencing under every failure.
+- **Persistence and recovery:** a single-controller journal and targeted agent reconciliation. Jobs submitted with `submit --key KEY` can be retried against the same controller journal. Distributed HA and safe storage-writer failover are not implemented. The recovery checks do not establish end-to-end execution fencing under every failure.
 
 See [lab operations](docs/operations.md) for journal handling, recovery evidence, and when a resource stays occupied. Ordinary tests and deterministic simulation are not substitutes for privileged Linux enforcement tests. Production identity and isolation, packaging, API compatibility, rolling upgrades, and comparative performance remain unqualified.
 

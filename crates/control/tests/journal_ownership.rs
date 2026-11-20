@@ -82,7 +82,7 @@ impl Drop for KillOnDrop {
 
 fn submit(plane: &mut ControlPlane, expected: u64) {
     assert!(matches!(
-        plane.handle(ClientRequest::Submit {
+        plane.handle(ClientRequest::Submit(archon_control::api::Submission {
             owner: 1,
             cpus: 1,
             memory_mib: 0,
@@ -94,7 +94,7 @@ fn submit(plane: &mut ControlPlane, expected: u64) {
             grace_secs: 0,
             image: None,
             gpus: 0,
-        }),
+        })),
         ServerResponse::Submitted { request, lease: 0 } if request == expected
     ));
 }

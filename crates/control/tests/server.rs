@@ -167,7 +167,7 @@ fn submit_status_revoke_over_the_wire() {
 
     let response = roundtrip(
         &mut stream,
-        ClientRequest::Submit {
+        ClientRequest::Submit(archon_control::api::Submission {
             owner: 1,
             cpus: 1,
             memory_mib: 0,
@@ -179,7 +179,7 @@ fn submit_status_revoke_over_the_wire() {
             grace_secs: 0,
             image: None,
             gpus: 0,
-        },
+        }),
     );
     let ServerResponse::Submitted { lease, .. } = response else {
         panic!("expected Submitted, got {response:?}");
@@ -246,7 +246,7 @@ fn empty_command_is_rejected() {
     let mut stream = open_client(&addr, None);
     let response = roundtrip(
         &mut stream,
-        ClientRequest::Submit {
+        ClientRequest::Submit(archon_control::api::Submission {
             owner: 1,
             cpus: 1,
             memory_mib: 0,
@@ -258,7 +258,7 @@ fn empty_command_is_rejected() {
             grace_secs: 0,
             image: None,
             gpus: 0,
-        },
+        }),
     );
     assert!(matches!(response, ServerResponse::Error { .. }));
 }
@@ -302,7 +302,7 @@ fn a_silent_agent_does_not_block_other_clients() {
     let mut client = open_client(&addr, None);
     let response = roundtrip(
         &mut client,
-        ClientRequest::Submit {
+        ClientRequest::Submit(archon_control::api::Submission {
             owner: 1,
             cpus: 1,
             memory_mib: 0,
@@ -314,7 +314,7 @@ fn a_silent_agent_does_not_block_other_clients() {
             grace_secs: 0,
             image: None,
             gpus: 0,
-        },
+        }),
     );
     let ServerResponse::Submitted { lease, .. } = response else {
         panic!("expected Submitted, got {response:?}");

@@ -10,30 +10,38 @@ pub use archon_node::protocol::{
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Submission {
+    pub owner: u64,
+    pub cpus: u64,
+    pub memory_mib: u64,
+    pub lifetime_secs: u64,
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub keep_alive: bool,
+    /// "host_path:mount_path" bind mounts.
+    #[serde(default)]
+    pub volumes: Vec<String>,
+    /// Ports to publish; "container" or "host:container".
+    #[serde(default)]
+    pub ports: Vec<String>,
+    /// Seconds between SIGTERM and SIGKILL on teardown (drain).
+    #[serde(default)]
+    pub grace_secs: u32,
+    /// OCI image reference; the command runs inside a container.
+    #[serde(default)]
+    pub image: Option<String>,
+    /// Device-count request (claims against declared Gpu nodes).
+    #[serde(default)]
+    pub gpus: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClientRequest {
-    Submit {
-        owner: u64,
-        cpus: u64,
-        memory_mib: u64,
-        lifetime_secs: u64,
-        command: Vec<String>,
-        #[serde(default)]
-        keep_alive: bool,
-        /// "host_path:mount_path" bind mounts.
-        #[serde(default)]
-        volumes: Vec<String>,
-        /// Ports to publish; "container" or "host:container".
-        #[serde(default)]
-        ports: Vec<String>,
-        /// Seconds between SIGTERM and SIGKILL on teardown (drain).
-        #[serde(default)]
-        grace_secs: u32,
-        /// OCI image reference; the command runs inside a container.
-        #[serde(default)]
-        image: Option<String>,
-        /// Device-count request (claims against declared Gpu nodes).
-        #[serde(default)]
-        gpus: u64,
+    Submit(Submission),
+    /// An older controller must reject this variant rather than ignore the key.
+    SubmitOnce {
+        key: String,
+        submission: Submission,
     },
     /// Register a desired service group: one member template plus a
     /// cardinality policy, maintained by controller reconciliation.

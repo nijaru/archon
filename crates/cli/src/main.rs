@@ -78,7 +78,7 @@ where
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon -c ADDR submit [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR service --id NAME [--replicas N | --min N --target N --max N | --per-machine] [--owner N] [--cpus N] [--mem-mib N] -- CMD...\n  archon -c ADDR scale --id NAME --target N\n  archon -c ADDR status | logs LEASE\n  archon -c ADDR revoke LEASE"
+        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon -c ADDR submit [--key KEY] [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR service --id NAME [--replicas N | --min N --target N --max N | --per-machine] [--owner N] [--cpus N] [--mem-mib N] -- CMD...\n  archon -c ADDR scale --id NAME --target N\n  archon -c ADDR status | logs LEASE\n  archon -c ADDR revoke LEASE"
     );
     exit(2);
 }
@@ -540,6 +540,7 @@ fn scale_request(args: &[String]) -> ClientRequest {
 }
 
 fn submit_request(args: &[String]) -> ClientRequest {
+    let mut key = None;
     let mut owner = 1;
     let mut cpus = 1;
     let mut mem_mib = 0;
@@ -564,6 +565,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
             "--cpus" => cpus = parse_flag(value, flag),
             "--mem-mib" => mem_mib = parse_flag(value, flag),
             "--lifetime" => lifetime = parse_flag(value, flag),
+            "--key" => key = Some(value.clone()),
             "--keep-alive" => {
                 keep_alive = true;
                 rest = &rest[1..];
@@ -596,7 +598,7 @@ fn submit_request(args: &[String]) -> ClientRequest {
             exit(2);
         }
     };
-    ClientRequest::Submit {
+    let submission = archon_control::api::Submission {
         owner,
         cpus,
         memory_mib: mem_mib,
@@ -608,6 +610,10 @@ fn submit_request(args: &[String]) -> ClientRequest {
         grace_secs,
         image,
         gpus,
+    };
+    match key {
+        Some(key) => ClientRequest::SubmitOnce { key, submission },
+        None => ClientRequest::Submit(submission),
     }
 }
 

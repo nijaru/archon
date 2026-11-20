@@ -129,7 +129,7 @@ fn controller(addr: &str, dirs: &TestDirs) -> ChildGuard {
 fn submit(client: &mut SecureStream, owner: u64, cpus: u64, command: Vec<String>) -> u64 {
     match request(
         client,
-        ClientRequest::Submit {
+        ClientRequest::Submit(archon_control::api::Submission {
             owner,
             cpus,
             memory_mib: 0,
@@ -141,7 +141,7 @@ fn submit(client: &mut SecureStream, owner: u64, cpus: u64, command: Vec<String>
             grace_secs: 0,
             image: None,
             gpus: 0,
-        },
+        }),
     ) {
         ServerResponse::Submitted { lease, .. } => lease,
         other => panic!("submit failed: {other:?}"),

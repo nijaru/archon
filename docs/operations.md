@@ -38,6 +38,21 @@ and fsync; unsupported locking fails boot. The lock is advisory on Unix: do not
 modify, delete, replace or externally rotate either durable file while the
 controller runs, and do not run older binaries that bypass locking.
 
+## Retrying a job submission
+
+Choose a unique key before the first send, for example `archon -c ADDR submit
+--key report-2026-11-20-01 -- sleep 30`. If the reply is lost, retry with the same
+key and job arguments. The controller returns the same request ID and, once
+admitted, its original lease ID. A retry does not start or replace a job;
+reusing the key for different intent is rejected. Without `--key`, each submit
+is a new request.
+
+Keys are journal-wide, 1–128 bytes, and retained with the submission history.
+They are not credentials or scoped by an authenticated user. Retry against the
+same journal, including after normal compaction or restart. A fresh journal,
+an older backup that predates the submission, or running an older controller
+against the same state does not preserve this guarantee.
+
 ## Agent restart and recovery
 
 `archon status` reports capacity separately from lease state. A `Revoked` lease

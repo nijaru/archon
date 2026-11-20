@@ -21,20 +21,6 @@ struct SnapshotEnvelope {
     state: archon_node::service::ServiceState,
 }
 
-struct SubmitSpec {
-    owner: u64,
-    cpus: u64,
-    memory_mib: u64,
-    lifetime_secs: u64,
-    command: Vec<String>,
-    keep_alive: bool,
-    volumes: Vec<String>,
-    ports: Vec<String>,
-    grace_secs: u32,
-    image: Option<String>,
-    gpus: u64,
-}
-
 /// Group fields for SubmitService: identity, owner, and cardinality policy
 /// alongside the shared workload wire fields.
 struct ServiceSpec {
@@ -566,31 +552,8 @@ impl ControlPlane {
 
     pub fn handle(&mut self, request: ClientRequest) -> ServerResponse {
         match request {
-            ClientRequest::Submit {
-                owner,
-                cpus,
-                memory_mib,
-                lifetime_secs,
-                command,
-                keep_alive,
-                volumes,
-                ports,
-                grace_secs,
-                image,
-                gpus,
-            } => self.submit(SubmitSpec {
-                owner,
-                cpus,
-                memory_mib,
-                lifetime_secs,
-                command,
-                keep_alive,
-                volumes,
-                ports,
-                grace_secs,
-                image,
-                gpus,
-            }),
+            ClientRequest::Submit(submission) => self.submit(submission, None),
+            ClientRequest::SubmitOnce { key, submission } => self.submit(submission, Some(key)),
             ClientRequest::SubmitService {
                 id,
                 owner,
@@ -650,8 +613,8 @@ impl ControlPlane {
         }
     }
 
-    fn submit(&mut self, spec: SubmitSpec) -> ServerResponse {
-        let SubmitSpec {
+    fn submit(&mut self, spec: crate::api::Submission, key: Option<String>) -> ServerResponse {
+        let crate::api::Submission {
             owner,
             cpus,
             memory_mib,
@@ -671,7 +634,18 @@ impl ControlPlane {
         }
         // Submission and group/restart reconciliation share the service's
         // id allocator. Successful submit advances its durable high-water mark.
-        let id = RequestId::from_u64(self.service.next_request_id());
+        if key
+            .as_ref()
+            .is_some_and(|key| key.is_empty() || key.len() > 128)
+        {
+            return ServerResponse::Error {
+                reason: "submit key must be 1–128 bytes".into(),
+            };
+        }
+        let previous = key
+            .as_deref()
+            .and_then(|key| self.service.submission_id(key));
+        let id = previous.unwrap_or_else(|| RequestId::from_u64(self.service.next_request_id()));
         let mut request = match self.compile_workload(
             id,
             WorkloadWire {
@@ -690,7 +664,24 @@ impl ControlPlane {
             Err(reason) => return ServerResponse::Error { reason },
         };
         request.keep_alive = keep_alive;
-        self.service.submit(request, OwnerId::from_u64(owner));
+        let owner = OwnerId::from_u64(owner);
+        if previous.is_some() {
+            return match self.service.match_submission(&request, owner) {
+                Some(lease) => ServerResponse::Submitted {
+                    request: id.as_u64(),
+                    lease: lease.map_or(0, |lease| lease.as_u64()),
+                },
+                None => ServerResponse::Error {
+                    reason: "submit key already reserved for a different or unavailable submission"
+                        .into(),
+                },
+            };
+        }
+        if let Some(key) = key {
+            self.service.submit_keyed(key, request, owner);
+        } else {
+            self.service.submit(request, owner);
+        }
         match self.service.admit_one_with_lease() {
             Ok(admission) => ServerResponse::Submitted {
                 request: id.as_u64(),

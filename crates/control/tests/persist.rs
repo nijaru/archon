@@ -342,7 +342,7 @@ fn snapshot_compaction_preserves_state_across_restarts() {
     assert_ne!(survivor.state, "Active");
 
     // The restored controller still operates: fresh work places normally.
-    let response = plane2.handle(ClientRequest::Submit {
+    let response = plane2.handle(ClientRequest::Submit(archon_control::api::Submission {
         owner: 1,
         cpus: 1,
         memory_mib: 0,
@@ -354,7 +354,7 @@ fn snapshot_compaction_preserves_state_across_restarts() {
         grace_secs: 0,
         image: None,
         gpus: 0,
-    });
+    }));
     assert!(
         matches!(response, ServerResponse::Submitted { lease: 3, .. }),
         "fresh work must place after restore, got {response:?}"
@@ -446,7 +446,7 @@ fn replay_recovers_naturally_expired_leases() {
 }
 
 fn submit_request() -> ClientRequest {
-    ClientRequest::Submit {
+    ClientRequest::Submit(archon_control::api::Submission {
         owner: 1,
         cpus: 1,
         memory_mib: 0,
@@ -458,7 +458,7 @@ fn submit_request() -> ClientRequest {
         grace_secs: 0,
         image: None,
         gpus: 0,
-    }
+    })
 }
 
 fn queue_len_of(response: ServerResponse) -> usize {
@@ -466,6 +466,104 @@ fn queue_len_of(response: ServerResponse) -> usize {
         ServerResponse::Status { queue_len, .. } => queue_len,
         other => panic!("expected Status, got {other:?}"),
     }
+}
+
+#[test]
+fn keyed_submission_survives_replay_compaction_and_admission() {
+    use archon_control::server::AgentLink;
+
+    let path = temp_log("keyed-submit");
+    let ClientRequest::Submit(submission) = submit_request() else {
+        unreachable!()
+    };
+    let retry = || ClientRequest::SubmitOnce {
+        key: "operation-1".into(),
+        submission: submission.clone(),
+    };
+    // Discard the first reply as if the client never received it.
+    let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+    let _ = plane.handle(retry());
+    drop(plane);
+
+    let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+    assert!(matches!(
+        plane.handle(retry()),
+        ServerResponse::Submitted {
+            request: 1,
+            lease: 0
+        }
+    ));
+    assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 1);
+    for changed in [
+        archon_control::api::Submission {
+            owner: 2,
+            ..submission.clone()
+        },
+        archon_control::api::Submission {
+            command: vec!["false".into()],
+            ..submission.clone()
+        },
+    ] {
+        assert!(matches!(
+            plane.handle(ClientRequest::SubmitOnce {
+                key: "operation-1".into(),
+                submission: changed
+            }),
+            ServerResponse::Error { .. }
+        ));
+    }
+    plane.compact().unwrap();
+    drop(plane);
+
+    let mut plane = ControlPlane::boot(
+        AgentLink::Remote {
+            addr: spawn_test_agent(),
+            token: None,
+        },
+        path.clone(),
+        0,
+    )
+    .unwrap();
+    assert!(matches!(
+        plane.handle(retry()),
+        ServerResponse::Submitted {
+            request: 1,
+            lease: 0
+        }
+    ));
+    assert!(wait_until(Duration::from_secs(5), || {
+        plane.maintain();
+        matches!(
+            plane.handle(retry()),
+            ServerResponse::Submitted {
+                request: 1,
+                lease: 1
+            }
+        )
+    }));
+    assert!(matches!(
+        plane.handle(ClientRequest::Revoke { lease: 1 }),
+        ServerResponse::Revoked
+    ));
+    drop(plane);
+
+    let mut plane = ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+    assert!(matches!(
+        plane.handle(retry()),
+        ServerResponse::Submitted {
+            request: 1,
+            lease: 1
+        }
+    ));
+    let ServerResponse::Status { queue_len, leases } = plane.handle(ClientRequest::Status) else {
+        panic!("expected Status")
+    };
+    assert_eq!(queue_len, 0);
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].state, "Revoked");
+    drop(plane);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(path.with_added_extension("snapshot")).unwrap();
 }
 
 #[test]
@@ -493,7 +591,7 @@ fn submit_does_not_return_the_lease_of_an_older_queued_request() {
     )
     .unwrap();
     let mut newer = submit_request();
-    if let ClientRequest::Submit { owner, cpus, .. } = &mut newer {
+    if let ClientRequest::Submit(archon_control::api::Submission { owner, cpus, .. }) = &mut newer {
         *owner = 2;
         // The enforcing fixture publishes just four CPUs. Only the older
         // request can fit, regardless of the scheduler's ranking policy.

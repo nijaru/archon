@@ -177,6 +177,7 @@ pub struct NodeService {
     /// Desired-state/execution intent for queued requests. Resource ordering
     /// still uses only `queue`; this map never enters kernel authority.
     queued_workloads: BTreeMap<RequestId, WorkloadSpec>,
+    submission_keys: BTreeMap<String, RequestId>,
     /// Workload intent per admitted root Lease, retained for execution and restart.
     requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,
     /// Dead leases whose failure has been processed for restarts.
@@ -238,6 +239,9 @@ pub struct ServiceState {
     pub queue: Vec<Queued>,
     #[serde(default)]
     pub queued_workloads: BTreeMap<RequestId, WorkloadSpec>,
+    /// Client retry identities committed together with their queued intent.
+    #[serde(default)]
+    submission_keys: BTreeMap<String, RequestId>,
     pub restart_handled: std::collections::BTreeSet<LeaseId>,
     pub restart_counts: BTreeMap<RequestId, u32>,
     /// Cluster time of each request's last restart, backing exponential
@@ -985,6 +989,7 @@ impl NodeService {
             unreachable: Vec::new(),
             queue: Vec::new(),
             queued_workloads: BTreeMap::new(),
+            submission_keys: BTreeMap::new(),
             requests: BTreeMap::new(),
             restart_handled: std::collections::BTreeSet::new(),
             restart_counts: BTreeMap::new(),
@@ -1091,6 +1096,42 @@ impl NodeService {
     pub fn submit(&mut self, workload: impl Into<WorkloadSpec>, owner: OwnerId) {
         self.enqueue(workload.into(), owner);
         self.persist(None);
+    }
+
+    pub fn submission_id(&self, key: &str) -> Option<RequestId> {
+        self.submission_keys.get(key).copied()
+    }
+
+    /// Return the original lease, or a queued receipt, only for identical intent.
+    pub fn match_submission(
+        &self,
+        workload: &WorkloadSpec,
+        owner: OwnerId,
+    ) -> Option<Option<LeaseId>> {
+        let id = workload.resources.id;
+        if let Some(queued) = self.queued_workloads.get(&id) {
+            return (queued == workload
+                && self
+                    .queue
+                    .iter()
+                    .any(|entry| entry.request.id == id && entry.owner == owner))
+            .then_some(None);
+        }
+        self.requests
+            .iter()
+            .find_map(|(&lease, (intent, submitted_by))| {
+                (intent == workload && *submitted_by == owner).then_some(Some(lease))
+            })
+    }
+
+    /// Reserve a fresh retry key in the same durable record as its queued intent.
+    pub fn submit_keyed(&mut self, key: String, workload: WorkloadSpec, owner: OwnerId) {
+        assert!(
+            !self.submission_keys.contains_key(&key),
+            "submit key must be fresh"
+        );
+        self.submission_keys.insert(key, workload.resources.id);
+        self.submit(workload, owner);
     }
 
     fn enqueue(&mut self, workload: WorkloadSpec, owner: OwnerId) {
@@ -1306,6 +1347,7 @@ impl NodeService {
             execution_assignments: self.execution_assignments.clone(),
             queue: self.queue.clone(),
             queued_workloads: self.queued_workloads.clone(),
+            submission_keys: self.submission_keys.clone(),
             restart_handled: self.restart_handled.clone(),
             restart_counts: self.restart_counts.clone(),
             restart_last_at: self.restart_last_at.clone(),
@@ -1337,6 +1379,7 @@ impl NodeService {
         self.next_request_id = state.next_request_id;
         self.queue = state.queue;
         self.queued_workloads = state.queued_workloads;
+        self.submission_keys = state.submission_keys;
         self.next_session = state.next_session;
         self.next_binding = state.next_binding;
         self.requests = state.requests;
