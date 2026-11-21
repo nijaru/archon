@@ -49,7 +49,10 @@ is a new request.
 
 Use `archon -c ADDR queue` to list waiting request IDs, owners, submission
 times (Unix seconds), and service groups where applicable. The list is in
-submission order, not scheduler priority order. Use
+submission order, not scheduler priority order. `queue --explain` shows the
+scheduler's current evaluation in policy order. It stops evaluating candidates
+once it finds one to admit. Projected fit times are estimates, not reservations
+or guarantees. The explanation itself does not admit work. Use
 `archon -c ADDR cancel-queued REQUEST` with a request ID from `queue` or
 `submit` to cancel a standalone job before admission. If the job was already admitted,
 the error gives its lease ID; use `revoke LEASE` for admitted work. To remove

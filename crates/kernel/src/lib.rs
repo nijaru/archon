@@ -136,8 +136,19 @@ impl Cluster {
         policy: &AdmissionPolicy,
         exclusions: &RequestExclusions,
     ) -> Option<Admission> {
+        self.explain_backfill_with_policy(queue, policy, exclusions)
+            .0
+    }
+
+    /// Evaluate the same admission decision and return its advisory trace.
+    pub fn explain_backfill_with_policy(
+        &self,
+        queue: &[Queued],
+        policy: &AdmissionPolicy,
+        exclusions: &RequestExclusions,
+    ) -> (Option<Admission>, AdmissionTrace) {
         let blocked = self.placement_blocked();
-        admit_backfill_with_policy(
+        admit_backfill_with_policy_explained(
             &self.graph,
             &self.occupancy(),
             &blocked,

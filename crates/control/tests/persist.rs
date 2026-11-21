@@ -662,6 +662,18 @@ fn machine_cordon_survives_compaction_and_reconnect() {
         assert_eq!(machines[0].cordoned, cordoned);
         machines[0].id
     };
+    let explain = |plane: &mut ControlPlane| {
+        let ServerResponse::QueueExplained { mut candidates } =
+            plane.handle(ClientRequest::ExplainQueue)
+        else {
+            panic!("expected queue explanation")
+        };
+        assert_eq!(candidates.len(), 1);
+        let candidate = candidates.pop().unwrap();
+        assert_eq!(candidate.request, 1);
+        assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 1);
+        candidate.outcome
+    };
     let id = machine(&mut plane, false);
     assert!(matches!(
         plane.handle(ClientRequest::SetCordon {
@@ -680,7 +692,10 @@ fn machine_cordon_survives_compaction_and_reconnect() {
     let mut plane = boot();
     assert_eq!(machine(&mut plane, true), id);
     plane.maintain();
-    assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 1);
+    assert_eq!(
+        explain(&mut plane),
+        archon_control::api::AdmissionOutcome::Blocked { shadow: None }
+    );
     assert!(matches!(
         plane.handle(ClientRequest::SetCordon {
             machine: id,
@@ -691,6 +706,10 @@ fn machine_cordon_survives_compaction_and_reconnect() {
             ..
         }
     ));
+    assert_eq!(
+        explain(&mut plane),
+        archon_control::api::AdmissionOutcome::Selected { backfilled: false }
+    );
     assert!(wait_until(Duration::from_secs(5), || {
         plane.maintain();
         queue_len_of(plane.handle(ClientRequest::Status)) == 0

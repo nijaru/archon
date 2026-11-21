@@ -406,7 +406,11 @@ fn client(connect: Option<String>, args: &[String]) {
         "service" => service_request(&rest[1..]),
         "scale" => scale_request(&rest[1..]),
         "status" => ClientRequest::Status,
-        "queue" => ClientRequest::Queue,
+        "queue" => match &rest[1..] {
+            [] => ClientRequest::Queue,
+            [flag] if flag == "--explain" => ClientRequest::ExplainQueue,
+            _ => fail("usage: archon -c ADDR queue [--explain]"),
+        },
         "machines" => ClientRequest::Machines,
         "cordon" | "uncordon" => {
             if rest.len() != 2 {
@@ -700,6 +704,35 @@ fn print_response(response: ServerResponse) {
                     "request {} owner={} submitted-at={}{}",
                     entry.request, entry.owner, entry.submitted_at, service
                 );
+            }
+        }
+        ServerResponse::QueueExplained { candidates } => {
+            use archon_control::api::AdmissionOutcome;
+            println!("queue: {} (next admission evaluation)", candidates.len());
+            for entry in candidates {
+                let explanation = match entry.outcome {
+                    AdmissionOutcome::NotEvaluated => {
+                        "not evaluated after an earlier selection".into()
+                    }
+                    AdmissionOutcome::OverQuota => "over quota".into(),
+                    AdmissionOutcome::PlacementRefused { explanation } => {
+                        format!("placement refused: {explanation}")
+                    }
+                    AdmissionOutcome::Blocked { shadow: Some(time) } => {
+                        format!("blocked (projected fit at Unix time {time}; not guaranteed)")
+                    }
+                    AdmissionOutcome::Blocked { shadow: None } => {
+                        "blocked (no projected fit time)".into()
+                    }
+                    AdmissionOutcome::BackfillUnsafe { protected_heads } => {
+                        format!("backfill would delay {protected_heads} protected request(s)")
+                    }
+                    AdmissionOutcome::Selected { backfilled: true } => {
+                        "would be selected for backfill".into()
+                    }
+                    AdmissionOutcome::Selected { backfilled: false } => "would be selected".into(),
+                };
+                println!("request {}: {explanation}", entry.request);
             }
         }
         ServerResponse::Machines { machines } => {

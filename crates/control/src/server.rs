@@ -602,6 +602,19 @@ impl ControlPlane {
                     })
                     .collect(),
             },
+            ClientRequest::ExplainQueue => ServerResponse::QueueExplained {
+                candidates: self
+                    .service
+                    .explain_queue()
+                    .candidates
+                    .into_iter()
+                    .map(|entry| crate::api::QueueExplanation {
+                        request: entry.request.as_u64(),
+                        rank: entry.rank,
+                        outcome: entry.outcome,
+                    })
+                    .collect(),
+            },
             ClientRequest::Machines => self.machines(),
             ClientRequest::CancelQueued { request } => {
                 match self

@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use archon_kernel::AdmissionOutcome;
 pub use archon_node::service::PendingTeardown;
 
 pub use archon_node::protocol::{
@@ -86,6 +87,7 @@ pub enum ClientRequest {
     },
     Status,
     Queue,
+    ExplainQueue,
     Machines,
     CancelQueued {
         request: u64,
@@ -101,6 +103,13 @@ pub enum ClientRequest {
     Logs {
         lease: u64,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QueueExplanation {
+    pub request: u64,
+    pub rank: usize,
+    pub outcome: AdmissionOutcome,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -166,6 +175,9 @@ pub enum ServerResponse {
     },
     Queue {
         requests: Vec<QueuedInfo>,
+    },
+    QueueExplained {
+        candidates: Vec<QueueExplanation>,
     },
     Machines {
         machines: Vec<MachineInfo>,

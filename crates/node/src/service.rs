@@ -1471,6 +1471,18 @@ impl NodeService {
         self.next_request_id
     }
 
+    /// Read-only view of the next default admission decision, with the
+    /// same runtime and pinned-member exclusions as production admission.
+    pub fn explain_queue(&self) -> archon_kernel::AdmissionTrace {
+        self.cluster
+            .explain_backfill_with_policy(
+                &self.queue,
+                &archon_kernel::AdmissionPolicy::default(),
+                &self.execution_exclusions(),
+            )
+            .1
+    }
+
     /// Pending intents in insertion order, with their desired-state owner if any.
     pub fn queued_submissions(&self) -> impl Iterator<Item = (&Queued, Option<&str>)> {
         self.queue.iter().map(|entry| {
