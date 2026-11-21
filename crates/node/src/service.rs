@@ -1471,6 +1471,18 @@ impl NodeService {
         self.next_request_id
     }
 
+    /// Pending intents in insertion order, with their desired-state owner if any.
+    pub fn queued_submissions(&self) -> impl Iterator<Item = (&Queued, Option<&str>)> {
+        self.queue.iter().map(|entry| {
+            (
+                entry,
+                self.member_groups
+                    .get(&entry.request.id)
+                    .map(String::as_str),
+            )
+        })
+    }
+
     /// Queue depth, for status reporting.
     pub fn queue_len(&self) -> usize {
         self.queue.len()

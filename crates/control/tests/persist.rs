@@ -588,12 +588,22 @@ fn queued_cancellation_survives_restart_without_reviving_keyed_intent() {
             lease: 0
         }
     ));
+    let ServerResponse::Queue { requests } = plane.handle(ClientRequest::Queue) else {
+        panic!("expected queue list");
+    };
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].request, 1);
+    assert_eq!(requests[0].owner, 1);
+    assert!(requests[0].service.is_none());
     assert!(matches!(
         plane.handle(cancel()),
         ServerResponse::QueuedCancelled { request: 1 }
     ));
     drop(plane);
     let mut plane = boot();
+    assert!(
+        matches!(plane.handle(ClientRequest::Queue), ServerResponse::Queue { requests } if requests.is_empty())
+    );
     assert!(matches!(
         plane.handle(cancel()),
         ServerResponse::QueuedCancelled { request: 1 }
@@ -853,6 +863,18 @@ fn service_updates_and_members_are_journaled_without_compaction() {
         target: 4,
     });
     assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 4);
+    let ServerResponse::Queue { requests } = plane.handle(ClientRequest::Queue) else {
+        panic!("expected queue list");
+    };
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests
+            .iter()
+            .all(|entry| entry.service.as_deref() == Some("workers"))
+    );
+    assert!(
+        matches!(plane.handle(ClientRequest::CancelQueued { request: requests[0].request }), ServerResponse::Error { reason } if reason.contains("scale"))
+    );
     // Group reconciliation and direct submissions share the same request-id owner,
     // including before any reboot has reconstructed high-water marks.
     assert!(matches!(

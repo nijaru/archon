@@ -85,6 +85,7 @@ pub enum ClientRequest {
         target: u32,
     },
     Status,
+    Queue,
     Machines,
     CancelQueued {
         request: u64,
@@ -100,6 +101,15 @@ pub enum ClientRequest {
     Logs {
         lease: u64,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QueuedInfo {
+    pub request: u64,
+    pub owner: u64,
+    pub submitted_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -153,6 +163,9 @@ pub enum ServerResponse {
     Status {
         queue_len: usize,
         leases: Vec<LeaseInfo>,
+    },
+    Queue {
+        requests: Vec<QueuedInfo>,
     },
     Machines {
         machines: Vec<MachineInfo>,

@@ -590,6 +590,18 @@ impl ControlPlane {
             }),
             ClientRequest::ScaleService { id, target } => self.scale_service(id, target),
             ClientRequest::Status => self.status(),
+            ClientRequest::Queue => ServerResponse::Queue {
+                requests: self
+                    .service
+                    .queued_submissions()
+                    .map(|(entry, service)| crate::api::QueuedInfo {
+                        request: entry.request.id.as_u64(),
+                        owner: entry.owner.as_u64(),
+                        submitted_at: entry.submitted_at,
+                        service: service.map(str::to_owned),
+                    })
+                    .collect(),
+            },
             ClientRequest::Machines => self.machines(),
             ClientRequest::CancelQueued { request } => {
                 match self
