@@ -105,6 +105,10 @@ pub struct MachineInfo {
     pub name: String,
     pub state: String,
     pub cordoned: bool,
+    /// Leases that still account for capacity or have an open binding here.
+    /// Absent when the controller cannot report this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holding_leases: Option<Vec<u64>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

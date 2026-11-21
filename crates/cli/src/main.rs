@@ -680,9 +680,18 @@ fn print_response(response: ServerResponse) {
         }
         ServerResponse::Machines { machines } => {
             for machine in machines {
+                let holds = match machine.holding_leases {
+                    Some(leases) if leases.is_empty() => "none".into(),
+                    Some(leases) => leases
+                        .into_iter()
+                        .map(|lease| lease.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    None => "unknown".into(),
+                };
                 println!(
-                    "machine {} name={} state={} cordoned={}",
-                    machine.id, machine.name, machine.state, machine.cordoned
+                    "machine {} name={} state={} cordoned={} holding-leases={}",
+                    machine.id, machine.name, machine.state, machine.cordoned, holds
                 );
             }
         }

@@ -63,8 +63,11 @@ It does not evict running workloads or interrupt leases already preparing.
 `archon -c ADDR uncordon MACHINE` removes only the operator's cordon; any
 quarantine or other placement restriction still applies. Cordons survive agent
 re-registration, controller restart, and journal compaction. A cordon alone
-does not make the machine safe to shut down: wait for existing leases and
-bindings to close before maintenance.
+does not make the machine safe to shut down. In `machines`, `holding-leases`
+lists the leases still charged to the machine or with open bindings there,
+including terminal leases. Check those leases in `status` before maintenance.
+`holding-leases=none` means the controller reports no such holds; it does not
+check for unmanaged work or prove that the host can be shut down safely.
 
 ## Agent restart and recovery
 

@@ -912,7 +912,29 @@ impl ControlPlane {
     }
 
     fn machines(&self) -> ServerResponse {
+        use std::collections::{BTreeMap, BTreeSet};
+
         let cluster = &self.service.cluster;
+        let mut held = BTreeMap::<_, BTreeSet<_>>::new();
+        let mut mark_held = |node, lease: LeaseId| {
+            if let Some(machine) = cluster.graph.machine_of(node) {
+                held.entry(machine).or_default().insert(lease.as_u64());
+            }
+        };
+        for (lease, occupies) in cluster.leases_with_occupancy() {
+            if occupies {
+                for claim in &lease.allocation.claims {
+                    mark_held(claim.node, lease.id);
+                }
+            }
+        }
+        for binding in cluster
+            .bindings
+            .values()
+            .filter(|binding| !binding.state.is_closed())
+        {
+            mark_held(binding.node, binding.lease);
+        }
         let machines = cluster
             .graph
             .nodes()
@@ -922,6 +944,12 @@ impl ControlPlane {
                 name: node.attrs.get("name").cloned().unwrap_or_default(),
                 state: format!("{:?}", cluster.node_state(node.id).expect("known machine")),
                 cordoned: cluster.machine_cordoned(node.id),
+                holding_leases: Some(
+                    held.remove(&node.id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect(),
+                ),
             })
             .collect();
         ServerResponse::Machines { machines }

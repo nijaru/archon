@@ -668,6 +668,14 @@ fn recovery_with_queued_work(crash: Crash) {
     assert!(!leases.iter().any(|lease| lease.owner == 2));
     assert_eq!(old_scope.is_dir(), crash != Crash::LostStopReply);
     assert!(!marker.exists());
+    // Even when the scope is already gone and only the stop reply was lost,
+    // machine diagnostics must still show the controller's hold.
+    let ServerResponse::Machines { machines } = request(&mut client, ClientRequest::Machines)
+    else {
+        panic!("expected machine list");
+    };
+    assert_eq!(machines.len(), 1);
+    assert_eq!(machines[0].holding_leases.as_deref(), Some(&[first][..]));
 
     if crash == Crash::BothWhileActive {
         assert_recovery_holds_without_record(&addr_arg, &dirs, &mut client, first, &old_scope);
@@ -690,6 +698,26 @@ fn recovery_with_queued_work(crash: Crash) {
     assert!(leases.iter().any(|lease| lease.id == first
         && lease.state == "Revoked"
         && lease.occupies_capacity == Some(false)));
+    let successor = leases.iter().find(|lease| lease.owner == 2).unwrap().id;
+    let ServerResponse::Machines { machines } = request(&mut client, ClientRequest::Machines)
+    else {
+        panic!("expected machine list");
+    };
+    assert_eq!(
+        machines[0].holding_leases.as_deref(),
+        Some(&[successor][..])
+    );
+    if crash == Crash::LostStopReply {
+        let output = command()
+            .args(["-c", &addr_arg, "machines"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains(&format!("holding-leases={successor}"))
+        );
+    }
     drop(plane);
 }
 
