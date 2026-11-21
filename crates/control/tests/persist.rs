@@ -567,6 +567,67 @@ fn keyed_submission_survives_replay_compaction_and_admission() {
 }
 
 #[test]
+fn queued_cancellation_survives_restart_without_reviving_keyed_intent() {
+    use archon_control::server::AgentLink;
+
+    let path = temp_log("queued-cancellation");
+    let boot = || ControlPlane::boot(AgentLink::None, path.clone(), 0).unwrap();
+    let ClientRequest::Submit(submission) = submit_request() else {
+        unreachable!()
+    };
+    let keyed = |submission| ClientRequest::SubmitOnce {
+        key: "cancelled".into(),
+        submission,
+    };
+    let cancel = || ClientRequest::CancelQueued { request: 1 };
+    let mut plane = boot();
+    assert!(matches!(
+        plane.handle(keyed(submission.clone())),
+        ServerResponse::Submitted {
+            request: 1,
+            lease: 0
+        }
+    ));
+    assert!(matches!(
+        plane.handle(cancel()),
+        ServerResponse::QueuedCancelled { request: 1 }
+    ));
+    drop(plane);
+    let mut plane = boot();
+    assert!(matches!(
+        plane.handle(cancel()),
+        ServerResponse::QueuedCancelled { request: 1 }
+    ));
+    plane.compact().unwrap();
+    drop(plane);
+    let mut plane = boot();
+    assert!(matches!(
+        plane.handle(keyed(submission.clone())),
+        ServerResponse::QueuedCancelled { request: 1 }
+    ));
+    assert!(matches!(
+        plane.handle(keyed(archon_control::api::Submission {
+            cpus: 3,
+            ..submission
+        })),
+        ServerResponse::Error { .. }
+    ));
+    assert!(
+        matches!(plane.handle(ClientRequest::Status), ServerResponse::Status { queue_len: 0, leases } if leases.is_empty())
+    );
+    assert!(matches!(
+        plane.handle(submit_request()),
+        ServerResponse::Submitted {
+            request: 2,
+            lease: 0
+        }
+    ));
+    drop(plane);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(path.with_added_extension("snapshot")).unwrap();
+}
+
+#[test]
 fn machine_cordon_survives_compaction_and_reconnect() {
     use archon_control::server::AgentLink;
 
@@ -625,6 +686,9 @@ fn machine_cordon_survives_compaction_and_reconnect() {
         queue_len_of(plane.handle(ClientRequest::Status)) == 0
     }));
     assert_eq!(machine(&mut plane, false), id);
+    assert!(
+        matches!(plane.handle(ClientRequest::CancelQueued { request: 1 }), ServerResponse::Error { reason } if reason.contains("lease 1"))
+    );
     drop(plane);
     std::fs::remove_file(&path).unwrap();
     std::fs::remove_file(path.with_added_extension("snapshot")).unwrap();

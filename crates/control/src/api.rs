@@ -86,6 +86,9 @@ pub enum ClientRequest {
     },
     Status,
     Machines,
+    CancelQueued {
+        request: u64,
+    },
     SetCordon {
         machine: u64,
         cordoned: bool,
@@ -157,6 +160,9 @@ pub enum ServerResponse {
     CordonSet {
         machine: u64,
         cordoned: bool,
+    },
+    QueuedCancelled {
+        request: u64,
     },
     Revoked,
     Logs {

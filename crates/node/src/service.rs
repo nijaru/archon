@@ -179,6 +179,7 @@ pub struct NodeService {
     /// still uses only `queue`; this map never enters kernel authority.
     queued_workloads: BTreeMap<RequestId, WorkloadSpec>,
     submission_keys: BTreeMap<String, RequestId>,
+    cancelled_submissions: BTreeMap<RequestId, (WorkloadSpec, OwnerId)>,
     /// Workload intent per admitted root Lease, retained for execution and restart.
     requests: BTreeMap<LeaseId, (WorkloadSpec, OwnerId)>,
     /// Dead leases whose failure has been processed for restarts.
@@ -226,6 +227,13 @@ pub struct NodeService {
     history: Vec<Command>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum SubmissionOutcome {
+    Queued,
+    Admitted(LeaseId),
+    Cancelled,
+}
+
 /// The first unmet teardown condition for a terminal lease with open bindings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -251,6 +259,8 @@ pub struct ServiceState {
     /// Client retry identities committed together with their queued intent.
     #[serde(default)]
     submission_keys: BTreeMap<String, RequestId>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cancelled_submissions: BTreeMap<RequestId, (WorkloadSpec, OwnerId)>,
     pub restart_handled: std::collections::BTreeSet<LeaseId>,
     pub restart_counts: BTreeMap<RequestId, u32>,
     /// Cluster time of each request's last restart, backing exponential
@@ -1000,6 +1010,7 @@ impl NodeService {
             queue: Vec::new(),
             queued_workloads: BTreeMap::new(),
             submission_keys: BTreeMap::new(),
+            cancelled_submissions: BTreeMap::new(),
             requests: BTreeMap::new(),
             restart_handled: std::collections::BTreeSet::new(),
             restart_counts: BTreeMap::new(),
@@ -1112,26 +1123,66 @@ impl NodeService {
         self.submission_keys.get(key).copied()
     }
 
-    /// Return the original lease, or a queued receipt, only for identical intent.
+    /// Return the original submission's outcome only for identical intent.
     pub fn match_submission(
         &self,
         workload: &WorkloadSpec,
         owner: OwnerId,
-    ) -> Option<Option<LeaseId>> {
+    ) -> Option<SubmissionOutcome> {
         let id = workload.resources.id;
+        if let Some((intent, submitted_by)) = self.cancelled_submissions.get(&id) {
+            return (intent == workload && *submitted_by == owner)
+                .then_some(SubmissionOutcome::Cancelled);
+        }
         if let Some(queued) = self.queued_workloads.get(&id) {
             return (queued == workload
                 && self
                     .queue
                     .iter()
                     .any(|entry| entry.request.id == id && entry.owner == owner))
-            .then_some(None);
+            .then_some(SubmissionOutcome::Queued);
         }
         self.requests
             .iter()
             .find_map(|(&lease, (intent, submitted_by))| {
-                (intent == workload && *submitted_by == owner).then_some(Some(lease))
+                (intent == workload && *submitted_by == owner)
+                    .then_some(SubmissionOutcome::Admitted(lease))
             })
+    }
+
+    /// Cancel only queued standalone work. No resource grant or execution
+    /// exists for a queued request, so cancellation needs no agent effect.
+    pub fn cancel_queued_submission(&mut self, id: RequestId) -> Result<(), String> {
+        if self.cancelled_submissions.contains_key(&id) {
+            return Ok(());
+        }
+        if self.member_groups.contains_key(&id) {
+            return Err("request belongs to a service group; scale the group instead".into());
+        }
+        if let Some((&lease, _)) = self
+            .requests
+            .iter()
+            .find(|(_, (workload, _))| workload.resources.id == id)
+        {
+            return Err(format!(
+                "request {id} was admitted as lease {}; use revoke for admitted work",
+                lease.as_u64()
+            ));
+        }
+        let index = self
+            .queue
+            .iter()
+            .position(|entry| entry.request.id == id)
+            .ok_or_else(|| format!("unknown queued request {}", id.as_u64()))?;
+        let queued = self.queue.remove(index);
+        let workload = self
+            .queued_workloads
+            .remove(&id)
+            .unwrap_or_else(|| WorkloadSpec::resource_only(queued.request));
+        self.cancelled_submissions
+            .insert(id, (workload, queued.owner));
+        self.persist(None);
+        Ok(())
     }
 
     /// Reserve a fresh retry key in the same durable record as its queued intent.
@@ -1358,6 +1409,7 @@ impl NodeService {
             queue: self.queue.clone(),
             queued_workloads: self.queued_workloads.clone(),
             submission_keys: self.submission_keys.clone(),
+            cancelled_submissions: self.cancelled_submissions.clone(),
             restart_handled: self.restart_handled.clone(),
             restart_counts: self.restart_counts.clone(),
             restart_last_at: self.restart_last_at.clone(),
@@ -1390,6 +1442,7 @@ impl NodeService {
         self.queue = state.queue;
         self.queued_workloads = state.queued_workloads;
         self.submission_keys = state.submission_keys;
+        self.cancelled_submissions = state.cancelled_submissions;
         self.next_session = state.next_session;
         self.next_binding = state.next_binding;
         self.requests = state.requests;

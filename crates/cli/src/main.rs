@@ -43,6 +43,7 @@ fn main() {
         | (Some("machines"), connect)
         | (Some("cordon"), connect)
         | (Some("uncordon"), connect)
+        | (Some("cancel-queued"), connect)
         | (Some("revoke"), connect)
         | (Some("logs"), connect) => client(connect, &args),
         _ => usage(),
@@ -81,7 +82,7 @@ where
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon -c ADDR submit [--key KEY] [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR service --id NAME [--replicas N | --min N --target N --max N | --per-machine] [--owner N] [--cpus N] [--mem-mib N] -- CMD...\n  archon -c ADDR scale --id NAME --target N\n  archon -c ADDR status | machines | logs LEASE\n  archon -c ADDR cordon|uncordon MACHINE\n  archon -c ADDR revoke LEASE"
+        "usage:\n  archon serve --listen ADDR --log FILE [--remote ADDR | --no-local] [--cgroup-root PATH]\n  archon agent --listen ADDR | --register ADDR [--cgroup-root PATH]\n  archon -c ADDR submit [--key KEY] [--owner N] [--cpus N] [--mem-mib N] [--lifetime SECS] -- CMD...\n  archon -c ADDR service --id NAME [--replicas N | --min N --target N --max N | --per-machine] [--owner N] [--cpus N] [--mem-mib N] -- CMD...\n  archon -c ADDR scale --id NAME --target N\n  archon -c ADDR status | machines | logs LEASE\n  archon -c ADDR cordon|uncordon MACHINE\n  archon -c ADDR cancel-queued REQUEST\n  archon -c ADDR revoke LEASE"
     );
     exit(2);
 }
@@ -414,6 +415,14 @@ fn client(connect: Option<String>, args: &[String]) {
                 cordoned: rest[0] == "cordon",
             }
         }
+        "cancel-queued" => {
+            if rest.len() != 2 {
+                fail("usage: archon -c ADDR cancel-queued REQUEST");
+            }
+            ClientRequest::CancelQueued {
+                request: parse_flag(&rest[1], "request id"),
+            }
+        }
         "revoke" | "logs" => {
             let Some(value) = rest.get(1) else {
                 fail("lease id required (archon -c ADDR revoke|logs LEASE)");
@@ -697,6 +706,9 @@ fn print_response(response: ServerResponse) {
         }
         ServerResponse::CordonSet { machine, cordoned } => {
             println!("machine {machine} cordoned={cordoned}");
+        }
+        ServerResponse::QueuedCancelled { request } => {
+            println!("queued request {request} cancelled")
         }
         ServerResponse::Revoked => println!("revoked"),
         ServerResponse::Logs { output, .. } => print!("{output}"),

@@ -47,6 +47,12 @@ admitted, its original lease ID. A retry does not start or replace a job;
 reusing the key for different intent is rejected. Without `--key`, each submit
 is a new request.
 
+Use `archon -c ADDR cancel-queued REQUEST` with the request ID from `submit`
+to cancel a standalone job before admission. If the job was already admitted,
+the error gives its lease ID; use `revoke LEASE` for admitted work. To remove
+service members, scale the group instead. Retrying a canceled job's original
+submission key reports cancellation and does not enqueue new work.
+
 Keys are journal-wide, 1–128 bytes, and retained with the submission history.
 They are not credentials or scoped by an authenticated user. Retry against the
 same journal, including after normal compaction or restart. A fresh journal,

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use archon_kernel::{
     CapacityDimension, LeaseId, Need, OwnerId, Request, RequestClass, RequestId, ResourceClass, qty,
 };
-use archon_node::service::NodeService;
+use archon_node::service::{NodeService, SubmissionOutcome};
 
 /// One versioned snapshot generation: the cluster's decisions plus the
 /// controller-side state that outlives restarts.
@@ -591,6 +591,15 @@ impl ControlPlane {
             ClientRequest::ScaleService { id, target } => self.scale_service(id, target),
             ClientRequest::Status => self.status(),
             ClientRequest::Machines => self.machines(),
+            ClientRequest::CancelQueued { request } => {
+                match self
+                    .service
+                    .cancel_queued_submission(RequestId::from_u64(request))
+                {
+                    Ok(()) => ServerResponse::QueuedCancelled { request },
+                    Err(reason) => ServerResponse::Error { reason },
+                }
+            }
             ClientRequest::SetCordon { machine, cordoned } => {
                 match self
                     .service
@@ -681,9 +690,16 @@ impl ControlPlane {
         let owner = OwnerId::from_u64(owner);
         if previous.is_some() {
             return match self.service.match_submission(&request, owner) {
-                Some(lease) => ServerResponse::Submitted {
+                Some(SubmissionOutcome::Admitted(lease)) => ServerResponse::Submitted {
                     request: id.as_u64(),
-                    lease: lease.map_or(0, |lease| lease.as_u64()),
+                    lease: lease.as_u64(),
+                },
+                Some(SubmissionOutcome::Queued) => ServerResponse::Submitted {
+                    request: id.as_u64(),
+                    lease: 0,
+                },
+                Some(SubmissionOutcome::Cancelled) => ServerResponse::QueuedCancelled {
+                    request: id.as_u64(),
                 },
                 None => ServerResponse::Error {
                     reason: "submit key already reserved for a different or unavailable submission"
