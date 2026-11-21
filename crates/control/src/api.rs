@@ -85,6 +85,11 @@ pub enum ClientRequest {
         target: u32,
     },
     Status,
+    Machines,
+    SetCordon {
+        machine: u64,
+        cordoned: bool,
+    },
     Revoke {
         lease: u64,
     },
@@ -92,6 +97,14 @@ pub enum ClientRequest {
     Logs {
         lease: u64,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MachineInfo {
+    pub id: u64,
+    pub name: String,
+    pub state: String,
+    pub cordoned: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -133,6 +146,13 @@ pub enum ServerResponse {
     Status {
         queue_len: usize,
         leases: Vec<LeaseInfo>,
+    },
+    Machines {
+        machines: Vec<MachineInfo>,
+    },
+    CordonSet {
+        machine: u64,
+        cordoned: bool,
     },
     Revoked,
     Logs {

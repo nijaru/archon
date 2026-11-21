@@ -53,6 +53,19 @@ same journal, including after normal compaction or restart. A fresh journal,
 an older backup that predates the submission, or running an older controller
 against the same state does not preserve this guarantee.
 
+## Closing a machine to new work
+
+Use `archon -c ADDR machines` to find the numeric machine ID and see both its
+resource state and whether it is cordoned. `archon -c ADDR cordon MACHINE`
+blocks new allocations on the machine, including plans made before the cordon.
+It does not evict running workloads or interrupt leases already preparing.
+
+`archon -c ADDR uncordon MACHINE` removes only the operator's cordon; any
+quarantine or other placement restriction still applies. Cordons survive agent
+re-registration, controller restart, and journal compaction. A cordon alone
+does not make the machine safe to shut down: wait for existing leases and
+bindings to close before maintenance.
+
 ## Agent restart and recovery
 
 `archon status` reports capacity separately from lease state. A `Revoked` lease

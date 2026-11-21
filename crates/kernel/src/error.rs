@@ -12,6 +12,7 @@ pub enum Error {
     DuplicateBinding(BindingId),
     NotAgreed,
     Quarantined(NodeId),
+    Cordoned(NodeId),
     StaleSession {
         expected: u64,
         got: u64,
@@ -101,6 +102,7 @@ impl fmt::Display for Error {
             Self::DuplicateBinding(id) => write!(f, "duplicate binding {id}"),
             Self::NotAgreed => write!(f, "cluster has no agreement"),
             Self::Quarantined(id) => write!(f, "node {id} is quarantined"),
+            Self::Cordoned(id) => write!(f, "machine {id} is cordoned"),
             Self::StaleSession { expected, got } => {
                 write!(f, "stale session: expected {expected}, got {got}")
             }

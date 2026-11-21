@@ -1,6 +1,6 @@
 use archon_kernel::{
-    BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Cluster, Command, Edge,
-    EdgeKind, Error, LeaseId, Need, Node, NodeId, NodeState, OwnerId, ProviderId, Request,
+    BindingId, BindingScope, CapacityDimension, ClaimBinding, ClaimBindingUpdate, Cluster, Command,
+    Edge, EdgeKind, Error, LeaseId, Need, Node, NodeId, NodeState, OwnerId, ProviderId, Request,
     RequestClass, RequestId, ResourceClass, qty,
 };
 
@@ -81,6 +81,91 @@ fn non_schedulable_state_blocks_descendant_placement() {
         assert_eq!(cluster.node_state(cpu), Some(NodeState::Schedulable));
         assert!(cluster.allocate(&request()).is_err());
     }
+}
+
+#[test]
+fn cordon_blocks_stale_plans_and_does_not_clear_quarantine() {
+    let (mut cluster, machine, cpu) = cluster();
+    let allocation = cluster.allocate(&request()).unwrap();
+    let open = Command::OpenLease {
+        lease: LeaseId::from_u64(1),
+        owner: OwnerId::from_u64(1),
+        allocation,
+        parent: None,
+        expires_at: 100,
+        prepare_deadline: 10,
+        priority: 1,
+    };
+    assert!(
+        cluster
+            .apply(Command::SetMachineCordon {
+                machine: cpu,
+                cordoned: true
+            })
+            .is_err()
+    );
+    cluster
+        .apply(Command::SetMachineCordon {
+            machine,
+            cordoned: true,
+        })
+        .unwrap();
+    assert!(cluster.allocate(&request()).is_err());
+    assert!(matches!(cluster.apply(open.clone()), Err(Error::Cordoned(id)) if id == machine));
+    assert_eq!(cluster.node_state(machine), Some(NodeState::Schedulable));
+    cluster
+        .apply(Command::QuarantineNode { node: machine })
+        .unwrap();
+    cluster
+        .apply(Command::SetMachineCordon {
+            machine,
+            cordoned: false,
+        })
+        .unwrap();
+    assert_eq!(cluster.node_state(machine), Some(NodeState::Quarantined));
+    assert!(cluster.allocate(&request()).is_err());
+    cluster
+        .apply(Command::UnquarantineNode { node: machine })
+        .unwrap();
+    cluster.apply(open).unwrap();
+    cluster
+        .apply(Command::SetMachineCordon {
+            machine,
+            cordoned: true,
+        })
+        .unwrap();
+    let lease = LeaseId::from_u64(1);
+    let binding = BindingId::from_u64(1);
+    assert!(cluster.occupies(lease));
+    cluster
+        .apply(Command::SetAgentSession {
+            machine,
+            session: 1,
+        })
+        .unwrap();
+    cluster
+        .apply(Command::OpenBinding {
+            binding,
+            lease,
+            node: cpu,
+            provider: ProviderId::ENFORCE,
+            scope: BindingScope::Exclusive,
+        })
+        .unwrap();
+    let fence = cluster.bindings[&binding].fence;
+    cluster
+        .apply(Command::RecordBindingPrepared {
+            binding,
+            session: 1,
+            provider_handle: 1,
+            fence,
+        })
+        .unwrap();
+    cluster
+        .apply(Command::ActivateLease {
+            lease: LeaseId::from_u64(1),
+        })
+        .unwrap();
 }
 
 #[test]

@@ -590,6 +590,20 @@ impl ControlPlane {
             }),
             ClientRequest::ScaleService { id, target } => self.scale_service(id, target),
             ClientRequest::Status => self.status(),
+            ClientRequest::Machines => self.machines(),
+            ClientRequest::SetCordon { machine, cordoned } => {
+                match self
+                    .service
+                    .apply(archon_kernel::Command::SetMachineCordon {
+                        machine: archon_kernel::NodeId::from_u64(machine),
+                        cordoned,
+                    }) {
+                    Ok(()) => ServerResponse::CordonSet { machine, cordoned },
+                    Err(err) => ServerResponse::Error {
+                        reason: err.to_string(),
+                    },
+                }
+            }
             ClientRequest::Revoke { lease } => self.revoke(lease),
             ClientRequest::Logs { lease } => {
                 // Resolve the agent call under the lock, then wait for the
@@ -895,6 +909,22 @@ impl ControlPlane {
             }
             Err(reason) => ServerResponse::Error { reason },
         }
+    }
+
+    fn machines(&self) -> ServerResponse {
+        let cluster = &self.service.cluster;
+        let machines = cluster
+            .graph
+            .nodes()
+            .filter(|node| node.kind == archon_kernel::ResourceClass::Machine)
+            .map(|node| crate::api::MachineInfo {
+                id: node.id.as_u64(),
+                name: node.attrs.get("name").cloned().unwrap_or_default(),
+                state: format!("{:?}", cluster.node_state(node.id).expect("known machine")),
+                cordoned: cluster.machine_cordoned(node.id),
+            })
+            .collect();
+        ServerResponse::Machines { machines }
     }
 
     fn status(&self) -> ServerResponse {

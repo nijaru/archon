@@ -54,6 +54,7 @@ pub struct Digest {
     pub sessions: BTreeMap<NodeId, u64>,
     pub last_fence: BTreeMap<(crate::ids::ProviderId, NodeId), u64>,
     pub node_states: BTreeMap<NodeId, NodeState>,
+    pub cordoned_machines: BTreeSet<NodeId>,
 }
 
 /// (De)hydrate a tuple-keyed map as a sequence of pairs.
@@ -116,6 +117,11 @@ pub struct Cluster {
         serde(default, skip_serializing_if = "BTreeMap::is_empty")
     )]
     pub node_states: BTreeMap<NodeId, NodeState>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeSet::is_empty")
+    )]
+    cordoned_machines: BTreeSet<NodeId>,
 }
 
 impl Default for Cluster {
@@ -132,6 +138,7 @@ impl Default for Cluster {
             sessions: BTreeMap::new(),
             last_fence: BTreeMap::new(),
             node_states: BTreeMap::new(),
+            cordoned_machines: BTreeSet::new(),
         }
     }
 }
@@ -167,6 +174,10 @@ impl Cluster {
         })
     }
 
+    pub fn machine_cordoned(&self, machine: NodeId) -> bool {
+        self.cordoned_machines.contains(&machine)
+    }
+
     pub(crate) fn placement_blocked(&self) -> BTreeSet<NodeId> {
         self.graph
             .nodes()
@@ -174,6 +185,7 @@ impl Cluster {
                 !self
                     .node_state(node.id)
                     .is_some_and(NodeState::is_schedulable)
+                    || self.machine_cordoned(node.id)
             })
             .map(|node| node.id)
             .collect()
@@ -278,6 +290,7 @@ impl Cluster {
             sessions: self.sessions.clone(),
             last_fence: self.last_fence.clone(),
             node_states: self.node_states.clone(),
+            cordoned_machines: self.cordoned_machines.clone(),
         }
     }
 
@@ -364,6 +377,17 @@ impl Cluster {
             .filter(|binding| !binding.state.is_closed())
             .map(|binding| binding.lease)
             .collect()
+    }
+
+    fn require_uncordoned_claims(&self, claims: &[crate::types::Claim]) -> Result<(), Error> {
+        for claim in claims {
+            if let Some(machine) = self.graph.machine_of(claim.node)
+                && self.machine_cordoned(machine)
+            {
+                return Err(Error::Cordoned(machine));
+            }
+        }
+        Ok(())
     }
 
     fn node_quarantined(&self, node: NodeId) -> bool {
@@ -487,6 +511,21 @@ impl Cluster {
                 self.set_agent_session(*machine, *session)
             }
             Command::SetNodeHealth { node, health } => self.set_node_health(*node, health.clone()),
+            Command::SetMachineCordon { machine, cordoned } => {
+                let node = self
+                    .graph
+                    .node(*machine)
+                    .ok_or(Error::UnknownNode(*machine))?;
+                if node.kind != crate::types::ResourceClass::Machine {
+                    return Err(Error::Invalid("cordon requires a machine node"));
+                }
+                if *cordoned {
+                    self.cordoned_machines.insert(*machine);
+                } else {
+                    self.cordoned_machines.remove(machine);
+                }
+                Ok(Vec::new())
+            }
             Command::SetNodeState { node, state } => self.set_node_state(*node, *state),
             Command::RebindSession { binding, session } => self.rebind_session(*binding, *session),
             Command::AdvanceEndpointFence {
@@ -626,6 +665,7 @@ impl Cluster {
                 return Err(Error::Quarantined(claim.node));
             }
         }
+        self.require_uncordoned_claims(&claims)?;
         let except = BTreeSet::from([id]);
         let occupancy =
             occupancy_from_leases(self.leases.values(), &self.open_binding_leases(), &except);
@@ -680,6 +720,7 @@ impl Cluster {
                 return Err(Error::Quarantined(claim.node));
             }
         }
+        self.require_uncordoned_claims(&claims)?;
         if !self.replaying && self.now >= lease.expires_at {
             return Err(Error::LeaseExpired { lease: id });
         }
@@ -752,6 +793,7 @@ impl Cluster {
                 return Err(Error::Quarantined(claim.node));
             }
         }
+        self.require_uncordoned_claims(&claims)?;
         if let Some(parent_id) = parent {
             let parent_lease = self
                 .leases

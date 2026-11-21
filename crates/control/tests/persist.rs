@@ -567,6 +567,70 @@ fn keyed_submission_survives_replay_compaction_and_admission() {
 }
 
 #[test]
+fn machine_cordon_survives_compaction_and_reconnect() {
+    use archon_control::server::AgentLink;
+
+    let path = temp_log("machine-cordon");
+    let boot = || {
+        ControlPlane::boot(
+            AgentLink::Remote {
+                addr: spawn_test_agent(),
+                token: None,
+            },
+            path.clone(),
+            0,
+        )
+        .unwrap()
+    };
+    let mut plane = boot();
+    let machine = |plane: &mut ControlPlane, cordoned| {
+        let ServerResponse::Machines { machines } = plane.handle(ClientRequest::Machines) else {
+            panic!("expected machine listing")
+        };
+        assert_eq!(machines.len(), 1);
+        assert_eq!(machines[0].cordoned, cordoned);
+        machines[0].id
+    };
+    let id = machine(&mut plane, false);
+    assert!(matches!(
+        plane.handle(ClientRequest::SetCordon {
+            machine: id,
+            cordoned: true
+        }),
+        ServerResponse::CordonSet { cordoned: true, .. }
+    ));
+    assert!(matches!(
+        plane.handle(submit_request()),
+        ServerResponse::Submitted { lease: 0, .. }
+    ));
+    plane.compact().unwrap();
+    drop(plane);
+
+    let mut plane = boot();
+    assert_eq!(machine(&mut plane, true), id);
+    plane.maintain();
+    assert_eq!(queue_len_of(plane.handle(ClientRequest::Status)), 1);
+    assert!(matches!(
+        plane.handle(ClientRequest::SetCordon {
+            machine: id,
+            cordoned: false
+        }),
+        ServerResponse::CordonSet {
+            cordoned: false,
+            ..
+        }
+    ));
+    assert!(wait_until(Duration::from_secs(5), || {
+        plane.maintain();
+        queue_len_of(plane.handle(ClientRequest::Status)) == 0
+    }));
+    assert_eq!(machine(&mut plane, false), id);
+    drop(plane);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(path.with_added_extension("snapshot")).unwrap();
+}
+
+#[test]
 fn submit_does_not_return_the_lease_of_an_older_queued_request() {
     use archon_control::server::AgentLink;
 

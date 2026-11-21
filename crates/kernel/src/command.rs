@@ -132,6 +132,10 @@ pub enum Command {
         node: NodeId,
         health: String,
     },
+    SetMachineCordon {
+        machine: NodeId,
+        cordoned: bool,
+    },
     SetNodeState {
         node: NodeId,
         state: NodeState,
